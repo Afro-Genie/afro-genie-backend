@@ -1,0 +1,445 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  MODERATOR
+  ARTIST
+}
+
+enum LyricSourceProvider {
+  MANUAL
+  MUSICMATCH
+  LYRICFIND
+  GENIUS
+  ARTIST
+}
+
+enum LicenseStatus {
+  UNKNOWN
+  LICENSED
+  UNLICENSED
+  TAKEDOWN
+}
+
+enum TranslationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PUBLISHED
+}
+
+enum VoteType {
+  UPVOTE
+  DOWNVOTE
+}
+
+enum CorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum RequestStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum TopicCategory {
+  GENERAL
+  LYRICS
+  TRANSLATION
+  SONG_DISCUSSION
+  ARTIST_DISCUSSION
+  ANNOUNCEMENT
+}
+
+enum NotificationType {
+  SYSTEM
+  MODERATION
+  TRANSLATION
+  TOPIC
+  COMMENT
+  REWARD
+}
+
+enum BadgeType {
+  EARLY_ADOPTER
+  TOP_TRANSLATOR
+  CULTURE_CURATOR
+  COMMUNITY_HELPER
+  ARTIST_SPOTLIGHT
+}
+
+enum ArtistApplicationStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                 String                @id @default(cuid())
+  email              String                @unique
+  passwordHash       String?
+  googleId           String?               @unique
+  displayName        String?
+  photoUrl           String?
+  role               UserRole              @default(USER)
+  schemaVersion      Int                   @default(1)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  lastLoginAt        DateTime?
+  translations       Translation[]
+  translationVotes   TranslationVote[]
+  corrections        TranslationCorrection[]
+  translationRequests TranslationRequest[]
+  songRequests       SongRequest[]
+  topics             Topic[]
+  topicComments      TopicComment[]        @relation("TopicCommentAuthor")
+  notifications      Notification[]
+  badges             UserBadge[]
+  tokenRewards       TokenReward[]
+  artistApplications ArtistApplication[]
+
+  @@index([role])
+  @@index([lastLoginAt])
+}
+
+model Artist {
+  id               String    @id @default(cuid())
+  name             String    @unique
+  bio              String?
+  imageUrl         String?
+  spotifyId        String?   @unique
+  genres           String[]
+  popularity       Int       @default(0)
+  followers        Int       @default(0)
+  externalUrl      String?
+  verified         Boolean   @default(false)
+  schemaVersion    Int       @default(1)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  songs            Song[]
+  topics           Topic[]
+
+  @@index([verified])
+  @@index([popularity])
+  @@index([followers])
+}
+
+model Song {
+  id                String            @id @default(cuid())
+  title             String
+  artistId          String
+  albumName         String?
+  releaseYear       Int?
+  imageUrl          String?
+  spotifyId         String?           @unique
+  spotifyPreviewUrl String?
+  views             Int               @default(0)
+  requestCount      Int               @default(0)
+  schemaVersion     Int               @default(1)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  artist            Artist            @relation(fields: [artistId], references: [id], onDelete: Restrict)
+  songLanguages     SongLanguage[]
+  lyrics            Lyric[]
+  translations      Translation[]
+  translationRequests TranslationRequest[]
+  genres            SongGenre[]
+  topics            Topic[]
+
+  @@unique([title, artistId])
+  @@index([artistId])
+  @@index([title])
+  @@index([releaseYear])
+  @@index([views])
+  @@index([requestCount])
+  @@index([createdAt])
+}
+
+model SongLanguage {
+  id           String   @id @default(cuid())
+  songId       String
+  languageCode String
+  percentage   Float
+  song         Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  language     Language @relation(fields: [languageCode], references: [code], onDelete: Restrict)
+
+  @@unique([songId, languageCode])
+  @@index([songId])
+  @@index([languageCode])
+  @@index([languageCode, percentage])
+}
+
+model Lyric {
+  id             String              @id @default(cuid())
+  songId          String
+  content         String              @db.Text
+  sourceProvider  LyricSourceProvider
+  licenseStatus   LicenseStatus       @default(UNKNOWN)
+  schemaVersion   Int                 @default(1)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  song            Song                @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([songId])
+  @@index([sourceProvider])
+  @@index([licenseStatus])
+}
+
+model Language {
+  id            String         @id @default(cuid())
+  code          String         @unique
+  name          String
+  isActive      Boolean        @default(true)
+  songLanguages SongLanguage[]
+
+  @@index([isActive])
+}
+
+model Translation {
+  id                    String                  @id @default(cuid())
+  songId                String
+  userId                String
+  originalLyrics        String                  @db.Text
+  translatedLyrics      String                  @db.Text
+  culturalContext       String?                 @db.Text
+  sourceLang            String
+  targetLang            String
+  status                TranslationStatus       @default(PENDING)
+  upvotes               Int                     @default(0)
+  downvotes             Int                     @default(0)
+  aiModel               String?
+  promptVersion         String?
+  schemaVersion         Int                     @default(1)
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  song                  Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes                 TranslationVote[]
+  corrections           TranslationCorrection[]
+
+  @@unique([songId, userId, sourceLang, targetLang])
+  @@index([songId])
+  @@index([userId])
+  @@index([status])
+  @@index([sourceLang])
+  @@index([targetLang])
+  @@index([createdAt])
+}
+
+model TranslationVote {
+  id            String      @id @default(cuid())
+  translationId String
+  userId        String
+  voteType      VoteType
+  createdAt     DateTime    @default(now())
+  translation   Translation @relation(fields: [translationId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([translationId, userId])
+  @@index([translationId])
+  @@index([userId])
+  @@index([voteType])
+}
+
+model TranslationCorrection {
+  id            String           @id @default(cuid())
+  translationId String
+  userId        String
+  originalText  String           @db.Text
+  suggestedText String           @db.Text
+  reason        String?
+  status        CorrectionStatus @default(PENDING)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  translation   Translation      @relation(fields: [translationId], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([translationId])
+  @@index([userId])
+  @@index([status])
+}
+
+model TranslationRequest {
+  id        String        @id @default(cuid())
+  songId    String
+  userId    String
+  status    RequestStatus @default(PENDING)
+  notes     String?
+  createdAt DateTime      @default(now())
+  song      Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([songId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SongRequest {
+  id        String        @id @default(cuid())
+  songTitle String
+  artist    String
+  userId    String
+  status    RequestStatus @default(PENDING)
+  notes     String?
+  createdAt DateTime      @default(now())
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([songTitle])
+  @@index([artist])
+  @@index([createdAt])
+}
+
+model Genre {
+  id       String     @id @default(cuid())
+  name     String     @unique
+  imageUrl String?
+  songs    SongGenre[]
+}
+
+model SongGenre {
+  songId   String
+  genreId  String
+  song     Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
+  genre    Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([songId, genreId])
+  @@index([songId])
+  @@index([genreId])
+}
+
+model ForumCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  icon        String?
+  order       Int      @default(0)
+  topicCount  Int      @default(0)
+  topics      Topic[]
+
+  @@index([order])
+  @@index([topicCount])
+}
+
+model Topic {
+  id           String         @id @default(cuid())
+  title        String
+  content      String         @db.Text
+  authorId     String
+  category     TopicCategory
+  forumCategoryId String?
+  songId       String?
+  artistId     String?
+  likes        Int            @default(0)
+  shares       Int            @default(0)
+  commentCount Int            @default(0)
+  isPinned     Boolean        @default(false)
+  isLocked     Boolean        @default(false)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  author       User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  song         Song?          @relation(fields: [songId], references: [id], onDelete: SetNull)
+  artist       Artist?        @relation(fields: [artistId], references: [id], onDelete: SetNull)
+  forumCategory ForumCategory? @relation(fields: [forumCategoryId], references: [id], onDelete: SetNull)
+  comments     TopicComment[] @relation("TopicComments")
+
+  @@index([authorId])
+  @@index([songId])
+  @@index([artistId])
+  @@index([forumCategoryId])
+  @@index([category])
+  @@index([isPinned])
+  @@index([isLocked])
+  @@index([createdAt])
+}
+
+model TopicComment {
+  id              String         @id @default(cuid())
+  topicId         String
+  userId          String
+  content         String         @db.Text
+  likes           Int            @default(0)
+  parentCommentId String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  topic           Topic          @relation("TopicComments", fields: [topicId], references: [id], onDelete: Cascade)
+  user            User           @relation("TopicCommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  parentComment   TopicComment?  @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         TopicComment[] @relation("CommentThread")
+
+  @@index([topicId])
+  @@index([userId])
+  @@index([parentCommentId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType @default(SYSTEM)
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([read])
+  @@index([createdAt])
+}
+
+model UserBadge {
+  id        String    @id @default(cuid())
+  userId    String
+  badgeType BadgeType
+  earnedAt  DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([badgeType])
+}
+
+model TokenReward {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Int
+  reason    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model ArtistApplication {
+  id          String                  @id @default(cuid())
+  userId      String
+  stageName   String
+  genre       String
+  bio         String
+  socialLinks Json
+  status      ArtistApplicationStatus @default(PENDING)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  user        User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([stageName])
+}
