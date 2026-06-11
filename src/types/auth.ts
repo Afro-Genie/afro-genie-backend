@@ -14,3 +14,18 @@ export interface JwtClaims {
   iat?: number;
   exp?: number;
 }
+
+export interface ApiErrorResponse {
+  error: string;
+  code: string;
+}
+
+export interface HealthResponse {
+  status: 'ok';
+  uptime: number;
+  version: string;
+  checks: {
+    database: 'ok' | 'error';
+    redis: 'ok' | 'error';
+  };
+}
