@@ -23,6 +23,8 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM_EMAIL: z.string().email().optional(),
   GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),
+  AI_PROVIDER: z.string().optional(),
+  AI_TRANSLATION_PROVIDER: z.string().default('gemini'),
   APP_VERSION: z.string().default('1.0.0')
 });
 

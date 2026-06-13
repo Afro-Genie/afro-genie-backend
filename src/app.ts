@@ -5,9 +5,13 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import passport from 'passport';
 import pinoHttp from 'pino-http';
+import { adminSongsRouter } from './routes/admin/songs';
+import { artistsRouter } from './routes/artists';
 import { authRouter } from './routes/auth';
 import { healthRouter } from './routes/health';
 import { searchRouter } from './routes/search';
+import { songsRouter } from './routes/songs';
+import { translationsRouter } from './routes/translations';
 import { logger } from './lib/logger';
 import { authenticate, requireRole } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
@@ -37,6 +41,10 @@ app.use('/api', apiLimiter);
 app.use('/api', healthRouter);
 app.use('/api', authRouter);
 app.use('/api', searchRouter);
+app.use('/api', translationsRouter);
+app.use('/api', songsRouter);
+app.use('/api', artistsRouter);
+app.use('/api', adminSongsRouter);
 
 app.get('/api/admin/ping', authenticate, requireRole('ADMIN'), (_req, res) => {
   res.status(200).json({ ok: true, scope: 'ADMIN' });

@@ -1,16 +1,20 @@
 import { Worker } from 'bullmq';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
+import { processLanguageCategorizationJob } from './languageCategorizationJob';
 import { processSearchIndexJob } from './searchIndexJob';
+import { processTranslationJob } from './translationJob';
+import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
+import type { TranslationJobData } from '../types/translation';
 
 const connection = { url: env.REDIS_URL };
 
-export const translationWorker = new Worker(
+export const translationWorker = new Worker<TranslationJobData>(
   'translationQueue',
   async (job) => {
-    logger.info({ jobId: job.id, name: job.name }, 'Processing translation job');
+    await processTranslationJob(job);
   },
-  { connection }
+  { connection, concurrency: 4 }
 );
 
 export const notificationWorker = new Worker(
@@ -29,3 +33,22 @@ export const searchIndexWorker = new Worker(
   },
   { connection, concurrency: 8 }
 );
+
+export const languageCategorizationWorker = new Worker(
+  'languageCategorizationQueue',
+  async (job) => {
+    logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing language categorization job');
+    await processLanguageCategorizationJob(job);
+  },
+  { connection, concurrency: 4 }
+);
+
+export const viewCountFlushWorker = new Worker(
+  'viewCountFlushQueue',
+  async () => {
+    await processViewCountFlushJob();
+  },
+  { connection, concurrency: 1 }
+);
+
+void scheduleViewCountFlush();

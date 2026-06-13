@@ -126,6 +126,7 @@ model Artist {
   followers        Int       @default(0)
   externalUrl      String?
   verified         Boolean   @default(false)
+  softDeleted      Boolean   @default(false)
   schemaVersion    Int       @default(1)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -133,6 +134,7 @@ model Artist {
   topics           Topic[]
 
   @@index([verified])
+  @@index([softDeleted])
   @@index([popularity])
   @@index([followers])
 }
@@ -148,6 +150,7 @@ model Song {
   spotifyPreviewUrl String?
   views             Int               @default(0)
   requestCount      Int               @default(0)
+  softDeleted       Boolean           @default(false)
   schemaVersion     Int               @default(1)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -165,6 +168,7 @@ model Song {
   @@index([releaseYear])
   @@index([views])
   @@index([requestCount])
+  @@index([softDeleted])
   @@index([createdAt])
 }
 
@@ -185,7 +189,7 @@ model SongLanguage {
 model Lyric {
   id             String              @id @default(cuid())
   songId          String
-  content         String              @db.Text
+  content         String?             @db.Text
   sourceProvider  LyricSourceProvider
   licenseStatus   LicenseStatus       @default(UNKNOWN)
   schemaVersion   Int                 @default(1)
@@ -302,6 +306,24 @@ model SongRequest {
   @@index([status])
   @@index([songTitle])
   @@index([artist])
+  @@index([createdAt])
+}
+
+model AICallLog {
+  id               String   @id @default(cuid())
+  provider         String
+  model            String
+  promptVersion    String
+  tokensInput      Int
+  tokensOutput     Int
+  estimatedCostUsd Float
+  songId           String?
+  userId           String?
+  createdAt        DateTime @default(now())
+
+  @@index([provider])
+  @@index([songId])
+  @@index([userId])
   @@index([createdAt])
 }
 
