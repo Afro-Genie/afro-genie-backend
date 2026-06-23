@@ -20,7 +20,7 @@ songsRouter.get(
   [
     query('cursor').optional().isString(),
     query('lastId').optional().isString(),
-    query('limit').optional().isInt({ min: 1, max: 50 }),
+    query('limit').optional().isInt({ min: 1, max: 500 }),
     query('page').optional().isInt({ min: 1 }),
     query('language').optional().isString(),
     query('lang').optional().isString(),
@@ -58,7 +58,7 @@ songsRouter.get(
   '/songs/by-language/:languageCode',
   [
     param('languageCode').isString().trim().isLength({ min: 2, max: 10 }),
-    query('limit').optional().isInt({ min: 1, max: 50 }),
+    query('limit').optional().isInt({ min: 1, max: 500 }),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {

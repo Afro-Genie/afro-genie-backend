@@ -17,7 +17,7 @@ artistsRouter.get(
   '/artists',
   [
     query('cursor').optional().isString(),
-    query('limit').optional().isInt({ min: 1, max: 50 }),
+    query('limit').optional().isInt({ min: 1, max: 200 }),
     query('genre').optional().isString(),
     query('search').optional().isString(),
   ],
