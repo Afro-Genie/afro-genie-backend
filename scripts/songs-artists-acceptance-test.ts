@@ -141,7 +141,7 @@ const main = async () => {
   try {
     const migratedSongsCount = await prisma.song.count();
     addResult(
-      'All 78 songs migrated from Firebase',
+      'All 78 songs are present in PostgreSQL',
       migratedSongsCount === 78,
       `songCount=${migratedSongsCount}`,
     );
