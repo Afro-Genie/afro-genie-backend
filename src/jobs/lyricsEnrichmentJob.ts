@@ -31,7 +31,7 @@ export async function processLyricsEnrichmentJob(job: Job<LyricsEnrichmentJobDat
     return;
   }
 
-  const provider = new MusicMatchProvider();
+  const provider = new MusicMatchProvider(songId);
   const start = Date.now();
   let content: string | null = null;
 
@@ -48,7 +48,7 @@ export async function processLyricsEnrichmentJob(job: Job<LyricsEnrichmentJobDat
         {
           ...DEFAULT_JOB_OPTIONS,
           delay: e.retryAfterMs,
-          jobId: `lyrics-enrichment:${songId}`,
+          jobId: `lyrics-enrichment-${songId}`,
         },
       );
 

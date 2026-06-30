@@ -1,9 +1,9 @@
 import { logger } from '../../lib/logger';
 import { redis } from '../../lib/redis';
+import { logAICall } from '../translationService';
 import type { LyricsProvider, LyricsSearchResult } from './lyricsProvider';
 
 const BASE = 'https://api.musixmatch.com/ws/1.1/';
-const KEY = process.env.MUSICMATCH_API_KEY;
 const DAILY_REQUEST_LIMIT = 2000;
 const RATE_LIMIT_WINDOW_SECONDS = 86400;
 const REQUEST_TIMEOUT_MS = 4500;
@@ -48,6 +48,8 @@ export class MusicMatchRateLimitError extends Error {
 export class MusicMatchProvider implements LyricsProvider {
   public readonly name = 'musicmatch';
 
+  constructor(private readonly songId?: string) {}
+
   private getDailyKey(): string {
     const today = new Date().toISOString().slice(0, 10);
     return `musicmatch:requests:${today}`;
@@ -70,7 +72,9 @@ export class MusicMatchProvider implements LyricsProvider {
   }
 
   private async callApi<TBody>(endpoint: string, params: Record<string, string>): Promise<TBody> {
-    if (!KEY) {
+    const key = process.env.MUSICMATCH_API_KEY;
+
+    if (!key) {
       throw new Error('MUSICMATCH_API_KEY is not configured');
     }
 
@@ -78,7 +82,7 @@ export class MusicMatchProvider implements LyricsProvider {
 
     const search = new URLSearchParams({
       ...params,
-      apikey: KEY,
+      apikey: key,
     });
 
     const url = `${BASE}${endpoint}?${search.toString()}`;
@@ -110,6 +114,16 @@ export class MusicMatchProvider implements LyricsProvider {
       { provider: 'MUSICMATCH', endpoint, statusCode, responseTimeMs },
       'MusicMatch API call completed',
     );
+
+    await logAICall({
+      provider: 'MUSICMATCH',
+      model: `api:${endpoint}`,
+      promptVersion: `v1:status:${statusCode}:rt:${responseTimeMs}`,
+      tokensInput: 0,
+      tokensOutput: 0,
+      estimatedCostUsd: 0,
+      songId: this.songId,
+    });
 
     if (!response.ok || statusCode >= 400) {
       throw new Error(`MusicMatch API error at ${endpoint}: status ${statusCode}`);

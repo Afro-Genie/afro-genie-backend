@@ -465,7 +465,7 @@ export const createSong = async (payload: SongMutationInput) => {
       backoff: { type: 'exponential', delay: 5000 },
       removeOnComplete: 1000,
       removeOnFail: 500,
-      jobId: `lyrics-enrichment:${created.id}`,
+      jobId: `lyrics-enrichment-${created.id}`,
     },
   );
 

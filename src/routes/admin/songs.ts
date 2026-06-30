@@ -93,7 +93,7 @@ adminSongsRouter.post(
           backoff: { type: 'exponential', delay: 5000 },
           removeOnComplete: 1000,
           removeOnFail: 500,
-          jobId: `lyrics-enrichment:${req.params.id}`,
+          jobId: `lyrics-enrichment-${req.params.id}`,
         },
       );
 
