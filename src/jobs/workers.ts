@@ -2,6 +2,7 @@ import { Worker } from 'bullmq';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
 import { processLanguageCategorizationJob } from './languageCategorizationJob';
+import { processLyricsEnrichmentJob } from './lyricsEnrichmentJob';
 import { processSearchIndexJob } from './searchIndexJob';
 import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
@@ -39,6 +40,15 @@ export const languageCategorizationWorker = new Worker(
   async (job) => {
     logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing language categorization job');
     await processLanguageCategorizationJob(job);
+  },
+  { connection, concurrency: 4 }
+);
+
+export const lyricsEnrichmentWorker = new Worker(
+  'lyricsEnrichmentQueue',
+  async (job) => {
+    logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing lyrics enrichment job');
+    await processLyricsEnrichmentJob(job);
   },
   { connection, concurrency: 4 }
 );

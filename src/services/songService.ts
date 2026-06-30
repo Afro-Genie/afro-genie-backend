@@ -1,6 +1,7 @@
 import { Prisma, TranslationStatus } from '@prisma/client';
 import { enqueueIndexSong } from '../jobs/searchIndexJob';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
+import { lyricsEnrichmentQueue } from '../lib/queue';
 import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { ApiError } from '../middleware/errorHandler';
@@ -454,6 +455,19 @@ export const createSong = async (payload: SongMutationInput) => {
     syncLanguages(created.id, payload.languages, payload.primaryLanguage),
     payload.lyrics ? upsertLyrics(created.id, payload.lyrics) : Promise.resolve(),
   ]);
+
+  await lyricsEnrichmentQueue.add(
+    'enrichLyrics',
+    { songId: created.id },
+    {
+      delay: 1000,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: 1000,
+      removeOnFail: 500,
+      jobId: `lyrics-enrichment:${created.id}`,
+    },
+  );
 
   await enqueueIndexSong(created.id);
 

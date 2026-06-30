@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { body, param } from 'express-validator';
+import { lyricsEnrichmentQueue } from '../../lib/queue';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { createSong, softDeleteSong, updateSong } from '../../services/songService';
@@ -72,6 +73,31 @@ adminSongsRouter.delete(
     try {
       const result = await softDeleteSong(req.params.id);
       res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminSongsRouter.post(
+  '/admin/songs/:id/fetch-lyrics',
+  [param('id').isString().notEmpty()],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const job = await lyricsEnrichmentQueue.add(
+        'enrichLyrics',
+        { songId: req.params.id },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: 1000,
+          removeOnFail: 500,
+          jobId: `lyrics-enrichment:${req.params.id}`,
+        },
+      );
+
+      res.status(202).json({ jobId: job.id, status: 'queued' });
     } catch (error) {
       next(error);
     }
