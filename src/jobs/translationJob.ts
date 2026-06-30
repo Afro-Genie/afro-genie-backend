@@ -24,7 +24,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   }
 
   const lyric = song.lyrics[0];
-  if (!lyric || !lyric.content.trim()) {
+  if (!lyric || !lyric.content?.trim()) {
     const fallbackMessage = 'Lyrics are not available for this song yet.';
 
     await prisma.translation.upsert({
@@ -66,7 +66,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   const result = await provider.translate({
     artist: song.artist.name,
     title: song.title,
-    lyrics: lyric.content,
+    lyrics: lyric.content!,
     sourceLang,
     targetLang,
     promptVersion,
@@ -82,7 +82,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     create: {
       songId,
       userId,
-      originalLyrics: lyric.content,
+      originalLyrics: lyric.content!,
       translatedLyrics: result.translatedLyrics,
       culturalContext: result.culturalContext,
       sourceLang,
