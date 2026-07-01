@@ -11,7 +11,7 @@ export const adminSongsRouter = Router();
 adminSongsRouter.use(authenticate, requireRole('ADMIN'));
 
 adminSongsRouter.post(
-  '/admin/songs',
+  '/songs',
   [
     body('title').isString().trim().notEmpty(),
     body('artistId').isString().notEmpty(),
@@ -38,7 +38,7 @@ adminSongsRouter.post(
 );
 
 adminSongsRouter.put(
-  '/admin/songs/:id',
+  '/songs/:id',
   [
     param('id').isString().notEmpty(),
     body('title').optional().isString().trim().notEmpty(),
@@ -66,7 +66,7 @@ adminSongsRouter.put(
 );
 
 adminSongsRouter.delete(
-  '/admin/songs/:id',
+  '/songs/:id',
   [param('id').isString().notEmpty()],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -80,7 +80,7 @@ adminSongsRouter.delete(
 );
 
 adminSongsRouter.post(
-  '/admin/songs/:id/fetch-lyrics',
+  '/songs/:id/fetch-lyrics',
   [param('id').isString().notEmpty()],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {

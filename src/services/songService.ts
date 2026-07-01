@@ -319,7 +319,13 @@ export const getSongById = async (songId: string, options?: { incrementViewCount
 
   const key = `song:views:${songId}`;
   const shouldIncrement = options?.incrementViewCount ?? true;
-  const currentCount = shouldIncrement ? await redis.incr(key) : Number((await redis.get(key)) ?? 0);
+  let currentCount = 0;
+  try {
+    currentCount = shouldIncrement ? await redis.incr(key) : Number((await redis.get(key)) ?? 0);
+  } catch {
+    // Do not fail the song detail request when Redis is unavailable.
+    currentCount = 0;
+  }
   const approvedTranslationsByLanguage = await getLatestApprovedTranslationsByLanguage(songId);
 
   return {
