@@ -1,5 +1,4 @@
 import type { Translation } from '@prisma/client';
-import { randomUUID } from 'node:crypto';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { translationQueue } from '../lib/queue';
@@ -58,25 +57,7 @@ export async function logAICall(params: {
   userId?: string | null;
 }): Promise<void> {
   try {
-    const prismaWithAiLog = prisma as unknown as {
-      aICallLog?: { create: (args: { data: typeof params }) => Promise<unknown> };
-      aiCallLog?: { create: (args: { data: typeof params }) => Promise<unknown> };
-    };
-
-    const delegate = prismaWithAiLog.aICallLog ?? prismaWithAiLog.aiCallLog;
-    if (delegate) {
-      await delegate.create({ data: params });
-      return;
-    }
-
-    // Fallback for environments where Prisma Client has not been regenerated yet.
-    const id = randomUUID();
-    await prisma.$executeRaw`
-      INSERT INTO "AICallLog"
-      ("id", "provider", "model", "promptVersion", "tokensInput", "tokensOutput", "estimatedCostUsd", "songId", "userId", "createdAt")
-      VALUES
-      (${id}, ${params.provider}, ${params.model}, ${params.promptVersion}, ${params.tokensInput}, ${params.tokensOutput}, ${params.estimatedCostUsd}, ${params.songId ?? null}, ${params.userId ?? null}, NOW())
-    `;
+    await prisma.aICallLog.create({ data: params });
   } catch (err) {
     // Non-fatal: a failed log must never break the translation flow
     logger.error({ err, ...params }, 'Failed to write AICallLog entry');

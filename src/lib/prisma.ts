@@ -5,8 +5,11 @@ import { env } from './env';
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
+// Strip unsupported query parameters like channel_binding which pg may not parse
+const cleanUrl = env.DATABASE_URL.replace(/&?channel_binding=[^&]+/g, '');
+
 const pool = new Pool({
-  connectionString: env.DATABASE_URL
+  connectionString: cleanUrl,
 });
 
 const adapter = new PrismaPg(pool);

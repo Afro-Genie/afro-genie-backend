@@ -22,6 +22,7 @@
     { "name": "Translations" },
     { "name": "Search" },
     { "name": "Artists" },
+    { "name": "Spotify" },
     { "name": "Admin" }
   ],
   "components": {
@@ -76,6 +77,28 @@
           "refreshToken": { "type": "string" }
         }
       },
+      "RefreshRequest": {
+        "type": "object",
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": { "type": "string" }
+        }
+      },
+      "ForgotPasswordRequest": {
+        "type": "object",
+        "required": ["email"],
+        "properties": {
+          "email": { "type": "string", "format": "email" }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": ["token", "newPassword"],
+        "properties": {
+          "token": { "type": "string" },
+          "newPassword": { "type": "string", "minLength": 8 }
+        }
+      },
       "SongListResponse": {
         "type": "object",
         "required": ["songs", "data", "total", "page", "totalPages"],
@@ -95,6 +118,88 @@
           "songId": { "type": "string" },
           "sourceLang": { "type": "string" },
           "targetLang": { "type": "string" }
+        }
+      },
+      "TranslationVoteRequest": {
+        "type": "object",
+        "required": ["voteType"],
+        "properties": {
+          "voteType": { "type": "string", "enum": ["UPVOTE", "DOWNVOTE"] }
+        }
+      },
+      "DetectLanguageRequest": {
+        "type": "object",
+        "required": ["lyrics"],
+        "properties": {
+          "lyrics": { "type": "string" }
+        }
+      },
+      "DetectLanguageResponse": {
+        "type": "object",
+        "properties": {
+          "languageCode": { "type": "string" },
+          "languageName": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+        }
+      },
+      "CreateSongRequest": {
+        "type": "object",
+        "required": ["title", "artistId"],
+        "properties": {
+          "title": { "type": "string" },
+          "artistId": { "type": "string" },
+          "albumName": { "type": "string" },
+          "releaseYear": { "type": "integer", "minimum": 1800, "maximum": 2200 },
+          "spotifyId": { "type": "string" },
+          "coverImageUrl": { "type": "string" },
+          "imageUrl": { "type": "string" },
+          "primaryLanguage": { "type": "string" },
+          "languages": { "type": "array", "items": { "type": "string" } },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "lyrics": {
+            "type": "object",
+            "properties": {
+              "rawText": { "type": "string" },
+              "lineBreaks": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      },
+      "CreateArtistRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "bio": { "type": "string" },
+          "imageUrl": { "type": "string" },
+          "spotifyId": { "type": "string" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "popularity": { "type": "integer", "minimum": 0 },
+          "followers": { "type": "integer", "minimum": 0 },
+          "externalUrl": { "type": "string" },
+          "verified": { "type": "boolean" }
+        }
+      },
+      "SpotifySearchResponse": {
+        "type": "object",
+        "properties": {
+          "tracks": { "type": "object" },
+          "artists": { "type": "object" },
+          "albums": { "type": "object" }
+        }
+      },
+      "SyncArtistRequest": {
+        "type": "object",
+        "required": ["artistId", "spotifyArtistId"],
+        "properties": {
+          "artistId": { "type": "string" },
+          "spotifyArtistId": { "type": "string" }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" }
         }
       }
     }
@@ -196,13 +301,7 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["refreshToken"],
-                "properties": {
-                  "refreshToken": { "type": "string" }
-                }
-              }
+              "schema": { "$ref": "#/components/schemas/RefreshRequest" }
             }
           }
         },
@@ -226,15 +325,164 @@
         }
       }
     },
+    "/auth/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Logout (revoke refresh token)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logged out",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Google OAuth login initiation",
+        "responses": {
+          "302": {
+            "description": "Redirect to Google"
+          },
+          "500": {
+            "description": "OAuth not configured",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google/callback": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Google OAuth callback",
+        "responses": {
+          "302": {
+            "description": "Redirect to client with tokens"
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google/failure": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Google OAuth failure page",
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Request password reset email",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ForgotPasswordRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reset email sent (or user not found, same response)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/reset-password": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Reset password with token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ResetPasswordRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset successful",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/songs": {
       "get": {
         "tags": ["Songs"],
         "summary": "List songs",
         "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } },
+          { "name": "lastId", "in": "query", "schema": { "type": "string" } },
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500 } },
+          { "name": "language", "in": "query", "schema": { "type": "string" } },
           { "name": "lang", "in": "query", "schema": { "type": "string" } },
-          { "name": "sortBy", "in": "query", "schema": { "type": "string", "enum": ["views", "popularity", "createdAt"] } }
+          { "name": "genre", "in": "query", "schema": { "type": "string" } },
+          { "name": "artistId", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "sortBy", "in": "query", "schema": { "type": "string", "enum": ["views", "popularity", "createdAt"] } },
+          { "name": "sortOrder", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"] } }
         ],
         "responses": {
           "200": {
@@ -242,6 +490,45 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/SongListResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Songs"],
+        "summary": "Create song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSongRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
               }
             }
           }
@@ -266,6 +553,156 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Songs"],
+        "summary": "Update song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSongRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Songs"],
+        "summary": "Soft-delete song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "songId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/songs/by-language/{languageCode}": {
+      "get": {
+        "tags": ["Songs"],
+        "summary": "Get songs by language code",
+        "parameters": [
+          { "name": "languageCode", "in": "path", "required": true, "schema": { "type": "string", "minLength": 2, "maxLength": 10 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Songs by language",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "languageCode": { "type": "string" },
+                    "songs": { "type": "array", "items": { "type": "object" } },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/songs/{id}/translations": {
+      "get": {
+        "tags": ["Songs"],
+        "summary": "Get translations for a song",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Translations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "songId": { "type": "string" },
+                    "translations": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Song not found",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiError" }
@@ -388,6 +825,89 @@
         }
       }
     },
+    "/translations/{id}/vote": {
+      "post": {
+        "tags": ["Translations"],
+        "summary": "Vote on translation",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TranslationVoteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Vote recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "upvotes": { "type": "integer" },
+                    "downvotes": { "type": "integer" },
+                    "userVote": { "type": "string", "nullable": true }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Translation not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/translations/detect-language": {
+      "post": {
+        "tags": ["Translations"],
+        "summary": "Detect language of lyrics text",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DetectLanguageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Language detected",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DetectLanguageResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/search": {
       "get": {
         "tags": ["Search"],
@@ -395,6 +915,8 @@
         "parameters": [
           { "name": "q", "in": "query", "schema": { "type": "string" } },
           { "name": "type", "in": "query", "schema": { "type": "string", "enum": ["song", "artist", "genre", "all"] } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" } },
+          { "name": "genre", "in": "query", "schema": { "type": "string" } },
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50 } }
         ],
@@ -455,12 +977,252 @@
       "get": {
         "tags": ["Artists"],
         "summary": "List artists",
+        "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
+          { "name": "genre", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } }
+        ],
         "responses": {
           "200": {
             "description": "Artists",
             "content": {
               "application/json": {
                 "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Artists"],
+        "summary": "Create artist (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateArtistRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/artists/{id}": {
+      "get": {
+        "tags": ["Artists"],
+        "summary": "Get artist by id",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artist",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["Artists"],
+        "summary": "Update artist (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateArtistRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Artists"],
+        "summary": "Soft-delete artist (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "artistId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spotify/track/{trackId}": {
+      "get": {
+        "tags": ["Spotify"],
+        "summary": "Get Spotify track info",
+        "parameters": [
+          { "name": "trackId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Track info",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spotify/search": {
+      "get": {
+        "tags": ["Spotify"],
+        "summary": "Search Spotify catalog",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "type", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SpotifySearchResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/spotify/sync-artist": {
+      "post": {
+        "tags": ["Spotify"],
+        "summary": "Sync artist data from Spotify (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SyncArtistRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Synced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "artist": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
               }
             }
           }
@@ -482,6 +1244,212 @@
                   "properties": {
                     "ok": { "type": "boolean" },
                     "scope": { "type": "string", "enum": ["ADMIN"] }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/songs": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Create song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSongRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/songs/{id}": {
+      "put": {
+        "tags": ["Admin"],
+        "summary": "Update song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateSongRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Soft-delete song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "songId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/songs/{id}/fetch-lyrics": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Trigger lyrics enrichment for song (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "202": {
+            "description": "Lyrics enrichment queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jobId": { "type": "string" },
+                    "status": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/artist/ping": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Artist role guard check",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Artist accessible",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "scope": { "type": "string", "enum": ["ARTIST"] }
                   }
                 }
               }

@@ -17,7 +17,7 @@ export const getHealthStatus = async (): Promise<HealthStatus> => {
   let redisStatus: 'ok' | 'error' = 'ok';
 
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await prisma.$queryRawUnsafe('SELECT 1');
   } catch {
     database = 'error';
   }
