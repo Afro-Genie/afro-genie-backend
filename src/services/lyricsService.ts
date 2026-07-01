@@ -78,15 +78,12 @@ export const upsertLyrics = async (songId: string, lyrics: LyricsInput): Promise
 };
 
 export const takedownLyrics = async (songId: string): Promise<number> => {
-  const result = await prisma.$executeRaw`
-    UPDATE "Lyric"
-    SET "content" = NULL,
-        "licenseStatus" = 'TAKEDOWN',
-        "updatedAt" = NOW()
-    WHERE "songId" = ${songId}
-  `;
+  const result = await prisma.lyric.updateMany({
+    where: { songId },
+    data: { content: null, licenseStatus: LicenseStatus.TAKEDOWN },
+  });
 
-  return Number(result ?? 0);
+  return result.count;
 };
 
 export const categorizeSongLanguages = async (songId: string, content?: string | null): Promise<void> => {

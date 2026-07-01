@@ -123,15 +123,11 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
 
 const isSongActive = async (songId: string): Promise<boolean> => {
   try {
-    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "Song"
-      WHERE "id" = ${songId}
-        AND COALESCE("softDeleted", false) = false
-      LIMIT 1
-    `;
-
-    return rows.length > 0;
+    const song = await prisma.song.findFirst({
+      where: { id: songId, softDeleted: false },
+      select: { id: true },
+    });
+    return !!song;
   } catch (error) {
     if (!isMissingSoftDeleteColumnError(error)) {
       throw error;
@@ -148,15 +144,11 @@ const isSongActive = async (songId: string): Promise<boolean> => {
 
 const isArtistActive = async (artistId: string): Promise<boolean> => {
   try {
-    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "Artist"
-      WHERE "id" = ${artistId}
-        AND COALESCE("softDeleted", false) = false
-      LIMIT 1
-    `;
-
-    return rows.length > 0;
+    const artist = await prisma.artist.findFirst({
+      where: { id: artistId, softDeleted: false },
+      select: { id: true },
+    });
+    return !!artist;
   } catch (error) {
     if (!isMissingSoftDeleteColumnError(error)) {
       throw error;
@@ -177,13 +169,10 @@ const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
   }
 
   try {
-    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "Song"
-      WHERE "id" = ANY(${songIds})
-        AND COALESCE("softDeleted", false) = false
-    `;
-
+    const rows = await prisma.song.findMany({
+      where: { id: { in: songIds }, softDeleted: false },
+      select: { id: true },
+    });
     return new Set(rows.map((row) => row.id));
   } catch (error) {
     if (!isMissingSoftDeleteColumnError(error)) {
@@ -262,35 +251,7 @@ export const listSongs = async (params: SongListParams) => {
 
   let total = 0;
   try {
-    const totalRows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT COUNT(*)::bigint AS count
-      FROM "Song" s
-      WHERE COALESCE(s."softDeleted", false) = false
-        AND (${params.artistId ?? null}::text IS NULL OR s."artistId" = ${params.artistId ?? null})
-        AND (${params.search ?? null}::text IS NULL OR LOWER(s."title") LIKE '%' || LOWER(${params.search ?? null}) || '%')
-        AND (
-          ${(params.genre ?? '').trim() || null}::text IS NULL
-          OR EXISTS (
-            SELECT 1
-            FROM "SongGenre" sg
-            JOIN "Genre" g ON g."id" = sg."genreId"
-            WHERE sg."songId" = s."id"
-              AND LOWER(g."name") = LOWER(${(params.genre ?? '').trim() || null})
-          )
-        )
-        AND (
-          ${((params.language ?? params.lang) ?? '').trim().toLowerCase() || null}::text IS NULL
-          OR EXISTS (
-            SELECT 1
-            FROM "SongLanguage" sl
-            WHERE sl."songId" = s."id"
-              AND sl."languageCode" = ${((params.language ?? params.lang) ?? '').trim().toLowerCase() || null}
-              AND sl."percentage" >= 30
-          )
-        )
-    `;
-
-    total = Number(totalRows[0]?.count ?? 0);
+    total = await prisma.song.count({ where: { ...where, softDeleted: false } });
   } catch (error) {
     if (!isMissingSoftDeleteColumnError(error)) {
       throw error;
@@ -581,12 +542,10 @@ export const softDeleteSong = async (songId: string) => {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
   }
 
-  await prisma.$executeRaw`
-    UPDATE "Song"
-    SET "softDeleted" = true,
-        "updatedAt" = NOW()
-    WHERE "id" = ${songId}
-  `;
+  await prisma.song.update({
+    where: { id: songId },
+    data: { softDeleted: true },
+  });
 
   await takedownLyrics(songId);
 
