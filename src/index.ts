@@ -3,7 +3,13 @@ import { env } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
-import './jobs/workers';
+
+if (env.ENABLE_WORKERS) {
+  void import('./jobs/workers.js');
+  logger.info('Background workers enabled');
+} else {
+  logger.info('Background workers disabled for this process');
+}
 
 const server = app.listen(env.PORT, () => {
   logger.info({ port: env.PORT }, 'Server started');

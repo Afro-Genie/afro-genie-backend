@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://staging-api-afro-genie.example.com/api",
+      "url": "https://afro-genie-backend-staging-production.up.railway.app/api",
       "description": "Staging"
     },
     {
@@ -842,5 +842,5 @@
       }
     }
   },
-  "x-generatedAt": "2026-06-29T17:57:17.002Z"
+  "x-generatedAt": "2026-07-01T08:45:41.865Z"
 }

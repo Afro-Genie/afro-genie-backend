@@ -11,6 +11,7 @@ import { authRouter } from './routes/auth';
 import { healthRouter } from './routes/health';
 import { searchRouter } from './routes/search';
 import { songsRouter } from './routes/songs';
+import { spotifyRouter } from './routes/spotify';
 import { translationsRouter } from './routes/translations';
 import { logger } from './lib/logger';
 import { authenticate, requireRole } from './middleware/auth';
@@ -44,7 +45,8 @@ app.use('/api', searchRouter);
 app.use('/api', translationsRouter);
 app.use('/api', songsRouter);
 app.use('/api', artistsRouter);
-app.use('/api', adminSongsRouter);
+app.use('/api/admin', adminSongsRouter);
+app.use('/api', spotifyRouter);
 
 app.get('/api/admin/ping', authenticate, requireRole('ADMIN'), (_req, res) => {
   res.status(200).json({ ok: true, scope: 'ADMIN' });
