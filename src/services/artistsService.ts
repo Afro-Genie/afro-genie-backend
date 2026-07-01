@@ -25,6 +25,11 @@ interface ArtistInput {
   verified?: boolean;
 }
 
+const isMissingSoftDeleteColumnError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('softDeleted') && (message.includes('column') || message.includes('does not exist'));
+};
+
 const normalizeLimit = (limit?: number): number => {
   if (!limit || Number.isNaN(limit)) {
     return DEFAULT_LIMIT;
@@ -54,15 +59,28 @@ const buildArtistWhere = (params: ArtistListParams): Prisma.ArtistWhereInput => 
 };
 
 const isArtistActive = async (artistId: string): Promise<boolean> => {
-  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT "id"
-    FROM "Artist"
-    WHERE "id" = ${artistId}
-      AND COALESCE("softDeleted", false) = false
-    LIMIT 1
-  `;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Artist"
+      WHERE "id" = ${artistId}
+        AND COALESCE("softDeleted", false) = false
+      LIMIT 1
+    `;
 
-  return rows.length > 0;
+    return rows.length > 0;
+  } catch (error) {
+    if (!isMissingSoftDeleteColumnError(error)) {
+      throw error;
+    }
+
+    const artist = await prisma.artist.findUnique({
+      where: { id: artistId },
+      select: { id: true },
+    });
+
+    return !!artist;
+  }
 };
 
 const getActiveArtistIdSet = async (artistIds: string[]): Promise<Set<string>> => {
@@ -70,14 +88,22 @@ const getActiveArtistIdSet = async (artistIds: string[]): Promise<Set<string>> =
     return new Set();
   }
 
-  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT "id"
-    FROM "Artist"
-    WHERE "id" = ANY(${artistIds})
-      AND COALESCE("softDeleted", false) = false
-  `;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Artist"
+      WHERE "id" = ANY(${artistIds})
+        AND COALESCE("softDeleted", false) = false
+    `;
 
-  return new Set(rows.map((row) => row.id));
+    return new Set(rows.map((row) => row.id));
+  } catch (error) {
+    if (!isMissingSoftDeleteColumnError(error)) {
+      throw error;
+    }
+
+    return new Set(artistIds);
+  }
 };
 
 const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
@@ -85,14 +111,22 @@ const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
     return new Set();
   }
 
-  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT "id"
-    FROM "Song"
-    WHERE "id" = ANY(${songIds})
-      AND COALESCE("softDeleted", false) = false
-  `;
+  try {
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Song"
+      WHERE "id" = ANY(${songIds})
+        AND COALESCE("softDeleted", false) = false
+    `;
 
-  return new Set(rows.map((row) => row.id));
+    return new Set(rows.map((row) => row.id));
+  } catch (error) {
+    if (!isMissingSoftDeleteColumnError(error)) {
+      throw error;
+    }
+
+    return new Set(songIds);
+  }
 };
 
 export const listArtists = async (params: ArtistListParams) => {
@@ -119,14 +153,23 @@ export const listArtists = async (params: ArtistListParams) => {
   const hasNext = visibleRows.length > limit;
   const data = hasNext ? visibleRows.slice(0, limit) : visibleRows;
   const nextCursor = hasNext ? data[data.length - 1]?.id ?? null : null;
-  const totalRows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-    SELECT COUNT(*)::bigint AS count
-    FROM "Artist" a
-    WHERE COALESCE(a."softDeleted", false) = false
-      AND (${params.genre ?? null}::text IS NULL OR ${params.genre ?? null} = ANY(a."genres"))
-      AND (${params.search ?? null}::text IS NULL OR LOWER(a."name") LIKE '%' || LOWER(${params.search ?? null}) || '%')
-  `;
-  const total = Number(totalRows[0]?.count ?? 0);
+  let total = 0;
+  try {
+    const totalRows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*)::bigint AS count
+      FROM "Artist" a
+      WHERE COALESCE(a."softDeleted", false) = false
+        AND (${params.genre ?? null}::text IS NULL OR ${params.genre ?? null} = ANY(a."genres"))
+        AND (${params.search ?? null}::text IS NULL OR LOWER(a."name") LIKE '%' || LOWER(${params.search ?? null}) || '%')
+    `;
+    total = Number(totalRows[0]?.count ?? 0);
+  } catch (error) {
+    if (!isMissingSoftDeleteColumnError(error)) {
+      throw error;
+    }
+
+    total = await prisma.artist.count({ where });
+  }
 
   return {
     data,
