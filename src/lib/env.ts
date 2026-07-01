@@ -14,6 +14,8 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(1, 'JWT_SECRET is required'),
   JWT_REFRESH_SECRET: z.string().optional(),
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
+  FRONTEND_URL: z.string().url().optional(),
+  CORS_ORIGIN: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   SPOTIFY_CLIENT_ID: z.string().optional(),
@@ -42,6 +44,14 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+if (env.FRONTEND_URL) {
+  env.CLIENT_URL = env.FRONTEND_URL;
+}
+
+if (!env.CORS_ORIGIN) {
+  env.CORS_ORIGIN = env.CLIENT_URL;
+}
 
 if (!env.JWT_REFRESH_SECRET) {
   env.JWT_REFRESH_SECRET = env.JWT_SECRET;
