@@ -1,0 +1,43 @@
+name: Sync Staging With Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-staging
+  cancel-in-progress: false
+
+jobs:
+  sync-staging:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync staging with main
+        run: |
+          git fetch origin main staging
+          git checkout staging
+
+          if git merge --ff-only origin/main; then
+            echo "Staging fast-forwarded to origin/main"
+          else
+            echo "Fast-forward not possible, creating merge commit"
+            git merge --no-ff --no-edit origin/main
+          fi
+
+          git push origin staging

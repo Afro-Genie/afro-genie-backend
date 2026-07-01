@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { LicenseStatus, LyricSourceProvider, PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 
 interface FirebaseArtist {
   id?: string;
@@ -16,6 +18,8 @@ interface FirebaseSong {
   id?: string;
   title?: string;
   artistId?: string;
+  artistName?: string;
+  artist?: string;
   albumName?: string;
   releaseYear?: number;
   spotifyId?: string;
@@ -38,7 +42,13 @@ interface FirebaseExport {
   lyrics?: FirebaseLyric[] | Record<string, FirebaseLyric>;
 }
 
-const prisma = new PrismaClient();
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+const prisma = new PrismaClient({
+  adapter: new PrismaPg(pool),
+});
 
 const toArray = <T>(value: T[] | Record<string, T> | undefined): T[] => {
   if (!value) {
@@ -46,30 +56,6 @@ const toArray = <T>(value: T[] | Record<string, T> | undefined): T[] => {
   }
 
   return Array.isArray(value) ? value : Object.values(value);
-};
-
-const parseProvider = (value?: string): LyricSourceProvider => {
-  if (!value) {
-    return LyricSourceProvider.MANUAL;
-  }
-
-  if (value in LyricSourceProvider) {
-    return value as LyricSourceProvider;
-  }
-
-  return LyricSourceProvider.MANUAL;
-};
-
-const parseLicenseStatus = (value?: string): LicenseStatus => {
-  if (!value) {
-    return LicenseStatus.UNKNOWN;
-  }
-
-  if (value in LicenseStatus) {
-    return value as LicenseStatus;
-  }
-
-  return LicenseStatus.UNKNOWN;
 };
 
 const getArg = (name: string): string | undefined => {
@@ -81,11 +67,61 @@ const getArg = (name: string): string | undefined => {
   return process.argv[index + 1];
 };
 
+const normalizeString = (value?: string | null): string | null => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+};
+
+const resolveSongArtistId = (
+  song: FirebaseSong,
+  artistSourceMap: Map<string, FirebaseArtist>,
+  artistDbIdByName: Map<string, string>,
+): string | null => {
+  const directName = normalizeString(song.artistName) ?? normalizeString(song.artist);
+  if (directName) {
+    return artistDbIdByName.get(directName.toLowerCase()) ?? null;
+  }
+
+  if (song.artistId) {
+    const sourceArtist = artistSourceMap.get(song.artistId);
+    if (sourceArtist?.name) {
+      return artistDbIdByName.get(sourceArtist.name.trim().toLowerCase()) ?? null;
+    }
+  }
+
+  return null;
+};
+
+const upsertLyricForSong = async (songId: string, content: string) => {
+  const existing = await prisma.lyric.findFirst({ where: { songId } });
+
+  if (existing) {
+    await prisma.lyric.update({
+      where: { id: existing.id },
+      data: {
+        content,
+        sourceProvider: LyricSourceProvider.MANUAL,
+        licenseStatus: LicenseStatus.UNKNOWN,
+      },
+    });
+    return;
+  }
+
+  await prisma.lyric.create({
+    data: {
+      songId,
+      content,
+      sourceProvider: LyricSourceProvider.MANUAL,
+      licenseStatus: LicenseStatus.UNKNOWN,
+    },
+  });
+};
+
 const run = async () => {
   const fileArg = getArg('file') ?? getArg('input');
 
   if (!fileArg) {
-    throw new Error('Missing --file argument. Example: tsx scripts/migrateFromFirebase.ts --file ./firebase-export.json');
+    throw new Error('This is an archival migration script. Pass --file ./path/to/export.json explicitly if you still need to replay a Firebase export. For day-to-day development, use npm run prisma:seed instead.');
   }
 
   const absolutePath = resolve(process.cwd(), fileArg);
@@ -98,20 +134,30 @@ const run = async () => {
 
   const artistIdMap = new Map<string, string>();
   const songIdMap = new Map<string, string>();
+  const artistSourceMap = new Map<string, FirebaseArtist>();
+  const artistDbIdByName = new Map<string, string>();
+
+  let artistSuccess = 0;
+  let artistFailure = 0;
+  let songSuccess = 0;
+  let songFailure = 0;
+  let lyricSuccess = 0;
+  let lyricFailure = 0;
 
   console.log(`Starting migration from ${absolutePath}`);
   console.log(`Artists: ${artists.length}, Songs: ${songs.length}, Lyrics: ${lyrics.length}`);
 
-  for (const artist of artists) {
+  for (const [index, artist] of artists.entries()) {
     const sourceId = artist.id ?? `artist:${artist.name ?? 'unknown'}`;
 
     try {
-      if (!artist.name || !artist.name.trim()) {
+      const name = normalizeString(artist.name);
+      if (!name) {
         throw new Error('Missing artist name');
       }
 
       const created = await prisma.artist.upsert({
-        where: { name: artist.name.trim() },
+        where: { name },
         update: {
           bio: artist.bio ?? null,
           imageUrl: artist.imageUrl ?? null,
@@ -119,7 +165,7 @@ const run = async () => {
           genres: artist.genres ?? [],
         },
         create: {
-          name: artist.name.trim(),
+          name,
           bio: artist.bio ?? null,
           imageUrl: artist.imageUrl ?? null,
           spotifyId: artist.spotifyId ?? null,
@@ -128,29 +174,37 @@ const run = async () => {
       });
 
       artistIdMap.set(sourceId, created.id);
+      artistDbIdByName.set(name.toLowerCase(), created.id);
+      artistSourceMap.set(sourceId, artist);
+      artistSuccess += 1;
       console.log(`[artist] success source=${sourceId} target=${created.id}`);
     } catch (error) {
+      artistFailure += 1;
       console.error(`[artist] failed source=${sourceId}`, error);
+    }
+
+    if ((index + 1) % 10 === 0 || index + 1 === artists.length) {
+      console.log(`[artist] progress ${index + 1}/${artists.length}`);
     }
   }
 
-  for (const song of songs) {
+  for (const [index, song] of songs.entries()) {
     const sourceId = song.id ?? `song:${song.title ?? 'unknown'}`;
 
     try {
-      if (!song.title || !song.title.trim()) {
+      const title = normalizeString(song.title);
+      if (!title) {
         throw new Error('Missing song title');
       }
 
-      const mappedArtistId = song.artistId ? artistIdMap.get(song.artistId) : undefined;
-      const artistId = mappedArtistId ?? song.artistId;
+      const artistId = resolveSongArtistId(song, artistSourceMap, artistDbIdByName) ?? (song.artistId ? artistIdMap.get(song.artistId) : undefined);
 
       if (!artistId) {
-        throw new Error('Missing artistId mapping');
+        throw new Error(`Missing artist mapping for ${song.artistName ?? song.artist ?? song.artistId ?? sourceId}`);
       }
 
       const created = await prisma.song.upsert({
-        where: { title_artistId: { title: song.title.trim(), artistId } },
+        where: { title_artistId: { title, artistId } },
         update: {
           albumName: song.albumName ?? null,
           releaseYear: song.releaseYear ?? null,
@@ -158,7 +212,7 @@ const run = async () => {
           imageUrl: song.imageUrl ?? null,
         },
         create: {
-          title: song.title.trim(),
+          title,
           artistId,
           albumName: song.albumName ?? null,
           releaseYear: song.releaseYear ?? null,
@@ -168,6 +222,7 @@ const run = async () => {
       });
 
       songIdMap.set(sourceId, created.id);
+      songSuccess += 1;
 
       if (Array.isArray(song.genres)) {
         await prisma.songGenre.deleteMany({ where: { songId: created.id } });
@@ -179,8 +234,15 @@ const run = async () => {
             create: { name: genreName },
           });
 
-          await prisma.songGenre.create({
-            data: {
+          await prisma.songGenre.upsert({
+            where: {
+              songId_genreId: {
+                songId: created.id,
+                genreId: genre.id,
+              },
+            },
+            update: {},
+            create: {
               songId: created.id,
               genreId: genre.id,
             },
@@ -227,11 +289,16 @@ const run = async () => {
 
       console.log(`[song] success source=${sourceId} target=${created.id}`);
     } catch (error) {
+      songFailure += 1;
       console.error(`[song] failed source=${sourceId}`, error);
+    }
+
+    if ((index + 1) % 10 === 0 || index + 1 === songs.length) {
+      console.log(`[song] progress ${index + 1}/${songs.length}`);
     }
   }
 
-  for (const lyric of lyrics) {
+  for (const [index, lyric] of lyrics.entries()) {
     const sourceId = lyric.id ?? `lyric:${lyric.songId ?? 'unknown'}`;
 
     try {
@@ -242,22 +309,29 @@ const run = async () => {
         throw new Error('Missing songId mapping');
       }
 
-      await prisma.lyric.create({
-        data: {
-          songId,
-          content: lyric.content ?? null,
-          sourceProvider: parseProvider(lyric.sourceProvider),
-          licenseStatus: parseLicenseStatus(lyric.licenseStatus),
-        },
-      });
+      const content = normalizeString(lyric.content);
+      if (!content) {
+        throw new Error('Missing lyric content');
+      }
+
+      await upsertLyricForSong(songId, content);
 
       console.log(`[lyric] success source=${sourceId} targetSong=${songId}`);
+      lyricSuccess += 1;
     } catch (error) {
+      lyricFailure += 1;
       console.error(`[lyric] failed source=${sourceId}`, error);
+    }
+
+    if ((index + 1) % 10 === 0 || index + 1 === lyrics.length) {
+      console.log(`[lyric] progress ${index + 1}/${lyrics.length}`);
     }
   }
 
-  console.log('Firebase migration completed');
+  console.log('Legacy migration completed');
+  console.log(
+    `Totals | artists=${artistSuccess}/${artists.length} failed=${artistFailure} | songs=${songSuccess}/${songs.length} failed=${songFailure} | lyrics=${lyricSuccess}/${lyrics.length} failed=${lyricFailure}`,
+  );
 };
 
 run()
@@ -267,4 +341,5 @@ run()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    await pool.end();
   });

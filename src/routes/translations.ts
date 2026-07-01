@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
 import type { NextFunction, Request, Response } from 'express';
+import { VoteType } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
 import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
-import { estimateCostUsd } from '../services/providers/geminiProvider';
+import { estimateCostUsd, GeminiProvider } from '../services/providers/geminiProvider';
 import {
-  getActiveProvider,
   getTranslationsBySong,
   logAICall,
   requestTranslation,
@@ -121,35 +122,121 @@ translationsRouter.get(
 );
 
 // ---------------------------------------------------------------------------
+// POST /api/translations/:id/vote
+// Authenticated. Toggle/update vote and sync aggregate counters.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/:id/vote',
+  authenticate,
+  [
+    param('id').isString().notEmpty().withMessage('id is required'),
+    body('voteType').isIn([VoteType.UPVOTE, VoteType.DOWNVOTE]).withMessage('voteType must be UPVOTE or DOWNVOTE'),
+  ],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const translationId = req.params.id;
+      const userId = req.user!.id;
+      const voteType = req.body.voteType as VoteType;
+
+      const result = await prisma.$transaction(async (tx) => {
+        const translation = await tx.translation.findUnique({
+          where: { id: translationId },
+          select: { id: true },
+        });
+
+        if (!translation) {
+          throw new ApiError('Translation not found', 'NOT_FOUND', 404);
+        }
+
+        const existingVote = await tx.translationVote.findUnique({
+          where: {
+            translationId_userId: {
+              translationId,
+              userId,
+            },
+          },
+        });
+
+        let userVote: VoteType | null = null;
+
+        if (existingVote) {
+          if (existingVote.voteType === voteType) {
+            await tx.translationVote.delete({ where: { id: existingVote.id } });
+            userVote = null;
+          } else {
+            await tx.translationVote.update({
+              where: { id: existingVote.id },
+              data: { voteType },
+            });
+            userVote = voteType;
+          }
+        } else {
+          await tx.translationVote.create({
+            data: {
+              translationId,
+              userId,
+              voteType,
+            },
+          });
+          userVote = voteType;
+        }
+
+        const [upvotes, downvotes] = await Promise.all([
+          tx.translationVote.count({ where: { translationId, voteType: VoteType.UPVOTE } }),
+          tx.translationVote.count({ where: { translationId, voteType: VoteType.DOWNVOTE } }),
+        ]);
+
+        await tx.translation.update({
+          where: { id: translationId },
+          data: { upvotes, downvotes },
+        });
+
+        return { upvotes, downvotes, userVote };
+      });
+
+      return res.status(200).json(result);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /api/translations/detect-language
-// {lyrics} → {languageCode, confidence}
-// Detects: yo, ig, ha, pcm, en, fr, mixed
+// Public endpoint. {lyrics} -> {languageCode, languageName, confidence}
 // ---------------------------------------------------------------------------
 translationsRouter.post(
   '/translations/detect-language',
-  authenticate,
   [body('lyrics').isString().notEmpty().withMessage('lyrics is required')],
   validate,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { lyrics } = req.body as { lyrics: string };
-      const provider = getActiveProvider();
-      const result = await provider.detectLanguage(lyrics);
+
+      const prompt = `Identify the primary language of these lyrics. Return ONLY valid JSON:
+{languageCode: string, languageName: string, confidence: 'high'|'medium'|'low'}
+Known African codes: yo=Yoruba, ig=Igbo, ha=Hausa, pcm=Nigerian Pidgin, tw=Twi, sw=Swahili.
+Lyrics: ${lyrics}`;
+
+      const provider = new GeminiProvider();
+      const result = await provider.detectLanguageWithPrompt(prompt);
 
       // Log AI call — every API call is recorded
       await logAICall({
-        provider: provider.name,
+        provider: 'gemini',
         model: result.model,
-        promptVersion: 'detect-v1.0',
+        promptVersion: 'lang-detect-v1',
         tokensInput: result.tokensInput,
         tokensOutput: result.tokensOutput,
         estimatedCostUsd: estimateCostUsd(result.tokensInput, result.tokensOutput),
         songId: null,
-        userId: req.user!.id,
+        userId: null,
       });
 
       return res.status(200).json({
         languageCode: result.languageCode,
+        languageName: result.languageName,
         confidence: result.confidence,
       });
     } catch (err) {

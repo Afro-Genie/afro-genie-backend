@@ -195,4 +195,69 @@ export class GeminiProvider implements TranslationProvider {
       model: MODEL_NAME,
     };
   }
+
+  async detectLanguageWithPrompt(prompt: string): Promise<{
+    languageCode: string;
+    languageName: string;
+    confidence: 'high' | 'medium' | 'low';
+    tokensInput: number;
+    tokensOutput: number;
+    model: string;
+  }> {
+    const model = this.genAI.getGenerativeModel({
+      model: MODEL_NAME,
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: SchemaType.OBJECT,
+          properties: {
+            languageCode: {
+              type: SchemaType.STRING,
+              description: 'Primary language code',
+            },
+            languageName: {
+              type: SchemaType.STRING,
+              description: 'Human readable language name',
+            },
+            confidence: {
+              type: SchemaType.STRING,
+              description: "Confidence value: high, medium, or low",
+            },
+          },
+          required: ['languageCode', 'languageName', 'confidence'],
+        },
+      },
+    });
+
+    const geminiResult = await withExponentialBackoff(() => model.generateContent(prompt));
+    const response = geminiResult.response;
+    const rawText = response.text();
+
+    let parsed: { languageCode: string; languageName: string; confidence: string };
+    try {
+      parsed = JSON.parse(rawText) as typeof parsed;
+    } catch {
+      throw new Error(
+        `Gemini returned invalid JSON for language detection prompt: ${rawText.slice(0, 300)}`,
+      );
+    }
+
+    const normalizedConfidence = String(parsed.confidence).toLowerCase();
+    const confidence: 'high' | 'medium' | 'low' =
+      normalizedConfidence === 'high' || normalizedConfidence === 'medium' || normalizedConfidence === 'low'
+        ? normalizedConfidence
+        : 'low';
+
+    const tokensInput = response.usageMetadata?.promptTokenCount ?? 0;
+    const tokensOutput = response.usageMetadata?.candidatesTokenCount ?? 0;
+
+    return {
+      languageCode: String(parsed.languageCode).trim(),
+      languageName: String(parsed.languageName).trim(),
+      confidence,
+      tokensInput,
+      tokensOutput,
+      model: MODEL_NAME,
+    };
+  }
 }
