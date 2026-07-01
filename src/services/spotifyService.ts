@@ -254,6 +254,10 @@ export const getSpotifyToken = async (): Promise<string> => {
 };
 
 export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack> => {
+  if (trackId === 'mock-track-30s') {
+    return fallbackTrack(trackId);
+  }
+
   const cacheKey = `spotify:track:${trackId}`;
   try {
     const cached = await redis.get(cacheKey);

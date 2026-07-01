@@ -27,7 +27,8 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),
   AI_PROVIDER: z.string().optional(),
   AI_TRANSLATION_PROVIDER: z.string().default('gemini'),
-  APP_VERSION: z.string().default('1.0.0')
+  APP_VERSION: z.string().default('1.0.0'),
+  ENABLE_WORKERS: z.coerce.boolean().default(false)
 });
 
 const parsed = envSchema.safeParse(process.env);
