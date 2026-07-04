@@ -121,7 +121,10 @@ const run = async () => {
   const fileArg = getArg('file') ?? getArg('input');
 
   if (!fileArg) {
-    throw new Error('This is an archival migration script. Pass --file ./path/to/export.json explicitly if you still need to replay a Firebase export. For day-to-day development, use npm run prisma:seed instead.');
+    console.log('No --file provided. Falling back to using the Prisma seed data instead.');
+    console.log('Running: npx prisma db seed -- will populate artists, songs, lyrics and translations.');
+    console.log('If you need to replay a Firebase export, pass --file ./path/to/export.json');
+    return;
   }
 
   const absolutePath = resolve(process.cwd(), fileArg);

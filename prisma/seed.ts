@@ -74,16 +74,16 @@ const artistSeed = [
 ];
 
 const genreSeed = [
-  { name: 'Afrobeats', imageUrl: 'https://images.afrogenie.dev/genres/afrobeats.jpg' },
-  { name: 'Afropop', imageUrl: 'https://images.afrogenie.dev/genres/afropop.jpg' },
-  { name: 'Afro-fusion', imageUrl: 'https://images.afrogenie.dev/genres/afro-fusion.jpg' },
-  { name: 'Amapiano', imageUrl: 'https://images.afrogenie.dev/genres/amapiano.jpg' },
-  { name: 'Alt-R&B', imageUrl: 'https://images.afrogenie.dev/genres/alt-rnb.jpg' },
-  { name: 'R&B', imageUrl: 'https://images.afrogenie.dev/genres/rnb.jpg' },
-  { name: 'Highlife', imageUrl: 'https://images.afrogenie.dev/genres/highlife.jpg' },
-  { name: 'Banku', imageUrl: 'https://images.afrogenie.dev/genres/banku.jpg' },
-  { name: 'Dancehall', imageUrl: 'https://images.afrogenie.dev/genres/dancehall.jpg' },
-  { name: 'Hip-Hop', imageUrl: 'https://images.afrogenie.dev/genres/hiphop.jpg' }
+  { name: 'Afrobeats', imageUrl: '' },
+  { name: 'Afropop', imageUrl: '' },
+  { name: 'Afro-fusion', imageUrl: '' },
+  { name: 'Amapiano', imageUrl: '' },
+  { name: 'Alt-R&B', imageUrl: '' },
+  { name: 'R&B', imageUrl: '' },
+  { name: 'Highlife', imageUrl: '' },
+  { name: 'Banku', imageUrl: '' },
+  { name: 'Dancehall', imageUrl: '' },
+  { name: 'Hip-Hop', imageUrl: '' }
 ];
 
 const languageSeed = [
@@ -317,7 +317,7 @@ async function main() {
         artistId,
         albumName: item.albumName,
         releaseYear: item.releaseYear,
-        imageUrl: `https://images.afrogenie.dev/songs/${encodeURIComponent(item.artist.toLowerCase())}/${encodeURIComponent(item.title.toLowerCase())}.jpg`,
+        imageUrl: '',
         views: 1000 + Math.floor(Math.random() * 9000),
         requestCount: Math.floor(Math.random() * 200)
       }

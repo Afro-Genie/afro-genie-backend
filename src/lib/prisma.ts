@@ -5,14 +5,20 @@ import { env } from './env';
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
-// Strip unsupported query parameters like channel_binding which pg may not parse
-const cleanUrl = env.DATABASE_URL.replace(/&?channel_binding=[^&]+/g, '');
+const parsedDatabaseUrl = new URL(env.DATABASE_URL);
+const schema = parsedDatabaseUrl.searchParams.get('schema') || undefined;
+
+// `channel_binding` is unsupported by node-postgres; strip it before creating the pool.
+parsedDatabaseUrl.searchParams.delete('channel_binding');
+const cleanUrl = parsedDatabaseUrl.toString();
 
 const pool = new Pool({
   connectionString: cleanUrl,
 });
 
-const adapter = new PrismaPg(pool);
+const adapter = new PrismaPg(pool, {
+  schema,
+});
 
 export const prisma =
   globalForPrisma.prisma ??

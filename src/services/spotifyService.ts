@@ -303,15 +303,40 @@ export const searchSpotify = async (
   q: string,
   type: string
 ): Promise<SpotifySearchResponse> => {
-  const params = new URLSearchParams({ q, type });
+  const normalizedQuery = q.trim().toLowerCase();
+  const cacheKey = `spotify:search:${type}:${normalizedQuery}`;
+
   try {
-    return await spotifyFetch<SpotifySearchResponse>(`/search?${params.toString()}`);
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached) as SpotifySearchResponse;
+    }
+  } catch {
+    // Cache is a performance optimization; continue with live Spotify search.
+  }
+
+  const params = new URLSearchParams({ q, type });
+  let result: SpotifySearchResponse;
+
+  try {
+    result = await spotifyFetch<SpotifySearchResponse>(`/search?${params.toString()}`);
   } catch (error) {
     if (spotifyFallbackEnabled && isPremiumEntitlementError(error)) {
-      return fallbackSearch(q, type);
+      result = fallbackSearch(q, type);
+    } else {
+      throw error;
     }
-    throw error;
   }
+
+  const ttlSeconds = type === 'artist' ? 60 * 60 * 6 : 60 * 10;
+
+  try {
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', ttlSeconds);
+  } catch {
+    // Non-fatal when cache storage is unavailable.
+  }
+
+  return result;
 };
 
 export const syncArtistFromSpotify = async (

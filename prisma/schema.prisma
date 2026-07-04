@@ -130,6 +130,7 @@ model Artist {
   schemaVersion    Int       @default(1)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  albums           Album[]
   songs            Song[]
   topics           Topic[]
 
@@ -139,15 +140,38 @@ model Artist {
   @@index([followers])
 }
 
+model Album {
+  id          String   @id @default(cuid())
+  name        String
+  artistId    String
+  imageUrl    String?
+  spotifyId   String?  @unique
+  releaseYear Int?
+  totalTracks Int?
+  popularity  Int      @default(0)
+  genres      String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  artist      Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  songs       Song[]
+
+  @@index([artistId])
+  @@index([spotifyId])
+  @@index([releaseYear])
+}
+
 model Song {
   id                String            @id @default(cuid())
   title             String
   artistId          String
   albumName         String?
+  albumId           String?
   releaseYear       Int?
   imageUrl          String?
   spotifyId         String?           @unique
   spotifyPreviewUrl String?
+  durationMs        Int?
+  trackNumber       Int?
   views             Int               @default(0)
   requestCount      Int               @default(0)
   softDeleted       Boolean           @default(false)
@@ -155,6 +179,7 @@ model Song {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   artist            Artist            @relation(fields: [artistId], references: [id], onDelete: Restrict)
+  album             Album?            @relation(fields: [albumId], references: [id], onDelete: SetNull)
   songLanguages     SongLanguage[]
   lyrics            Lyric[]
   translations      Translation[]

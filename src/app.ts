@@ -5,11 +5,13 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import passport from 'passport';
 import pinoHttp from 'pino-http';
+import { adminSeederRouter } from './routes/admin/seeder';
 import { adminSongsRouter } from './routes/admin/songs';
 import { artistsRouter } from './routes/artists';
 import { authRouter } from './routes/auth';
 import { healthRouter } from './routes/health';
 import { searchRouter } from './routes/search';
+import { catalogRouter } from './routes/catalog';
 import { songsRouter } from './routes/songs';
 import { spotifyRouter } from './routes/spotify';
 import { translationsRouter } from './routes/translations';
@@ -66,9 +68,11 @@ app.use('/api', healthRouter);
 app.use('/api', authRouter);
 app.use('/api', searchRouter);
 app.use('/api', translationsRouter);
+app.use('/api', catalogRouter);
 app.use('/api', songsRouter);
 app.use('/api', artistsRouter);
 app.use('/api/admin', adminSongsRouter);
+app.use('/api/admin', adminSeederRouter);
 app.use('/api', spotifyRouter);
 
 app.get('/api/admin/ping', authenticate, requireRole('ADMIN'), (_req, res) => {

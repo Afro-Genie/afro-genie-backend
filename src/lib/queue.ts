@@ -5,9 +5,31 @@ const connection = {
 	url: env.REDIS_URL
 };
 
-export const translationQueue = new Queue('translationQueue', { connection });
-export const notificationQueue = new Queue('notificationQueue', { connection });
-export const searchIndexQueue = new Queue('searchIndexQueue', { connection });
-export const languageCategorizationQueue = new Queue('languageCategorizationQueue', { connection });
-export const viewCountFlushQueue = new Queue('viewCountFlushQueue', { connection });
-export const lyricsEnrichmentQueue = new Queue('lyricsEnrichmentQueue', { connection });
+const redisDisabled = process.env.DISABLE_REDIS === 'true';
+
+const createQueue = (name: string) => {
+	if (redisDisabled) {
+		return {
+			add: async () => ({ id: undefined }),
+			addBulk: async () => [],
+			close: async () => undefined,
+		} as unknown as Queue;
+	}
+
+	try {
+		return new Queue(name, { connection });
+	} catch {
+		return {
+			add: async () => ({ id: undefined }),
+			addBulk: async () => [],
+			close: async () => undefined,
+		} as unknown as Queue;
+	}
+};
+
+export const translationQueue = createQueue('translationQueue');
+export const notificationQueue = createQueue('notificationQueue');
+export const searchIndexQueue = createQueue('searchIndexQueue');
+export const languageCategorizationQueue = createQueue('languageCategorizationQueue');
+export const viewCountFlushQueue = createQueue('viewCountFlushQueue');
+export const lyricsEnrichmentQueue = createQueue('lyricsEnrichmentQueue');
