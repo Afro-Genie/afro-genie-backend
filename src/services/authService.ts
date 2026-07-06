@@ -120,6 +120,57 @@ const createMailTransporter = () => {
   });
 };
 
+export const registerArtist = async (
+  email: string,
+  password: string,
+  artistData: {
+    stageName: string;
+    genre: string;
+    bio: string;
+    location?: string;
+    website?: string;
+    socialLinks?: Record<string, string | undefined>;
+    photoURL?: string;
+  }
+): Promise<AuthResult> => {
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (existing) {
+    throw new ApiError('Email is already registered', 'CONFLICT', 409);
+  }
+
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+  const user = await prisma.user.create({
+    data: {
+      email: normalizedEmail,
+      passwordHash,
+      displayName: artistData.stageName.trim(),
+      photoUrl: artistData.photoURL,
+      role: UserRole.ARTIST
+    },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      role: true
+    }
+  });
+
+  await prisma.artistApplication.create({
+    data: {
+      userId: user.id,
+      stageName: artistData.stageName.trim(),
+      genre: artistData.genre,
+      bio: artistData.bio,
+      socialLinks: artistData.socialLinks ?? {}
+    }
+  });
+
+  return buildAuthResult(user);
+};
+
 export const register = async (email: string, password: string, displayName: string): Promise<AuthResult> => {
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -202,6 +253,7 @@ export const refresh = async (refreshToken: string): Promise<AuthResult> => {
     throw new ApiError('User not found', 'NOT_FOUND', 404);
   }
 
+  await redis.del(refreshKey(claims.userId));
   return buildAuthResult(user);
 };
 
@@ -349,6 +401,65 @@ export const configureGoogleStrategy = () => {
   );
 
   googleStrategyInitialized = true;
+};
+
+export const signInWithSpotify = async (accessToken: string): Promise<AuthResult> => {
+  const spotifyRes = await fetch('https://api.spotify.com/v1/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!spotifyRes.ok) {
+    throw new ApiError('Failed to authenticate with Spotify', 'UNAUTHORIZED', 401);
+  }
+
+  const profile = await spotifyRes.json() as {
+    id: string;
+    display_name?: string;
+    email?: string;
+    images?: Array<{ url: string }>;
+  };
+
+  if (!profile.id) {
+    throw new ApiError('Invalid Spotify profile', 'UNAUTHORIZED', 401);
+  }
+
+  const email = profile.email?.toLowerCase();
+  let user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { spotifyId: profile.id },
+        ...(email ? [{ email }] : []),
+      ],
+    },
+    select: { id: true, email: true, displayName: true, role: true, spotifyId: true },
+  });
+
+  if (!user) {
+    user = await prisma.user.create({
+      data: {
+        email: email ?? `${profile.id}@spotify.afrogenie.app`,
+        spotifyId: profile.id,
+        displayName: profile.display_name || email?.split('@')[0] || 'Spotify User',
+        photoUrl: profile.images?.[0]?.url,
+        role: UserRole.USER,
+        lastLoginAt: new Date(),
+      },
+      select: { id: true, email: true, displayName: true, role: true, spotifyId: true },
+    });
+  } else {
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        spotifyId: user.spotifyId ?? profile.id,
+        photoUrl: profile.images?.[0]?.url,
+        lastLoginAt: new Date(),
+        ...(email && !user.email.includes('@spotify.afrogenie.app') ? {} : { email }),
+      },
+      select: { id: true, email: true, displayName: true, role: true, spotifyId: true },
+    });
+  }
+
+  return buildAuthResult({ id: user.id, email: user.email, displayName: user.displayName, role: user.role });
 };
 
 export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): Promise<string> => {

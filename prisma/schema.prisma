@@ -92,6 +92,7 @@ model User {
   email              String                @unique
   passwordHash       String?
   googleId           String?               @unique
+  spotifyId          String?               @unique
   displayName        String?
   photoUrl           String?
   role               UserRole              @default(USER)

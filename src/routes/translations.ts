@@ -107,7 +107,6 @@ translationsRouter.get(
 // ---------------------------------------------------------------------------
 translationsRouter.get(
   '/translations/:songId',
-  authenticate,
   [param('songId').isString().notEmpty().withMessage('songId is required')],
   validate,
   async (req: Request, res: Response, next: NextFunction) => {

@@ -19,7 +19,7 @@ export const redis =
         maxRetriesPerRequest: null,
         enableReadyCheck: true,
         lazyConnect: true,
-        enableOfflineQueue: false
+        enableOfflineQueue: true
       }));
 
 if (!redisDisabled) {

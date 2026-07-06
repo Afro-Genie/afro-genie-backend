@@ -13,7 +13,9 @@ import {
   logout,
   refresh,
   register,
-  resetPassword
+  registerArtist,
+  resetPassword,
+  signInWithSpotify
 } from '../services/authService';
 
 export const authRouter = Router();
@@ -48,6 +50,37 @@ authRouter.post(
       };
 
       const auth = await register(email, password, displayName);
+      res.status(201).json(auth);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/register-artist',
+  [
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('stageName').trim().isLength({ min: 1, max: 80 }).withMessage('Stage name is required'),
+    body('genre').trim().isLength({ min: 1 }).withMessage('Genre is required'),
+    body('bio').trim().isLength({ min: 1 }).withMessage('Bio is required')
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { email, password, stageName, genre, bio, location, website, socialLinks, photoURL } = req.body;
+
+      const auth = await registerArtist(email, password, {
+        stageName,
+        genre,
+        bio,
+        location,
+        website,
+        socialLinks,
+        photoURL
+      });
+
       res.status(201).json(auth);
     } catch (error) {
       next(error);
@@ -98,6 +131,21 @@ authRouter.post(
       const { refreshToken } = req.body as { refreshToken: string };
       await logout(refreshToken);
       res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/spotify',
+  [body('accessToken').isString().notEmpty().withMessage('Access token is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { accessToken } = req.body as { accessToken: string };
+      const auth = await signInWithSpotify(accessToken);
+      res.status(200).json(auth);
     } catch (error) {
       next(error);
     }
