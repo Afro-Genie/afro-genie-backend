@@ -21,7 +21,7 @@ interface UnifiedSong {
 
 class CatalogService {
   async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
-    const cacheKey = 'catalog:homepage';
+    const cacheKey = 'catalog:homepage:v2';
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
