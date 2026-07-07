@@ -98,9 +98,11 @@ class CatalogService {
     }));
 
     const hasGoodArtists = artists.some((a) => a.popularity > 0);
-    if (artists.length < 10 || (!hasGoodArtists && artists.length < 20)) {
+    let spotifyResults: any = null;
+
+    if (artists.length < 10 || (!hasGoodArtists && artists.length < 20) || genres.length < 5) {
       try {
-        const spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
+        spotifyResults = await searchSpotify('afrobeats', 'artist', 30);
         const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
           id: `spotify:${artist.id}`,
           name: artist.name,
@@ -116,15 +118,35 @@ class CatalogService {
           .sort((a, b) => b.popularity - a.popularity)
           .slice(0, 12);
 
-        if (!genres.length) {
+        // Always extract genres from Spotify if database is empty
+        if (genres.length < 5) {
           const seen = new Set<string>();
           for (const a of (spotifyResults.artists?.items || [])) {
             for (const g of (a.genres || [])) {
               const name = g as string;
-              if (!seen.has(name)) {
+              if (!seen.has(name) && name) {
                 seen.add(name);
                 (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
               }
+            }
+          }
+
+          // If still no genres, search for more artists to extract from
+          if (genres.length < 5) {
+            try {
+              const additionalResults = await searchSpotify('afrobeats house amapiano', 'artist', 20);
+              for (const a of (additionalResults.artists?.items || [])) {
+                if (genres.length >= 10) break;
+                for (const g of (a.genres || [])) {
+                  const name = g as string;
+                  if (!seen.has(name) && name) {
+                    seen.add(name);
+                    (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+                  }
+                }
+              }
+            } catch (err2) {
+              logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
             }
           }
         }
