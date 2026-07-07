@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
+import { logger } from '../lib/logger';
 import { searchSpotify } from './spotifyService';
 
 const FALLBACK_PREVIEW = '/api/spotify/fallback-preview.mp3';
@@ -80,8 +81,29 @@ class CatalogService {
         }));
 
         songs = dedupeById([...songs, ...spotifyTracks]);
-      } catch {
-        // Spotify fallback failed; serve DB-only results
+
+        if (!genres.length && spotifyResults.tracks?.items?.length) {
+          const artistIds = [...new Set(spotifyResults.tracks.items
+            .filter((t: any) => t.artists?.[0]?.id)
+            .map((t: any) => t.artists[0].id))].slice(0, 5);
+          if (artistIds.length) {
+            try {
+              const artistDetails = await searchSpotify(artistIds.join(','), 'artist');
+              const seen = new Set<string>();
+              for (const a of (artistDetails.artists?.items || [])) {
+                for (const g of (a.genres || [])) {
+                  const name = g as string;
+                  if (!seen.has(name)) {
+                    seen.add(name);
+                    (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Spotify fallback for songs failed');
       }
     }
 
@@ -96,7 +118,8 @@ class CatalogService {
       followers: a.followers,
     }));
 
-    if (artists.length < 10) {
+    const hasGoodArtists = artists.some((a) => a.popularity > 0);
+    if (artists.length < 10 || (!hasGoodArtists && artists.length < 20)) {
       try {
         const spotifyResults = await searchSpotify('afrobeats', 'artist');
         const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
@@ -111,15 +134,28 @@ class CatalogService {
         }));
 
         artists = dedupeById([...artists, ...spotifyArtists]).slice(0, 12);
-      } catch {
-        // Spotify fallback failed; serve DB-only artists.
+
+        if (!genres.length) {
+          const seen = new Set<string>();
+          for (const a of (spotifyResults.artists?.items || [])) {
+            for (const g of (a.genres || [])) {
+              const name = g as string;
+              if (!seen.has(name)) {
+                seen.add(name);
+                (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Spotify fallback for artists failed');
       }
     }
 
     const result = {
       songs: songs.slice(0, 20),
       artists,
-      genres: genres.map((g) => ({
+      genres: genres.slice(0, 10).map((g: any) => ({
         id: g.id,
         name: g.name,
         image: g.imageUrl || '',
