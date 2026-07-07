@@ -43,6 +43,10 @@ export interface AuthResult extends AuthTokens {
 
 let googleStrategyInitialized = false;
 
+export const isGoogleOauthConfigured = (): boolean => {
+  return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+};
+
 const hashToken = (token: string): string => {
   return crypto.createHash('sha256').update(token).digest('hex');
 };
@@ -323,7 +327,7 @@ export const configureGoogleStrategy = () => {
     return;
   }
 
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+  if (!isGoogleOauthConfigured()) {
     logger.warn('Google OAuth is not configured; google auth endpoints will fail until env vars are set');
     return;
   }
