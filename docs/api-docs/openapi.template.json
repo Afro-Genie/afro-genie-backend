@@ -23,7 +23,9 @@
     { "name": "Search" },
     { "name": "Artists" },
     { "name": "Spotify" },
-    { "name": "Admin" }
+    { "name": "Admin" },
+    { "name": "Community" },
+    { "name": "Catalog" }
   ],
   "components": {
     "securitySchemes": {
@@ -200,6 +202,263 @@
         "type": "object",
         "properties": {
           "success": { "type": "boolean" }
+        }
+      },
+      "RegisterArtistRequest": {
+        "type": "object",
+        "required": ["email", "password", "stageName", "genre", "bio"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "minLength": 8 },
+          "stageName": { "type": "string" },
+          "genre": { "type": "string" },
+          "bio": { "type": "string" },
+          "location": { "type": "string" },
+          "website": { "type": "string" },
+          "socialLinks": { "type": "object" },
+          "photoURL": { "type": "string" }
+        }
+      },
+      "SpotifySignInRequest": {
+        "type": "object",
+        "required": ["accessToken"],
+        "properties": {
+          "accessToken": { "type": "string" }
+        }
+      },
+      "CommunityCategory": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "icon": { "type": "string" },
+          "order": { "type": "integer" },
+          "topicCount": { "type": "integer" },
+          "memberCount": { "type": "integer" }
+        }
+      },
+      "TopicAuthor": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "displayName": { "type": "string" },
+          "photoUrl": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      },
+      "ForumCategoryRef": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      },
+      "TopicSummary": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "content": { "type": "string" },
+          "authorId": { "type": "string" },
+          "author": { "$ref": "#/components/schemas/TopicAuthor" },
+          "category": { "$ref": "#/components/schemas/ForumCategoryRef" },
+          "likes": { "type": "integer" },
+          "shares": { "type": "integer" },
+          "commentCount": { "type": "integer" },
+          "isPinned": { "type": "boolean" },
+          "isLocked": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "hotScore": { "type": "number" }
+        }
+      },
+      "TopicListResponse": {
+        "type": "object",
+        "properties": {
+          "topics": { "type": "array", "items": { "$ref": "#/components/schemas/TopicSummary" } },
+          "total": { "type": "integer" },
+          "page": { "type": "integer" },
+          "limit": { "type": "integer" }
+        }
+      },
+      "TopicDetail": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "content": { "type": "string" },
+          "authorId": { "type": "string" },
+          "author": { "$ref": "#/components/schemas/TopicAuthor" },
+          "category": { "$ref": "#/components/schemas/ForumCategoryRef" },
+          "song": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "artistId": { "type": "string" }, "imageUrl": { "type": "string" } } },
+          "artist": { "type": "object", "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "imageUrl": { "type": "string" } } },
+          "likes": { "type": "integer" },
+          "shares": { "type": "integer" },
+          "commentCount": { "type": "integer" },
+          "isPinned": { "type": "boolean" },
+          "isLocked": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "comments": { "type": "array", "items": { "$ref": "#/components/schemas/CommentDetail" } }
+        }
+      },
+      "CommentDetail": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "topicId": { "type": "string" },
+          "userId": { "type": "string" },
+          "user": { "$ref": "#/components/schemas/TopicAuthor" },
+          "content": { "type": "string" },
+          "likes": { "type": "integer" },
+          "parentCommentId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "replies": { "type": "array", "items": { "type": "object" } },
+          "replyCount": { "type": "integer" }
+        }
+      },
+      "CreateTopicRequest": {
+        "type": "object",
+        "required": ["title", "content", "forumCategoryId"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 255 },
+          "content": { "type": "string" },
+          "forumCategoryId": { "type": "string" },
+          "songId": { "type": "string" },
+          "artistId": { "type": "string" }
+        }
+      },
+      "CreateCommentRequest": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": { "type": "string" },
+          "parentCommentId": { "type": "string" }
+        }
+      },
+      "VoteRequest": {
+        "type": "object",
+        "required": ["voteType"],
+        "properties": {
+          "topicId": { "type": "string" },
+          "commentId": { "type": "string" },
+          "voteType": { "type": "string", "enum": ["UPVOTE", "DOWNVOTE"] }
+        }
+      },
+      "VoteResponse": {
+        "type": "object",
+        "properties": {
+          "likes": { "type": "integer" }
+        }
+      },
+      "ModerationToggleResponse": {
+        "type": "object",
+        "properties": {
+          "isPinned": { "type": "boolean" },
+          "isLocked": { "type": "boolean" }
+        }
+      },
+      "DeleteTopicResponse": {
+        "type": "object",
+        "properties": {
+          "deleted": { "type": "boolean" }
+        }
+      },
+      "UserListItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "email": { "type": "string" },
+          "displayName": { "type": "string" },
+          "photoUrl": { "type": "string" },
+          "role": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "lastLoginAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UserListResponse": {
+        "type": "object",
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/UserListItem" } },
+          "total": { "type": "integer" },
+          "nextCursor": { "type": "string" }
+        }
+      },
+      "UpdateUserRoleRequest": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {
+          "role": { "type": "string", "enum": ["USER", "ADMIN", "ARTIST", "MODERATOR"] }
+        }
+      },
+      "SeederStatusResponse": {
+        "type": "object",
+        "properties": {
+          "running": { "type": "boolean" },
+          "lastRun": { "type": "string" },
+          "lastDuration": { "type": "number" },
+          "lastSource": { "type": "string" },
+          "stats": { "type": "object" }
+        }
+      },
+      "RunSeederRequest": {
+        "type": "object",
+        "required": ["source"],
+        "properties": {
+          "source": { "type": "string" },
+          "params": { "type": "object" }
+        }
+      },
+      "SpotifyGenreSeedRequest": {
+        "type": "object",
+        "required": ["genre"],
+        "properties": {
+          "genre": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+        }
+      },
+      "SpotifyPlaylistSeedRequest": {
+        "type": "object",
+        "properties": {
+          "playlistUrl": { "type": "string" },
+          "url": { "type": "string" }
+        }
+      },
+      "CatalogHomeResponse": {
+        "type": "object",
+        "properties": {
+          "featuredSongs": { "type": "array", "items": { "type": "object" } },
+          "popularArtists": { "type": "array", "items": { "type": "object" } },
+          "recentSongs": { "type": "array", "items": { "type": "object" } },
+          "genres": { "type": "array", "items": { "type": "object" } },
+          "languages": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "CatalogSongsResponse": {
+        "type": "object",
+        "properties": {
+          "songs": { "type": "array", "items": { "type": "object" } },
+          "total": { "type": "integer" },
+          "page": { "type": "integer" },
+          "totalPages": { "type": "integer" }
+        }
+      },
+      "CatalogArtistsResponse": {
+        "type": "object",
+        "properties": {
+          "artists": { "type": "array", "items": { "type": "object" } },
+          "total": { "type": "integer" },
+          "page": { "type": "integer" },
+          "totalPages": { "type": "integer" }
+        }
+      },
+      "CatalogAlbumsResponse": {
+        "type": "object",
+        "properties": {
+          "albums": { "type": "array", "items": { "type": "object" } }
         }
       }
     }
@@ -1465,6 +1724,883 @@
           },
           "403": {
             "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register-artist": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Register as artist",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterArtistRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/spotify": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Sign in with Spotify access token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SpotifySignInRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/home": {
+      "get": {
+        "tags": ["Catalog"],
+        "summary": "Get homepage data (featured songs, popular artists, genres, languages)",
+        "responses": {
+          "200": {
+            "description": "Homepage data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatalogHomeResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/songs": {
+      "get": {
+        "tags": ["Catalog"],
+        "summary": "Browse catalog songs",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500 } },
+          { "name": "language", "in": "query", "schema": { "type": "string" } },
+          { "name": "genre", "in": "query", "schema": { "type": "string" } },
+          { "name": "artistId", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "sortBy", "in": "query", "schema": { "type": "string" } },
+          { "name": "sortOrder", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catalog songs",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatalogSongsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/artists": {
+      "get": {
+        "tags": ["Catalog"],
+        "summary": "Browse catalog artists",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catalog artists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatalogArtistsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/catalog/albums/{artistId}": {
+      "get": {
+        "tags": ["Catalog"],
+        "summary": "Get albums for an artist",
+        "parameters": [
+          { "name": "artistId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Artist albums",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CatalogAlbumsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/categories": {
+      "get": {
+        "tags": ["Community"],
+        "summary": "List all forum categories",
+        "responses": {
+          "200": {
+            "description": "Forum categories",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/CommunityCategory" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/categories/{id}/join": {
+      "post": {
+        "tags": ["Community"],
+        "summary": "Join a forum category",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "201": {
+            "description": "Joined",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics": {
+      "get": {
+        "tags": ["Community"],
+        "summary": "List topics with sorting and pagination",
+        "parameters": [
+          { "name": "categoryId", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["hot", "new", "top"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50 } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Topics",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TopicListResponse" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Community"],
+        "summary": "Create a topic (Moderator/Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTopicRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TopicDetail" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics/{id}": {
+      "get": {
+        "tags": ["Community"],
+        "summary": "Get topic details with nested comments",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Topic detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TopicDetail" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics/{topicId}/comments": {
+      "post": {
+        "tags": ["Community"],
+        "summary": "Add a comment to a topic",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "topicId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateCommentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Comment created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CommentDetail" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Topic locked",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Topic not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics/{id}/pin": {
+      "patch": {
+        "tags": ["Community"],
+        "summary": "Toggle pin status (Moderator/Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Toggled",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ModerationToggleResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics/{id}/lock": {
+      "patch": {
+        "tags": ["Community"],
+        "summary": "Toggle lock status (Moderator/Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Toggled",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ModerationToggleResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/topics/{id}": {
+      "delete": {
+        "tags": ["Community"],
+        "summary": "Soft-delete a topic (Moderator/Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteTopicResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/vote/topic": {
+      "post": {
+        "tags": ["Community"],
+        "summary": "Upvote or downvote a topic",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["topicId", "voteType"],
+                "properties": {
+                  "topicId": { "type": "string" },
+                  "voteType": { "type": "string", "enum": ["UPVOTE", "DOWNVOTE"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Vote recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VoteResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Topic not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "409": {
+            "description": "Already voted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/community/vote/comment": {
+      "post": {
+        "tags": ["Community"],
+        "summary": "Upvote or downvote a comment",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["commentId", "voteType"],
+                "properties": {
+                  "commentId": { "type": "string" },
+                  "voteType": { "type": "string", "enum": ["UPVOTE", "DOWNVOTE"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Vote recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VoteResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "Comment not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "409": {
+            "description": "Already voted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/seeder/status": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "Get seeder status (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Seeder status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SeederStatusResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/seeder/run": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Run a seeder source (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RunSeederRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seeder result",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/seeder/spotify-genre": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Seed catalog from Spotify genre (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SpotifyGenreSeedRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seed result",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/seeder/spotify-playlist": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Seed catalog from Spotify playlist URL (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SpotifyPlaylistSeedRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Seed result",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid playlist URL",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List users with pagination and search (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "cursor", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "role", "in": "query", "schema": { "type": "string", "enum": ["USER", "ADMIN", "ARTIST", "MODERATOR"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserListResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/role": {
+      "patch": {
+        "tags": ["Admin"],
+        "summary": "Update user role (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateUserRoleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserListItem" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}": {
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Delete user (Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiError" }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ApiError" }
