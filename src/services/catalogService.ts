@@ -21,7 +21,7 @@ interface UnifiedSong {
 
 class CatalogService {
   async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
-    const cacheKey = 'catalog:homepage:v2';
+    const cacheKey = 'catalog:homepage:v3';
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -66,7 +66,7 @@ class CatalogService {
 
     if (songs.length < 10) {
       try {
-        const spotifyResults = await searchSpotify('afrobeats', 'track');
+        const spotifyResults = await searchSpotify('afrobeats', 'track', 50);
         const spotifyTracks = (spotifyResults.tracks?.items ?? []).map((t: any) => ({
           id: `spotify:${t.id}`,
           title: t.name,
@@ -81,27 +81,6 @@ class CatalogService {
         }));
 
         songs = dedupeById([...songs, ...spotifyTracks]);
-
-        if (!genres.length && spotifyResults.tracks?.items?.length) {
-          const artistIds = [...new Set(spotifyResults.tracks.items
-            .filter((t: any) => t.artists?.[0]?.id)
-            .map((t: any) => t.artists[0].id))].slice(0, 5);
-          if (artistIds.length) {
-            try {
-              const artistDetails = await searchSpotify(artistIds.join(','), 'artist');
-              const seen = new Set<string>();
-              for (const a of (artistDetails.artists?.items || [])) {
-                for (const g of (a.genres || [])) {
-                  const name = g as string;
-                  if (!seen.has(name)) {
-                    seen.add(name);
-                    (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-                  }
-                }
-              }
-            } catch {}
-          }
-        }
       } catch (err) {
         logger.warn({ err }, 'Spotify fallback for songs failed');
       }
@@ -121,7 +100,7 @@ class CatalogService {
     const hasGoodArtists = artists.some((a) => a.popularity > 0);
     if (artists.length < 10 || (!hasGoodArtists && artists.length < 20)) {
       try {
-        const spotifyResults = await searchSpotify('afrobeats', 'artist');
+        const spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
         const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
           id: `spotify:${artist.id}`,
           name: artist.name,
@@ -133,7 +112,9 @@ class CatalogService {
           followers: artist.followers?.total || 0,
         }));
 
-        artists = dedupeById([...artists, ...spotifyArtists]).slice(0, 12);
+        artists = dedupeById([...artists, ...spotifyArtists])
+          .sort((a, b) => b.popularity - a.popularity)
+          .slice(0, 12);
 
         if (!genres.length) {
           const seen = new Set<string>();
