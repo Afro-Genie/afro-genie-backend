@@ -67,7 +67,7 @@ interface UnifiedSong {
 
 class CatalogService {
   async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
-    const cacheKey = 'catalog:homepage:v6';
+    const cacheKey = 'catalog:homepage:v11';
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -122,7 +122,7 @@ class CatalogService {
 
     if (songs.length < 10) {
       try {
-        const spotifyResults = await searchSpotify('afrobeats', 'track', 50);
+        const spotifyResults = await searchSpotify('afrobeats', 'track');
         const spotifyTracks = (spotifyResults.tracks?.items ?? []).map((t: any) => ({
           id: `spotify:${t.id}`,
           title: t.name,
@@ -155,51 +155,27 @@ class CatalogService {
 
     // ALWAYS fetch from Spotify to enrich with images
     try {
-      spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
-      const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
-        id: `spotify:${artist.id}`,
-        name: artist.name,
-        genre: artist.genres?.[0] || '',
-        image: artist.images?.[0]?.url || '',
-        spotifyId: artist.id,
-        bio: '',
-        popularity: artist.popularity,
-        followers: artist.followers?.total || 0,
-      }));
-
-      // Create name-based lookup map
-      const spotifyByName = new Map<string, any>();
-      for (const artist of spotifyArtists) {
-        spotifyByName.set(artist.name.toLowerCase(), artist);
-      }
-
-      // Enhance DB artists with Spotify images where missing
+      // Search for each artist individually to get their images
       for (const artist of artists) {
         if (!artist.image) {
-          const spotify = spotifyByName.get(artist.name.toLowerCase());
-          if (spotify && spotify.image) {
-            artist.image = spotify.image;
-            artist.spotifyId = spotify.spotifyId;
+          try {
+            const result = await searchSpotify(artist.name, 'artist');
+            const firstArtist = result.artists?.items?.[0];
+            if (firstArtist && firstArtist.images?.[0]?.url) {
+              artist.image = firstArtist.images[0].url;
+            }
+          } catch {
+            // Individual search failed, continue
           }
         }
       }
+    } catch (err) {
+      logger.warn({ err }, 'Artist image enrichment failed');
+    }
 
-      // Add Spotify artists if DB count is too low
-      if (artists.length < 10) {
-        const dbNames = new Set(artists.map(a => a.name.toLowerCase()));
-        for (const spotifyArtist of spotifyArtists) {
-          if (!dbNames.has(spotifyArtist.name.toLowerCase()) && artists.length < 12) {
-            artists.push(spotifyArtist);
-            dbNames.add(spotifyArtist.name.toLowerCase());
-          }
-        }
-      }
-
-      artists = artists
-        .sort((a, b) => b.popularity - a.popularity)
-        .slice(0, 12);
-
-      // Extract genres
+    // Get genres from additional Spotify search
+    try {
+      const spotifyResults = await searchSpotify('afrobeats', 'artist');
       if (genres.length < 5) {
         const seen = new Set<string>();
         for (const a of (spotifyResults.artists?.items || [])) {
@@ -211,28 +187,29 @@ class CatalogService {
             }
           }
         }
-
-        // If still no genres, search for more artists to extract from
-        if (genres.length < 5) {
-          try {
-            const additionalResults = await searchSpotify('amapiano house afro', 'artist', 15);
-            for (const a of (additionalResults.artists?.items || [])) {
-              if (genres.length >= 10) break;
-              for (const g of (a.genres || [])) {
-                const name = g as string;
-                if (!seen.has(name) && name) {
-                  seen.add(name);
-                  (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-                }
-              }
-            }
-          } catch (err2) {
-            logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
-          }
-        }
       }
     } catch (err) {
-      logger.warn({ err }, 'Spotify fallback for artists failed');
+      logger.warn({ err }, 'Spotify genre extraction failed');
+    }
+
+    // If genres still low, try secondary search
+    if (genres.length < 5) {
+      try {
+        const additionalResults = await searchSpotify('amapiano', 'artist');
+        const seen = new Set<string>(genres.map(g => g.name.toLowerCase()));
+        for (const a of (additionalResults.artists?.items || [])) {
+          if (genres.length >= 10) break;
+          for (const g of (a.genres || [])) {
+            const name = g as string;
+            if (!seen.has(name.toLowerCase()) && name) {
+              seen.add(name.toLowerCase());
+              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+            }
+          }
+        }
+      } catch (err2) {
+        logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
+      }
     }
 
     // Fetch genre images from Spotify playlists with gradient fallbacks
