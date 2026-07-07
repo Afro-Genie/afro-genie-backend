@@ -2,8 +2,54 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { searchSpotify } from './spotifyService';
+import { genreService } from './genreService';
 
 const FALLBACK_PREVIEW = '/api/spotify/fallback-preview.mp3';
+
+// Color mapping for genres
+const GENRE_COLORS: Record<string, { primary: string; secondary: string }> = {
+  'afrobeats': { primary: '#FF6B35', secondary: '#F7931E' },
+  'afropop': { primary: '#F4A261', secondary: '#E76F51' },
+  'amapiano': { primary: '#2A9D8F', secondary: '#264653' },
+  'highlife': { primary: '#E9C46A', secondary: '#F4A261' },
+  'dancehall': { primary: '#D62828', secondary: '#F77F00' },
+  'reggae': { primary: '#06A77D', secondary: '#118B7C' },
+  'hipop': { primary: '#D62828', secondary: '#F77F00' },
+  'r&b': { primary: '#7209B7', secondary: '#B5179E' },
+  'alt-r&b': { primary: '#7209B7', secondary: '#B5179E' },
+  'house': { primary: '#00A8E8', secondary: '#00C9FF' },
+  'electronic': { primary: '#FF0080', secondary: '#FF8C00' },
+  'pop': { primary: '#FF006E', secondary: '#FB5607' },
+  'mbalax': { primary: '#FFB703', secondary: '#FB8500' },
+  'benga': { primary: '#8ECAE6', secondary: '#219EBC' },
+  'kwaito': { primary: '#023047', secondary: '#FB8500' },
+  'afro-fusion': { primary: '#FF006E', secondary: '#FB5607' },
+};
+
+/**
+ * Generate a gradient-based image URL for genres
+ */
+function generateGradientImage(genreName: string): string {
+  const config = GENRE_COLORS[genreName.toLowerCase()] || {
+    primary: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
+    secondary: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
+  };
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+    <defs>
+      <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:${config.primary};stop-opacity:1" />
+        <stop offset="100%" style="stop-color:${config.secondary};stop-opacity:1" />
+      </linearGradient>
+    </defs>
+    <rect width="300" height="300" fill="url(#grad)" />
+    <text x="50%" y="50%" text-anchor="middle" dy="0.3em" font-size="36" font-weight="bold" fill="white" font-family="Arial" opacity="0.3">
+      ${genreName.substring(0, 1).toUpperCase()}
+    </text>
+  </svg>`;
+
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
 
 interface UnifiedSong {
   id: string;
@@ -21,7 +67,7 @@ interface UnifiedSong {
 
 class CatalogService {
   async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
-    const cacheKey = 'catalog:homepage:v3';
+    const cacheKey = 'catalog:homepage:v6';
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -34,6 +80,16 @@ class CatalogService {
       }),
       prisma.artist.findMany({
         where: { softDeleted: false },
+        select: {
+          id: true,
+          name: true,
+          imageUrl: true,
+          genres: true,
+          spotifyId: true,
+          bio: true,
+          popularity: true,
+          followers: true,
+        },
         take: 12,
         orderBy: { popularity: 'desc' },
       }),
@@ -46,7 +102,7 @@ class CatalogService {
       artistName: (s as any).artist.name,
       artistId: s.artistId,
       albumName: s.albumName || undefined,
-      imageUrl: s.imageUrl || undefined,
+      imageUrl: s.imageUrl || '',
       previewUrl: s.spotifyPreviewUrl,
       spotifyId: s.spotifyId,
       source: 'DB' as const,
@@ -97,71 +153,115 @@ class CatalogService {
       followers: a.followers,
     }));
 
-    const hasGoodArtists = artists.some((a) => a.popularity > 0);
-    let spotifyResults: any = null;
+    // ALWAYS fetch from Spotify to enrich with images
+    try {
+      spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
+      const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
+        id: `spotify:${artist.id}`,
+        name: artist.name,
+        genre: artist.genres?.[0] || '',
+        image: artist.images?.[0]?.url || '',
+        spotifyId: artist.id,
+        bio: '',
+        popularity: artist.popularity,
+        followers: artist.followers?.total || 0,
+      }));
 
-    if (artists.length < 10 || (!hasGoodArtists && artists.length < 20) || genres.length < 5) {
-      try {
-        spotifyResults = await searchSpotify('afrobeats', 'artist', 30);
-        const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
-          id: `spotify:${artist.id}`,
-          name: artist.name,
-          genre: artist.genres?.[0] || '',
-          image: artist.images?.[0]?.url || '',
-          spotifyId: artist.id,
-          bio: '',
-          popularity: artist.popularity,
-          followers: artist.followers?.total || 0,
-        }));
+      // Create name-based lookup map
+      const spotifyByName = new Map<string, any>();
+      for (const artist of spotifyArtists) {
+        spotifyByName.set(artist.name.toLowerCase(), artist);
+      }
 
-        artists = dedupeById([...artists, ...spotifyArtists])
-          .sort((a, b) => b.popularity - a.popularity)
-          .slice(0, 12);
-
-        // Always extract genres from Spotify if database is empty
-        if (genres.length < 5) {
-          const seen = new Set<string>();
-          for (const a of (spotifyResults.artists?.items || [])) {
-            for (const g of (a.genres || [])) {
-              const name = g as string;
-              if (!seen.has(name) && name) {
-                seen.add(name);
-                (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-              }
-            }
+      // Enhance DB artists with Spotify images where missing
+      for (const artist of artists) {
+        if (!artist.image) {
+          const spotify = spotifyByName.get(artist.name.toLowerCase());
+          if (spotify && spotify.image) {
+            artist.image = spotify.image;
+            artist.spotifyId = spotify.spotifyId;
           }
+        }
+      }
 
-          // If still no genres, search for more artists to extract from
-          if (genres.length < 5) {
-            try {
-              const additionalResults = await searchSpotify('afrobeats house amapiano', 'artist', 20);
-              for (const a of (additionalResults.artists?.items || [])) {
-                if (genres.length >= 10) break;
-                for (const g of (a.genres || [])) {
-                  const name = g as string;
-                  if (!seen.has(name) && name) {
-                    seen.add(name);
-                    (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-                  }
-                }
-              }
-            } catch (err2) {
-              logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
+      // Add Spotify artists if DB count is too low
+      if (artists.length < 10) {
+        const dbNames = new Set(artists.map(a => a.name.toLowerCase()));
+        for (const spotifyArtist of spotifyArtists) {
+          if (!dbNames.has(spotifyArtist.name.toLowerCase()) && artists.length < 12) {
+            artists.push(spotifyArtist);
+            dbNames.add(spotifyArtist.name.toLowerCase());
+          }
+        }
+      }
+
+      artists = artists
+        .sort((a, b) => b.popularity - a.popularity)
+        .slice(0, 12);
+
+      // Extract genres
+      if (genres.length < 5) {
+        const seen = new Set<string>();
+        for (const a of (spotifyResults.artists?.items || [])) {
+          for (const g of (a.genres || [])) {
+            const name = g as string;
+            if (!seen.has(name) && name) {
+              seen.add(name);
+              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
             }
           }
         }
-      } catch (err) {
-        logger.warn({ err }, 'Spotify fallback for artists failed');
+
+        // If still no genres, search for more artists to extract from
+        if (genres.length < 5) {
+          try {
+            const additionalResults = await searchSpotify('amapiano house afro', 'artist', 15);
+            for (const a of (additionalResults.artists?.items || [])) {
+              if (genres.length >= 10) break;
+              for (const g of (a.genres || [])) {
+                const name = g as string;
+                if (!seen.has(name) && name) {
+                  seen.add(name);
+                  (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+                }
+              }
+            }
+          } catch (err2) {
+            logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
+          }
+        }
       }
+    } catch (err) {
+      logger.warn({ err }, 'Spotify fallback for artists failed');
+    }
+
+    // Fetch genre images from Spotify playlists with gradient fallbacks
+    const genreNames = genres.slice(0, 10).map((g: any) => g.name);
+    const genreImageMap = await genreService.getGenreImages(genreNames);
+
+    // Convert Map to object for proper serialization
+    const genreImageObj: Record<string, string> = {};
+    for (const [name, image] of genreImageMap.entries()) {
+      genreImageObj[name] = image;
     }
 
     const result = {
-      songs: songs.slice(0, 20),
+      songs: songs.slice(0, 20).map(s => ({
+        id: s.id,
+        title: s.title,
+        artistName: s.artistName,
+        artistId: s.artistId || '',
+        albumName: s.albumName || '',
+        imageUrl: s.imageUrl || '',
+        previewUrl: s.previewUrl || null,
+        spotifyId: s.spotifyId || null,
+        source: s.source,
+      })),
       artists,
       genres: genres.slice(0, 10).map((g: any) => ({
         id: g.id,
         name: g.name,
-        image: g.imageUrl || '',
+        image: genreImageObj[g.name] || generateGradientImage(g.name),
       })),
     };
 
@@ -255,6 +355,16 @@ class CatalogService {
     const [artists, total] = await Promise.all([
       prisma.artist.findMany({
         where,
+        select: {
+          id: true,
+          name: true,
+          imageUrl: true,
+          genres: true,
+          spotifyId: true,
+          bio: true,
+          popularity: true,
+          followers: true,
+        },
         skip: (page - 1) * limit,
         take: limit,
         orderBy: { popularity: 'desc' },
