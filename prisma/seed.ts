@@ -101,7 +101,14 @@ const forumCategorySeed = [
   { name: 'Translation Help', description: 'Ask for lyric meaning and translation support', icon: 'book-open', order: 1 },
   { name: 'Song Deep Dives', description: 'Discuss themes, slang, and context by song', icon: 'music-note', order: 2 },
   { name: 'Artist Lounge', description: 'Talk about artists, releases, and interviews', icon: 'user-group', order: 3 },
-  { name: 'Community News', description: 'Platform announcements and updates', icon: 'megaphone', order: 4 }
+  { name: 'Community News', description: 'Platform announcements and updates', icon: 'megaphone', order: 4 },
+  { name: 'Afrobeats', description: 'Discuss Afrobeats music, artists, and trends', icon: 'music', order: 5 },
+  { name: 'Highlife', description: 'Discuss Highlife music, artists, and trends', icon: 'music', order: 6 },
+  { name: 'Amapiano', description: 'Discuss Amapiano music, artists, and trends', icon: 'music', order: 7 },
+  { name: 'Naija Pop', description: 'Discuss Naija Pop music, artists, and trends', icon: 'music', order: 8 },
+  { name: 'Afro-Fusion', description: 'Discuss Afro-Fusion music, artists, and trends', icon: 'music', order: 9 },
+  { name: 'Juju Music', description: 'Discuss Juju Music, artists, and trends', icon: 'music', order: 10 },
+  { name: 'Fuji', description: 'Discuss Fuji music, artists, and trends', icon: 'music', order: 11 }
 ];
 
 const songs: SeedSong[] = [
@@ -203,6 +210,9 @@ async function resetSeededData() {
   await prisma.translation.deleteMany();
   await prisma.translationRequest.deleteMany();
   await prisma.songRequest.deleteMany();
+  await prisma.topicCommentVote.deleteMany();
+  await prisma.topicVote.deleteMany();
+  await prisma.userCommunityMembership.deleteMany();
   await prisma.topicComment.deleteMany();
   await prisma.topic.deleteMany();
   await prisma.notification.deleteMany();

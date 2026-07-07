@@ -39,7 +39,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction) =
 
 export const requireAuth = authenticate;
 
-export const requireRole = (requiredRole: UserRole) => {
+export const requireRole = (...roles: UserRole[]) => {
   return (req: Request, _res: Response, next: NextFunction) => {
     const currentUser = req.user as AuthUser | undefined;
 
@@ -47,7 +47,7 @@ export const requireRole = (requiredRole: UserRole) => {
       return next(new ApiError('Authentication required', 'UNAUTHORIZED', 401));
     }
 
-    if (currentUser.role !== requiredRole) {
+    if (!roles.includes(currentUser.role)) {
       return next(new ApiError('Forbidden', 'FORBIDDEN', 403));
     }
 
