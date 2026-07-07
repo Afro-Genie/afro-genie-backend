@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import passport from 'passport';
-import { Strategy as GoogleStrategy, type Profile } from 'passport-google-oauth20';
+import { Strategy as GoogleStrategy, type Profile, type VerifyCallback } from 'passport-google-oauth20';
 import { UserRole, type User } from '@prisma/client';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
@@ -42,6 +42,10 @@ export interface AuthResult extends AuthTokens {
 }
 
 let googleStrategyInitialized = false;
+
+export const isGoogleOauthConfigured = (): boolean => {
+  return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+};
 
 const hashToken = (token: string): string => {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -323,7 +327,7 @@ export const configureGoogleStrategy = () => {
     return;
   }
 
-  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+  if (!isGoogleOauthConfigured()) {
     logger.warn('Google OAuth is not configured; google auth endpoints will fail until env vars are set');
     return;
   }
@@ -331,11 +335,11 @@ export const configureGoogleStrategy = () => {
   passport.use(
     new GoogleStrategy(
       {
-        clientID: env.GOOGLE_CLIENT_ID,
-        clientSecret: env.GOOGLE_CLIENT_SECRET,
+        clientID: env.GOOGLE_CLIENT_ID!,
+        clientSecret: env.GOOGLE_CLIENT_SECRET!,
         callbackURL: env.GOOGLE_CALLBACK_URL
       },
-      async (_accessToken: string, _refreshToken: string, profile: Profile, done) => {
+      async (_accessToken: string, _refreshToken: string, profile: Profile, done: VerifyCallback) => {
         try {
           const email = profile.emails?.[0]?.value?.toLowerCase();
 

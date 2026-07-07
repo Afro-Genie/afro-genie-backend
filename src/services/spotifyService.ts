@@ -301,10 +301,11 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
 
 export const searchSpotify = async (
   q: string,
-  type: string
+  type: string,
+  limit: number = 20
 ): Promise<SpotifySearchResponse> => {
   const normalizedQuery = q.trim().toLowerCase();
-  const cacheKey = `spotify:search:${type}:${normalizedQuery}`;
+  const cacheKey = `spotify:search:${type}:${limit}:${normalizedQuery}`;
 
   try {
     const cached = await redis.get(cacheKey);
@@ -315,7 +316,7 @@ export const searchSpotify = async (
     // Cache is a performance optimization; continue with live Spotify search.
   }
 
-  const params = new URLSearchParams({ q, type });
+  const params = new URLSearchParams({ q, type, limit: String(limit), offset: '0' });
   let result: SpotifySearchResponse;
 
   try {

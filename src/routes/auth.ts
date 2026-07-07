@@ -8,6 +8,7 @@ import { validateRequest } from '../middleware/validateRequest';
 import {
   buildGoogleRedirectUrl,
   configureGoogleStrategy,
+  isGoogleOauthConfigured,
   startForgotPassword,
   login,
   logout,
@@ -152,11 +153,25 @@ authRouter.post(
   }
 );
 
-authRouter.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'], session: false }));
+authRouter.get('/auth/google', (req: Request, res: Response, next: NextFunction) => {
+  if (!isGoogleOauthConfigured()) {
+    next(new ApiError('Google OAuth is not configured on the server', 'SERVICE_UNAVAILABLE', 503));
+    return;
+  }
+
+  passport.authenticate('google', { scope: ['profile', 'email'], session: false })(req, res, next);
+});
 
 authRouter.get(
   '/auth/google/callback',
-  passport.authenticate('google', { session: false, failureRedirect: '/api/auth/google/failure' }),
+  (req: Request, res: Response, next: NextFunction) => {
+    if (!isGoogleOauthConfigured()) {
+      next(new ApiError('Google OAuth is not configured on the server', 'SERVICE_UNAVAILABLE', 503));
+      return;
+    }
+
+    passport.authenticate('google', { session: false, failureRedirect: '/api/auth/google/failure' })(req, res, next);
+  },
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!req.user) {

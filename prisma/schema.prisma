@@ -111,6 +111,9 @@ model User {
   badges             UserBadge[]
   tokenRewards       TokenReward[]
   artistApplications ArtistApplication[]
+  communityMemberships UserCommunityMembership[]
+  topicVotes           TopicVote[]
+  topicCommentVotes    TopicCommentVote[]
 
   @@index([role])
   @@index([lastLoginAt])
@@ -379,6 +382,7 @@ model ForumCategory {
   order       Int      @default(0)
   topicCount  Int      @default(0)
   topics      Topic[]
+  memberships UserCommunityMembership[]
 
   @@index([order])
   @@index([topicCount])
@@ -405,6 +409,7 @@ model Topic {
   artist       Artist?        @relation(fields: [artistId], references: [id], onDelete: SetNull)
   forumCategory ForumCategory? @relation(fields: [forumCategoryId], references: [id], onDelete: SetNull)
   comments     TopicComment[] @relation("TopicComments")
+  votes        TopicVote[]
 
   @@index([authorId])
   @@index([songId])
@@ -417,23 +422,65 @@ model Topic {
 }
 
 model TopicComment {
-  id              String         @id @default(cuid())
+  id              String              @id @default(cuid())
   topicId         String
   userId          String
-  content         String         @db.Text
-  likes           Int            @default(0)
+  content         String              @db.Text
+  likes           Int                 @default(0)
   parentCommentId String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-  topic           Topic          @relation("TopicComments", fields: [topicId], references: [id], onDelete: Cascade)
-  user            User           @relation("TopicCommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
-  parentComment   TopicComment?  @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: SetNull)
-  replies         TopicComment[] @relation("CommentThread")
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  topic           Topic               @relation("TopicComments", fields: [topicId], references: [id], onDelete: Cascade)
+  user            User                @relation("TopicCommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  parentComment   TopicComment?       @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         TopicComment[]      @relation("CommentThread")
+  votes           TopicCommentVote[]
 
   @@index([topicId])
   @@index([userId])
   @@index([parentCommentId])
   @@index([createdAt])
+}
+
+model TopicVote {
+  id        String   @id @default(cuid())
+  userId    String
+  topicId   String
+  voteType  VoteType
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topicId])
+  @@index([userId])
+  @@index([topicId])
+}
+
+model TopicCommentVote {
+  id        String   @id @default(cuid())
+  userId    String
+  commentId String
+  voteType  VoteType
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment   TopicComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, commentId])
+  @@index([userId])
+  @@index([commentId])
+}
+
+model UserCommunityMembership {
+  id         String        @id @default(cuid())
+  userId     String
+  categoryId String
+  joinedAt   DateTime      @default(now())
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   ForumCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, categoryId])
+  @@index([userId])
+  @@index([categoryId])
 }
 
 model Notification {
