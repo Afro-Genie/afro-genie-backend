@@ -155,7 +155,7 @@ class CatalogService {
 
     // ALWAYS fetch from Spotify to enrich with images
     try {
-      const spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
+      spotifyResults = await searchSpotify('afrobeats', 'artist', 20);
       const spotifyArtists = (spotifyResults.artists?.items ?? []).map((artist: any) => ({
         id: `spotify:${artist.id}`,
         name: artist.name,
