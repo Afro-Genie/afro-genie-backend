@@ -43,7 +43,15 @@ interface SpotifySearchResponse {
     total: number;
   };
   albums?: unknown;
-  playlists?: unknown;
+  playlists?: {
+    items: Array<{
+      id: string;
+      name: string;
+      images?: Array<{ url: string; height: number | null; width: number | null }>;
+      external_urls?: { spotify?: string };
+    }>;
+    total: number;
+  };
   [key: string]: unknown;
 }
 
