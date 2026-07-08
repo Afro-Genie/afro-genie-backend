@@ -11,8 +11,34 @@ if (env.ENABLE_WORKERS) {
   logger.info('Background workers disabled for this process');
 }
 
-const server = app.listen(env.PORT, () => {
+async function checkDatabasePopulation(): Promise<void> {
+  try {
+    const [artistCount, songCount, genreCount, languageCount] = await Promise.all([
+      prisma.artist.count(),
+      prisma.song.count(),
+      prisma.genre.count(),
+      prisma.language.count(),
+    ]);
+
+    if (artistCount === 0 && songCount === 0 && genreCount === 0) {
+      logger.warn(
+        'Database appears empty. Run `npx tsx prisma/seed.ts` to populate seed data, ' +
+        'or check the Neon connection if this is unexpected.'
+      );
+    } else {
+      logger.info(
+        { artistCount, songCount, genreCount, languageCount },
+        'Database population check passed'
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, 'Database population check failed — Neon may be cold-starting');
+  }
+}
+
+const server = app.listen(env.PORT, async () => {
   logger.info({ port: env.PORT }, 'Server started');
+  await checkDatabasePopulation();
 });
 
 const gracefulShutdown = async (signal: string) => {

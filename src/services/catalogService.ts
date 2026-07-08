@@ -71,30 +71,46 @@ class CatalogService {
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
-    const [dbSongs, dbArtists, genres] = await Promise.all([
-      prisma.song.findMany({
-        where: { softDeleted: false },
-        include: { artist: { select: { name: true, imageUrl: true } } },
-        orderBy: { views: 'desc' },
-        take: 20,
-      }),
-      prisma.artist.findMany({
-        where: { softDeleted: false },
-        select: {
-          id: true,
-          name: true,
-          imageUrl: true,
-          genres: true,
-          spotifyId: true,
-          bio: true,
-          popularity: true,
-          followers: true,
-        },
-        take: 12,
-        orderBy: { popularity: 'desc' },
-      }),
-      prisma.genre.findMany({ take: 10 }),
-    ]);
+    let dbSongs: any[] = [];
+    let dbArtists: any[] = [];
+    let genres: any[] = [];
+
+    try {
+      const results = await Promise.all([
+        prisma.song.findMany({
+          where: { softDeleted: false },
+          include: { artist: { select: { name: true, imageUrl: true } } },
+          orderBy: { views: 'desc' },
+          take: 20,
+        }),
+        prisma.artist.findMany({
+          where: { softDeleted: false },
+          select: {
+            id: true,
+            name: true,
+            imageUrl: true,
+            genres: true,
+            spotifyId: true,
+            bio: true,
+            popularity: true,
+            followers: true,
+          },
+          take: 12,
+          orderBy: { popularity: 'desc' },
+        }),
+        prisma.genre.findMany({ take: 10 }),
+      ]);
+
+      dbSongs = results[0];
+      dbArtists = results[1];
+      genres = results[2];
+
+      if (dbSongs.length === 0 || dbArtists.length === 0) {
+        logger.warn({ dbSongs: dbSongs.length, dbArtists: dbArtists.length, genres: genres.length }, 'Catalog: DB returned empty results — possible Neon cold start');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Catalog: DB queries failed (Neon cold start?) — falling through to Spotify');
+    }
 
     let songs: UnifiedSong[] = dbSongs.map((s) => ({
       id: s.id,
@@ -242,7 +258,7 @@ class CatalogService {
       })),
     };
 
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', 3600);
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', 21600);
     return result;
   }
 
