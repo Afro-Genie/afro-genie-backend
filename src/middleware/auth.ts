@@ -39,6 +39,31 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction) =
 
 export const requireAuth = authenticate;
 
+export const optionalAuth = (req: Request, _res: Response, next: NextFunction) => {
+  const token = extractBearerToken(req.headers.authorization);
+
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const claims = jwt.verify(token, env.JWT_SECRET) as JwtClaims;
+    const userId = claims.userId ?? claims.sub;
+
+    if (userId && claims.email && claims.role) {
+      req.user = {
+        id: userId,
+        email: claims.email,
+        role: claims.role,
+      };
+    }
+  } catch {
+    // Invalid token — silently continue as unauthenticated
+  }
+
+  return next();
+};
+
 export const requireRole = (...roles: UserRole[]) => {
   return (req: Request, _res: Response, next: NextFunction) => {
     const currentUser = req.user as AuthUser | undefined;

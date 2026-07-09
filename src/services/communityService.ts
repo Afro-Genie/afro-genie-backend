@@ -16,6 +16,7 @@ interface CreateTopicData {
   forumCategoryId: string;
   songId?: string;
   artistId?: string;
+  imageUrl?: string;
 }
 
 interface CreateCommentData {
@@ -26,7 +27,7 @@ interface CreateCommentData {
 
 class CommunityService {
   // ── Categories ──────────────────────────────────────────────
-  async listCategories() {
+  async listCategories(userId?: string) {
     const categories = await prisma.forumCategory.findMany({
       orderBy: { order: 'asc' },
       include: {
@@ -39,7 +40,7 @@ class CommunityService {
       },
     });
 
-    return categories.map((c) => ({
+    const result = categories.map((c) => ({
       id: c.id,
       name: c.name,
       description: c.description,
@@ -48,6 +49,22 @@ class CommunityService {
       topicCount: c._count.topics,
       memberCount: c._count.memberships,
     }));
+
+    if (userId) {
+      const memberships = await prisma.userCommunityMembership.findMany({
+        where: { userId, categoryId: { in: categories.map((c) => c.id) } },
+        select: { categoryId: true },
+      });
+
+      const memberCategoryIds = new Set(memberships.map((m) => m.categoryId));
+
+      return result.map((c) => ({
+        ...c,
+        isMember: memberCategoryIds.has(c.id),
+      }));
+    }
+
+    return result;
   }
 
   async joinCategory(userId: string, categoryId: string) {
@@ -60,7 +77,7 @@ class CommunityService {
   }
 
   // ── Topics ──────────────────────────────────────────────────
-  async listTopics(params: ListTopicsParams) {
+  async listTopics(params: ListTopicsParams, userId?: string) {
     const page = params.page || 1;
     const limit = Math.min(params.limit || 20, 50);
     const where: Prisma.TopicWhereInput = {
@@ -85,6 +102,18 @@ class CommunityService {
       prisma.topic.count({ where }),
     ]);
 
+    // Fetch user votes if logged in
+    let userVotes = new Map<string, string>();
+    if (userId) {
+      const votes = await prisma.topicVote.findMany({
+        where: { userId, topicId: { in: topics.map((t) => t.id) } },
+        select: { topicId: true, voteType: true },
+      });
+      for (const v of votes) {
+        userVotes.set(v.topicId, v.voteType);
+      }
+    }
+
     let result = topics.map((t) => ({
       id: t.id,
       title: t.title,
@@ -100,6 +129,7 @@ class CommunityService {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       hotScore: 0,
+      userVote: userVotes.get(t.id) || null,
     }));
 
     if (params.sort === 'hot') {
@@ -133,6 +163,7 @@ class CommunityService {
           forumCategoryId: data.forumCategoryId,
           songId: data.songId || null,
           artistId: data.artistId || null,
+          imageUrl: data.imageUrl || null,
         },
       });
 
@@ -147,7 +178,7 @@ class CommunityService {
     return topic;
   }
 
-  async getTopic(id: string) {
+  async getTopic(id: string, userId?: string) {
     const topic = await prisma.topic.findUnique({
       where: { id },
       include: {
@@ -160,6 +191,16 @@ class CommunityService {
 
     if (!topic) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
+    }
+
+    // Fetch current user's vote on this topic
+    let userVote: string | null = null;
+    if (userId) {
+      const vote = await prisma.topicVote.findUnique({
+        where: { userId_topicId: { userId, topicId: id } },
+        select: { voteType: true },
+      });
+      userVote = vote?.voteType || null;
     }
 
     // Fetch all comments for this topic, build nested tree
@@ -192,6 +233,7 @@ class CommunityService {
 
     return {
       ...topic,
+      userVote,
       comments: sliced,
     };
   }
@@ -249,22 +291,31 @@ class CommunityService {
 
     if (existing) {
       if (existing.voteType === voteType) {
-        throw new ApiError('Already voted', 'ALREADY_VOTED', 409);
+        // Toggle off: remove the vote entirely
+        await prisma.$transaction(async (tx) => {
+          await tx.topicVote.delete({ where: { id: existing.id } });
+
+          const delta = voteType === 'UPVOTE' ? -1 : 1;
+          await tx.topic.update({
+            where: { id: topicId },
+            data: { likes: { increment: delta } },
+          });
+        });
+      } else {
+        // Change vote: adjust likes by +2 (remove -1, add +1)
+        await prisma.$transaction(async (tx) => {
+          await tx.topicVote.update({
+            where: { id: existing.id },
+            data: { voteType },
+          });
+
+          const delta = voteType === 'UPVOTE' ? 2 : -2;
+          await tx.topic.update({
+            where: { id: topicId },
+            data: { likes: { increment: delta } },
+          });
+        });
       }
-
-      // Change vote: upsert + adjust likes by +2 (remove -1, add +1)
-      await prisma.$transaction(async (tx) => {
-        await tx.topicVote.update({
-          where: { id: existing.id },
-          data: { voteType },
-        });
-
-        const delta = voteType === 'UPVOTE' ? 2 : -2;
-        await tx.topic.update({
-          where: { id: topicId },
-          data: { likes: { increment: delta } },
-        });
-      });
     } else {
       // New vote
       await prisma.$transaction(async (tx) => {
@@ -300,21 +351,30 @@ class CommunityService {
 
     if (existing) {
       if (existing.voteType === voteType) {
-        throw new ApiError('Already voted', 'ALREADY_VOTED', 409);
+        // Toggle off: remove the vote entirely
+        await prisma.$transaction(async (tx) => {
+          await tx.topicCommentVote.delete({ where: { id: existing.id } });
+
+          const delta = voteType === 'UPVOTE' ? -1 : 1;
+          await tx.topicComment.update({
+            where: { id: commentId },
+            data: { likes: { increment: delta } },
+          });
+        });
+      } else {
+        await prisma.$transaction(async (tx) => {
+          await tx.topicCommentVote.update({
+            where: { id: existing.id },
+            data: { voteType },
+          });
+
+          const delta = voteType === 'UPVOTE' ? 2 : -2;
+          await tx.topicComment.update({
+            where: { id: commentId },
+            data: { likes: { increment: delta } },
+          });
+        });
       }
-
-      await prisma.$transaction(async (tx) => {
-        await tx.topicCommentVote.update({
-          where: { id: existing.id },
-          data: { voteType },
-        });
-
-        const delta = voteType === 'UPVOTE' ? 2 : -2;
-        await tx.topicComment.update({
-          where: { id: commentId },
-          data: { likes: { increment: delta } },
-        });
-      });
     } else {
       await prisma.$transaction(async (tx) => {
         await tx.topicCommentVote.create({
@@ -375,6 +435,102 @@ class CommunityService {
     await prisma.topic.update({
       where: { id },
       data: { title: '[deleted]', content: '[deleted]' },
+    });
+
+    return { deleted: true };
+  }
+
+  // ── Topic Updates ────────────────────────────────────────────
+  async updateTopic(id: string, data: { title?: string; content?: string }) {
+    const topic = await prisma.topic.findUnique({ where: { id } });
+    if (!topic) {
+      throw new ApiError('Topic not found', 'NOT_FOUND', 404);
+    }
+
+    const updated = await prisma.topic.update({
+      where: { id },
+      data: {
+        ...(data.title !== undefined && { title: data.title }),
+        ...(data.content !== undefined && { content: data.content }),
+      },
+    });
+
+    return updated;
+  }
+
+  // ── Category Management ──────────────────────────────────────
+  async createCategory(data: { name: string; description?: string; icon?: string; order?: number }) {
+    const category = await prisma.forumCategory.create({
+      data: {
+        name: data.name,
+        description: data.description || null,
+        icon: data.icon || 'chat',
+        order: data.order || 0,
+      },
+    });
+    return category;
+  }
+
+  async updateCategory(id: string, data: { name?: string; description?: string; icon?: string; order?: number }) {
+    const category = await prisma.forumCategory.findUnique({ where: { id } });
+    if (!category) {
+      throw new ApiError('Category not found', 'NOT_FOUND', 404);
+    }
+
+    const updated = await prisma.forumCategory.update({
+      where: { id },
+      data: {
+        ...(data.name !== undefined && { name: data.name }),
+        ...(data.description !== undefined && { description: data.description }),
+        ...(data.icon !== undefined && { icon: data.icon }),
+        ...(data.order !== undefined && { order: data.order }),
+      },
+    });
+    return updated;
+  }
+
+  async deleteCategory(id: string) {
+    const category = await prisma.forumCategory.findUnique({ where: { id } });
+    if (!category) {
+      throw new ApiError('Category not found', 'NOT_FOUND', 404);
+    }
+
+    // Unlink all topics from this category before deleting
+    await prisma.$transaction(async (tx) => {
+      await tx.topic.updateMany({
+        where: { forumCategoryId: id },
+        data: { forumCategoryId: null },
+      });
+      await tx.forumCategory.delete({ where: { id } });
+    });
+
+    return { deleted: true };
+  }
+
+  // ── Comment Moderation ───────────────────────────────────────
+  async softDeleteComment(commentId: string, userId: string) {
+    const comment = await prisma.topicComment.findUnique({
+      where: { id: commentId },
+    });
+
+    if (!comment) {
+      throw new ApiError('Comment not found', 'NOT_FOUND', 404);
+    }
+
+    // Allow the comment author or MODERATOR/ADMIN to delete
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    const isAdmin = user?.role === 'MODERATOR' || user?.role === 'ADMIN';
+    if (comment.userId !== userId && !isAdmin) {
+      throw new ApiError('Not authorized to delete this comment', 'FORBIDDEN', 403);
+    }
+
+    await prisma.topicComment.update({
+      where: { id: commentId },
+      data: { content: '[deleted]' },
     });
 
     return { deleted: true };

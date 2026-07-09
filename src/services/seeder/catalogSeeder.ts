@@ -119,7 +119,7 @@ class SpotifyPlaylistSeeder implements Seeder {
 
     logger.info({ ...result }, 'Seeding complete');
     try {
-      await redis.del('catalog:homepage');
+      await redis.del('catalog:homepage:v11');
     } catch {
       // Cache invalidation is best-effort.
     }
@@ -265,7 +265,7 @@ class CatalogSeeder {
     this.lastSeedAt = new Date();
 
     try {
-      await redis.del('catalog:homepage');
+      await redis.del('catalog:homepage:v11');
     } catch {
       // Cache invalidation is best-effort.
     }
