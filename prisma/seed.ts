@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { Redis } from 'ioredis';
 import {
   ArtistApplicationStatus,
   BadgeType,
@@ -585,6 +586,23 @@ async function main() {
 }
 
 main()
+  .then(async () => {
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      const redis = new Redis(redisUrl);
+      try {
+        const cacheKey = 'catalog:homepage:v11';
+        const deleted = await redis.del(cacheKey);
+        console.log(`Cache cleared: ${cacheKey} (${deleted} key${deleted !== 1 ? 's' : ''})`);
+      } catch (err) {
+        console.warn('Cache invalidation skipped (Redis unavailable):', (err as Error).message);
+      } finally {
+        await redis.quit();
+      }
+    } else {
+      console.log('No REDIS_URL set — cache invalidation skipped');
+    }
+  })
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;

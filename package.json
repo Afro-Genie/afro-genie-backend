@@ -14,6 +14,7 @@
     "test:schema": "tsx scripts/test-schema.ts",
     "test:translations": "tsx scripts/translation-acceptance-test.ts",
     "test:lyrics-enrichment": "tsx scripts/lyrics-enrichment-acceptance-test.ts",
+    "test:community": "tsx scripts/community-acceptance-test.ts",
     "search:index": "tsx scripts/indexExistingSongs.ts",
     "search:bulk": "tsx -e \"import('./src/services/searchService').then((m)=>m.bulkIndex())\"",
     "docs:api:generate": "tsx scripts/generate-openapi-json.ts",

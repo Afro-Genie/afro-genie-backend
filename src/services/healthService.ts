@@ -2,6 +2,14 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { env } from '../lib/env';
 
+export interface PopulationCheck {
+  artists: number;
+  songs: number;
+  genres: number;
+  languages: number;
+  status: 'healthy' | 'degraded' | 'empty';
+}
+
 export interface HealthStatus {
   status: 'ok';
   uptime: number;
@@ -10,18 +18,36 @@ export interface HealthStatus {
     database: 'ok' | 'error';
     redis: 'ok' | 'error';
   };
-  data?: {
-    artists: number;
-    songs: number;
-    genres: number;
-    languages: number;
-  };
+  population?: PopulationCheck;
 }
 
-export const getHealthStatus = async (verbose?: boolean): Promise<HealthStatus> => {
+async function getPopulationCheck(): Promise<PopulationCheck> {
+  const [artists, songs, genres, languages] = await Promise.all([
+    prisma.artist.count(),
+    prisma.song.count(),
+    prisma.genre.count(),
+    prisma.language.count(),
+  ]);
+
+  const hasArtists = artists > 0;
+  const hasSongs = songs > 0;
+  const hasGenres = genres > 0;
+
+  let status: PopulationCheck['status'];
+  if (hasArtists && hasSongs && hasGenres) {
+    status = 'healthy';
+  } else if (hasArtists || hasSongs || hasGenres) {
+    status = 'degraded';
+  } else {
+    status = 'empty';
+  }
+
+  return { artists, songs, genres, languages, status };
+}
+
+export const getHealthStatus = async (verbose = false): Promise<HealthStatus> => {
   let database: 'ok' | 'error' = 'ok';
   let redisStatus: 'ok' | 'error' = 'ok';
-  let data: HealthStatus['data'];
 
   try {
     await prisma.$queryRawUnsafe('SELECT 1');
@@ -38,28 +64,19 @@ export const getHealthStatus = async (verbose?: boolean): Promise<HealthStatus> 
     redisStatus = 'error';
   }
 
-  if (verbose && database === 'ok') {
-    try {
-      const [artistCount, songCount, genreCount, languageCount] = await Promise.all([
-        prisma.artist.count(),
-        prisma.song.count(),
-        prisma.genre.count(),
-        prisma.language.count(),
-      ]);
-      data = { artists: artistCount, songs: songCount, genres: genreCount, languages: languageCount };
-    } catch {
-      // non-fatal if counts fail
-    }
-  }
-
-  return {
+  const result: HealthStatus = {
     status: 'ok',
     uptime: process.uptime(),
     version: env.APP_VERSION,
     checks: {
       database,
       redis: redisStatus
-    },
-    ...(data && { data }),
+    }
   };
+
+  if (verbose) {
+    result.population = await getPopulationCheck();
+  }
+
+  return result;
 };
