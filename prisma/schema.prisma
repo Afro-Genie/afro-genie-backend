@@ -397,6 +397,7 @@ model Topic {
   forumCategoryId String?
   songId       String?
   artistId     String?
+  imageUrl     String?
   likes        Int            @default(0)
   shares       Int            @default(0)
   commentCount Int            @default(0)

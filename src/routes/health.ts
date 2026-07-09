@@ -9,9 +9,10 @@ healthRouter.get(
   '/health',
   [query('verbose').optional().isBoolean().withMessage('verbose must be a boolean')],
   validateRequest,
-  async (_req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const health = await getHealthStatus();
+      const verbose = req.query.verbose === 'true';
+      const health = await getHealthStatus(verbose);
       res.status(200).json(health);
     } catch (error) {
       next(error);

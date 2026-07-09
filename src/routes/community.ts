@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { body, param, query } from 'express-validator';
-import { authenticate, requireRole } from '../middleware/auth';
+import { authenticate, optionalAuth, requireRole } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import { communityService } from '../services/communityService';
 import type { AuthUser } from '../types/auth';
@@ -11,9 +11,11 @@ export const communityRouter = Router();
 // ── Categories ────────────────────────────────────────────────
 communityRouter.get(
   '/community/categories',
-  async (_req: Request, res: Response, next: NextFunction) => {
+  optionalAuth,
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const categories = await communityService.listCategories();
+      const userId = (req.user as AuthUser | undefined)?.id;
+      const categories = await communityService.listCategories(userId);
       res.json(categories);
     } catch (error) {
       next(error);
@@ -39,6 +41,7 @@ communityRouter.post(
 // ── Topics ────────────────────────────────────────────────────
 communityRouter.get(
   '/community/topics',
+  optionalAuth,
   [
     query('categoryId').optional().isString(),
     query('sort').optional().isIn(['hot', 'new', 'top']),
@@ -49,7 +52,8 @@ communityRouter.get(
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await communityService.listTopics(req.query as any);
+      const userId = (req.user as AuthUser | undefined)?.id;
+      const result = await communityService.listTopics(req.query as any, userId);
       res.json(result);
     } catch (error) {
       next(error);
@@ -67,6 +71,7 @@ communityRouter.post(
     body('forumCategoryId').isString().withMessage('Forum category is required'),
     body('songId').optional().isString(),
     body('artistId').optional().isString(),
+    body('imageUrl').optional().isString(),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
@@ -82,10 +87,12 @@ communityRouter.post(
 
 communityRouter.get(
   '/community/topics/:id',
+  optionalAuth,
   [param('id').isString(), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const topic = await communityService.getTopic(req.params.id);
+      const userId = (req.user as AuthUser | undefined)?.id;
+      const topic = await communityService.getTopic(req.params.id, userId);
       res.json(topic);
     } catch (error) {
       next(error);
@@ -155,6 +162,101 @@ communityRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.softDeleteTopic(req.params.id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+communityRouter.patch(
+  '/community/topics/:id',
+  authenticate,
+  requireRole('MODERATOR', 'ADMIN'),
+  [
+    param('id').isString(),
+    body('title').optional().isString(),
+    body('content').optional().isString(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await communityService.updateTopic(req.params.id, req.body);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+communityRouter.delete(
+  '/community/comments/:id',
+  authenticate,
+  [param('id').isString(), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const result = await communityService.softDeleteComment(req.params.id, user.id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ── Category Management ───────────────────────────────────────
+// Note: GET /community/categories already exists above in Categories section
+communityRouter.post(
+  '/community/categories',
+  authenticate,
+  requireRole('MODERATOR', 'ADMIN'),
+  [
+    body('name').isString().isLength({ min: 1 }).withMessage('Name is required'),
+    body('description').optional().isString(),
+    body('icon').optional().isString(),
+    body('order').optional().isInt().toInt(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await communityService.createCategory(req.body);
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+communityRouter.patch(
+  '/community/categories/:id',
+  authenticate,
+  requireRole('MODERATOR', 'ADMIN'),
+  [
+    param('id').isString(),
+    body('name').optional().isString(),
+    body('description').optional().isString(),
+    body('icon').optional().isString(),
+    body('order').optional().isInt().toInt(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await communityService.updateCategory(req.params.id, req.body);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+communityRouter.delete(
+  '/community/categories/:id',
+  authenticate,
+  requireRole('MODERATOR', 'ADMIN'),
+  [param('id').isString(), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await communityService.deleteCategory(req.params.id);
       res.json(result);
     } catch (error) {
       next(error);
