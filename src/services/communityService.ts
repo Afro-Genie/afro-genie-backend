@@ -153,27 +153,27 @@ class CommunityService {
   }
 
   async createTopic(data: CreateTopicData, userId: string) {
-    const topic = await prisma.$transaction(async (tx) => {
-      const created = await tx.topic.create({
-        data: {
-          title: data.title,
-          content: data.content,
-          authorId: userId,
-          category: 'GENERAL',
-          forumCategoryId: data.forumCategoryId,
-          songId: data.songId || null,
-          artistId: data.artistId || null,
-          imageUrl: data.imageUrl || null,
-        },
-      });
+    const topic = await prisma.topic.create({
+      data: {
+        title: data.title,
+        content: data.content,
+        authorId: userId,
+        category: 'GENERAL',
+        forumCategoryId: data.forumCategoryId,
+        songId: data.songId || null,
+        artistId: data.artistId || null,
+        imageUrl: data.imageUrl || null,
+      },
+    });
 
-      await tx.forumCategory.update({
+    try {
+      await prisma.forumCategory.update({
         where: { id: data.forumCategoryId },
         data: { topicCount: { increment: 1 } },
       });
-
-      return created;
-    });
+    } catch {
+      // Non-critical — topic is already created
+    }
 
     return topic;
   }

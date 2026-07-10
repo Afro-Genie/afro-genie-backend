@@ -64,7 +64,6 @@ communityRouter.get(
 communityRouter.post(
   '/community/topics',
   authenticate,
-  requireRole('MODERATOR', 'ADMIN'),
   [
     body('title').isString().isLength({ min: 1, max: 255 }).withMessage('Title is required (max 255 chars)'),
     body('content').isString().isLength({ min: 1 }).withMessage('Content is required'),
