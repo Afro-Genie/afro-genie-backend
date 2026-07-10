@@ -258,7 +258,12 @@ class CatalogService {
       })),
     };
 
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', 21600);
+    const hasRealData = result.songs.length > 0 && result.genres.length > 0;
+    if (hasRealData) {
+      await redis.set(cacheKey, JSON.stringify(result), 'EX', 21600);
+    } else {
+      logger.warn('Catalog homepage result is empty — skipping Redis cache to avoid poisoning');
+    }
     return result;
   }
 

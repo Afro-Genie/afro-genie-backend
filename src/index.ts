@@ -4,6 +4,8 @@ import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 
+export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
+
 if (env.ENABLE_WORKERS) {
   void import('./jobs/workers.js');
   logger.info('Background workers enabled');
@@ -20,18 +22,32 @@ async function checkDatabasePopulation(): Promise<void> {
       prisma.language.count(),
     ]);
 
-    if (artistCount === 0 && songCount === 0 && genreCount === 0) {
+    const hasArtists = artistCount > 0;
+    const hasSongs = songCount > 0;
+    const hasGenres = genreCount > 0;
+
+    if (!hasArtists && !hasSongs && !hasGenres) {
+      dbPopulationStatus = 'empty';
+      logger.error(
+        'DATABASE IS EMPTY — catalog data will be missing. ' +
+        'Run `npx tsx prisma/seed.ts` immediately to restore data. ' +
+        'The /api/health endpoint now reports degraded status.'
+      );
+    } else if (!hasArtists || !hasSongs || !hasGenres) {
+      dbPopulationStatus = 'degraded';
       logger.warn(
-        'Database appears empty. Run `npx tsx prisma/seed.ts` to populate seed data, ' +
-        'or check the Neon connection if this is unexpected.'
+        { artistCount, songCount, genreCount, languageCount },
+        'Database partially empty — some catalog data is missing'
       );
     } else {
+      dbPopulationStatus = 'healthy';
       logger.info(
         { artistCount, songCount, genreCount, languageCount },
         'Database population check passed'
       );
     }
   } catch (err) {
+    dbPopulationStatus = 'empty';
     logger.error({ err }, 'Database population check failed — Neon may be cold-starting');
   }
 }
