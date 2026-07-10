@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { env } from '../lib/env';
+import { dbPopulationStatus } from '../index';
 
 export interface PopulationCheck {
   artists: number;
@@ -11,14 +12,14 @@ export interface PopulationCheck {
 }
 
 export interface HealthStatus {
-  status: 'ok';
+  status: 'ok' | 'degraded' | 'error';
   uptime: number;
   version: string;
   checks: {
     database: 'ok' | 'error';
     redis: 'ok' | 'error';
   };
-  population?: PopulationCheck;
+  population: PopulationCheck;
 }
 
 async function getPopulationCheck(): Promise<PopulationCheck> {
@@ -45,7 +46,7 @@ async function getPopulationCheck(): Promise<PopulationCheck> {
   return { artists, songs, genres, languages, status };
 }
 
-export const getHealthStatus = async (verbose = false): Promise<HealthStatus> => {
+export const getHealthStatus = async (): Promise<HealthStatus> => {
   let database: 'ok' | 'error' = 'ok';
   let redisStatus: 'ok' | 'error' = 'ok';
 
@@ -64,19 +65,25 @@ export const getHealthStatus = async (verbose = false): Promise<HealthStatus> =>
     redisStatus = 'error';
   }
 
-  const result: HealthStatus = {
-    status: 'ok',
+  const population = await getPopulationCheck();
+
+  let status: HealthStatus['status'];
+  if (database === 'error' || redisStatus === 'error') {
+    status = 'error';
+  } else if (population.status === 'empty' || population.status === 'degraded') {
+    status = 'degraded';
+  } else {
+    status = 'ok';
+  }
+
+  return {
+    status,
     uptime: process.uptime(),
     version: env.APP_VERSION,
     checks: {
       database,
       redis: redisStatus
-    }
+    },
+    population
   };
-
-  if (verbose) {
-    result.population = await getPopulationCheck();
-  }
-
-  return result;
 };
