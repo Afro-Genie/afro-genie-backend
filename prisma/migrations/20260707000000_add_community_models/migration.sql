@@ -1,9 +1,10 @@
 -- Create UserCommunityMembership table
 CREATE TABLE IF NOT EXISTS "user_community_memberships" (
+    "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "categoryId" TEXT NOT NULL,
     "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "user_community_memberships_pkey" PRIMARY KEY ("userId", "categoryId")
+    CONSTRAINT "user_community_memberships_pkey" PRIMARY KEY ("id")
 );
 
 -- Create TopicVote table
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS "topic_comment_votes" (
 );
 
 -- Unique constraints
+CREATE UNIQUE INDEX IF NOT EXISTS "user_community_memberships_userId_categoryId_key" ON "user_community_memberships"("userId", "categoryId");
 CREATE UNIQUE INDEX IF NOT EXISTS "topic_votes_userId_topicId_key" ON "topic_votes"("userId", "topicId");
 CREATE UNIQUE INDEX IF NOT EXISTS "topic_comment_votes_userId_commentId_key" ON "topic_comment_votes"("userId", "commentId");
 
