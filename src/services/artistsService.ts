@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { enqueueIndexArtist } from '../jobs/searchIndexJob';
 import { prisma } from '../lib/prisma';
+import { syncQueue } from '../lib/queue';
 import { ApiError } from '../middleware/errorHandler';
 
 const DEFAULT_LIMIT = 20;
@@ -219,6 +220,14 @@ export const createArtist = async (payload: ArtistInput) => {
   });
 
   await enqueueIndexArtist(artist.id);
+
+  if (artist.spotifyId) {
+    await syncQueue.add(
+      'sync-artist',
+      { type: 'artist', artistId: artist.id },
+      { delay: 300000 }
+    );
+  }
 
   return artist;
 };

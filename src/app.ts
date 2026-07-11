@@ -8,6 +8,8 @@ import pinoHttp from 'pino-http';
 import { adminSeederRouter } from './routes/admin/seeder';
 import { adminSongsRouter } from './routes/admin/songs';
 import { adminUsersRouter } from './routes/admin/users';
+import { adminSyncRouter } from './routes/admin/sync';
+import { adminGenresRouter } from './routes/admin/genres';
 import { artistsRouter } from './routes/artists';
 import { authRouter } from './routes/auth';
 import { healthRouter } from './routes/health';
@@ -77,6 +79,8 @@ app.use('/api', artistsRouter);
 app.use('/api/admin', adminSongsRouter);
 app.use('/api/admin', adminSeederRouter);
 app.use('/api/admin', adminUsersRouter);
+app.use('/api/admin', adminSyncRouter);
+app.use('/api/admin', adminGenresRouter);
 app.use('/api', spotifyRouter);
 
 app.get('/api/admin/ping', authenticate, requireRole('ADMIN'), (_req, res) => {

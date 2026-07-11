@@ -3,6 +3,7 @@ import { env } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
+import { syncQueue } from './lib/queue';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -12,6 +13,32 @@ if (env.ENABLE_WORKERS) {
 } else {
   logger.info('Background workers disabled for this process');
 }
+
+const scheduleSyncJobs = async () => {
+  await syncQueue.add(
+    'sync-all',
+    { type: 'sync-all' },
+    {
+      repeat: { pattern: '0 3 * * *' },
+      jobId: 'sync-all-daily',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  await syncQueue.add(
+    'refresh-stale',
+    { type: 'refresh-stale' },
+    {
+      repeat: { pattern: '0 6 * * *' },
+      jobId: 'refresh-stale-daily',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  logger.info('Sync cron jobs scheduled: daily sync-all at 3am, refresh-stale at 6am');
+};
 
 async function checkDatabasePopulation(): Promise<void> {
   try {
@@ -55,6 +82,10 @@ async function checkDatabasePopulation(): Promise<void> {
 const server = app.listen(env.PORT, async () => {
   logger.info({ port: env.PORT }, 'Server started');
   await checkDatabasePopulation();
+
+  if (env.ENABLE_WORKERS) {
+    await scheduleSyncJobs();
+  }
 });
 
 const gracefulShutdown = async (signal: string) => {

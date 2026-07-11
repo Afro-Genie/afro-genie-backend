@@ -1,13 +1,16 @@
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
 import type { NextFunction, Request, Response } from 'express';
-import { VoteType } from '@prisma/client';
+import { TranslationStatus, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRole } from '../middleware/auth';
 import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
-import { estimateCostUsd, GeminiProvider } from '../services/providers/geminiProvider';
+import { estimateCostUsd } from '../services/providers/geminiProvider';
 import {
+  checkDailyBudget,
+  checkUserRateLimit,
+  getActiveProvider,
   getTranslationsBySong,
   logAICall,
   requestTranslation,
@@ -45,13 +48,41 @@ translationsRouter.post(
       };
       const userId = req.user!.id;
 
+      // Per-user daily rate limit
+      const rateLimit = await checkUserRateLimit(userId);
+      if (!rateLimit.allowed) {
+        return next(
+          new ApiError(
+            `Daily translation limit reached. Try again after ${rateLimit.resetAt.toISOString()}.`,
+            'RATE_LIMITED',
+            429,
+          ),
+        );
+      }
+
+      // Daily budget guard
+      const budget = await checkDailyBudget();
+      if (!budget.withinBudget) {
+        return next(
+          new ApiError(
+            'Translation service is temporarily at capacity. Please try again later.',
+            'BUDGET_EXCEEDED',
+            503,
+          ),
+        );
+      }
+
       const outcome = await requestTranslation({ songId, userId, sourceLang, targetLang });
 
       if (outcome.status === 'existing') {
         return res.status(200).json({ status: 'existing', translation: outcome.translation });
       }
 
-      return res.status(202).json({ status: 'queued', jobId: outcome.jobId });
+      return res.status(202).json({
+        status: 'queued',
+        jobId: outcome.jobId,
+        rateLimit: { remaining: rateLimit.remaining, resetAt: rateLimit.resetAt },
+      });
     } catch (err) {
       const e = err as Error & { code?: string; httpStatus?: number };
       if (e.code === 'NOT_FOUND') {
@@ -202,6 +233,101 @@ translationsRouter.post(
 );
 
 // ---------------------------------------------------------------------------
+// POST /api/translations/:id/publish
+// Admin-only. Transitions APPROVED -> PUBLISHED.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/:id/publish',
+  authenticate,
+  requireRole('ADMIN'),
+  [param('id').isString().notEmpty().withMessage('id is required')],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const translationId = req.params.id;
+
+      const translation = await prisma.translation.findUnique({
+        where: { id: translationId },
+        select: { id: true, status: true },
+      });
+
+      if (!translation) {
+        return next(new ApiError('Translation not found', 'NOT_FOUND', 404));
+      }
+
+      if (translation.status !== TranslationStatus.APPROVED) {
+        return next(
+          new ApiError(
+            `Cannot publish translation with status "${translation.status}". Must be APPROVED.`,
+            'INVALID_STATUS',
+            422,
+          ),
+        );
+      }
+
+      const updated = await prisma.translation.update({
+        where: { id: translationId },
+        data: { status: TranslationStatus.PUBLISHED },
+      });
+
+      return res.status(200).json({ status: 'published', translation: updated });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/translations/:id/correction
+// Authenticated. Creates a correction record with PENDING status.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/:id/correction',
+  authenticate,
+  [
+    param('id').isString().notEmpty().withMessage('id is required'),
+    body('originalText').isString().notEmpty().withMessage('originalText is required'),
+    body('suggestedText').isString().notEmpty().withMessage('suggestedText is required'),
+    body('reason').optional({ nullable: true }).isString(),
+  ],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const translationId = req.params.id;
+      const userId = req.user!.id;
+      const { originalText, suggestedText, reason } = req.body as {
+        originalText: string;
+        suggestedText: string;
+        reason?: string;
+      };
+
+      const translation = await prisma.translation.findUnique({
+        where: { id: translationId },
+        select: { id: true },
+      });
+
+      if (!translation) {
+        return next(new ApiError('Translation not found', 'NOT_FOUND', 404));
+      }
+
+      const correction = await prisma.translationCorrection.create({
+        data: {
+          translationId,
+          userId,
+          originalText,
+          suggestedText,
+          reason: reason ?? null,
+        },
+      });
+
+      return res.status(201).json(correction);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /api/translations/detect-language
 // Public endpoint. {lyrics} -> {languageCode, languageName, confidence}
 // ---------------------------------------------------------------------------
@@ -213,17 +339,15 @@ translationsRouter.post(
     try {
       const { lyrics } = req.body as { lyrics: string };
 
-      const prompt = `Identify the primary language of these lyrics. Return ONLY valid JSON:
-{languageCode: string, languageName: string, confidence: 'high'|'medium'|'low'}
-Known African codes: yo=Yoruba, ig=Igbo, ha=Hausa, pcm=Nigerian Pidgin, tw=Twi, sw=Swahili.
-Lyrics: ${lyrics}`;
+      const provider = getActiveProvider();
+      const result = await provider.detectLanguage(lyrics);
 
-      const provider = new GeminiProvider();
-      const result = await provider.detectLanguageWithPrompt(prompt);
+      const confidence: 'high' | 'medium' | 'low' =
+        result.confidence >= 0.7 ? 'high' : result.confidence >= 0.4 ? 'medium' : 'low';
 
       // Log AI call — every API call is recorded
       await logAICall({
-        provider: 'gemini',
+        provider: provider.name,
         model: result.model,
         promptVersion: 'lang-detect-v1',
         tokensInput: result.tokensInput,
@@ -235,8 +359,8 @@ Lyrics: ${lyrics}`;
 
       return res.status(200).json({
         languageCode: result.languageCode,
-        languageName: result.languageName,
-        confidence: result.confidence,
+        languageName: result.languageCode,
+        confidence,
       });
     } catch (err) {
       return next(err);

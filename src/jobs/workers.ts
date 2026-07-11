@@ -6,7 +6,9 @@ import { processLyricsEnrichmentJob } from './lyricsEnrichmentJob';
 import { processSearchIndexJob } from './searchIndexJob';
 import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
+import { processSyncJob } from './syncWorker';
 import type { TranslationJobData } from '../types/translation';
+import type { SyncJobData } from './syncWorker';
 
 const connection = { url: env.REDIS_URL };
 
@@ -59,6 +61,15 @@ export const viewCountFlushWorker = new Worker(
     await processViewCountFlushJob();
   },
   { connection, concurrency: 1 }
+);
+
+export const syncWorker = new Worker<SyncJobData>(
+  'syncQueue',
+  async (job) => {
+    logger.info({ jobId: job.id, type: job.data.type }, 'Processing sync job');
+    await processSyncJob(job);
+  },
+  { connection, concurrency: 2 }
 );
 
 void scheduleViewCountFlush();

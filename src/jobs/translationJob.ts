@@ -2,7 +2,7 @@ import type { Job } from 'bullmq';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { estimateCostUsd } from '../services/providers/geminiProvider';
-import { getActiveProvider, logAICall } from '../services/translationService';
+import { logAICall, translateWithFallback } from '../services/translationService';
 import type { TranslationJobData } from '../types/translation';
 
 export async function processTranslationJob(job: Job<TranslationJobData>): Promise<void> {
@@ -61,9 +61,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     return;
   }
 
-  const provider = getActiveProvider();
-
-  const result = await provider.translate({
+  const result = await translateWithFallback({
     artist: song.artist.name,
     title: song.title,
     lyrics: lyric.content!,
@@ -101,7 +99,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   });
 
   await logAICall({
-    provider: provider.name,
+    provider: result.providerName,
     model: result.model,
     promptVersion: result.promptVersion,
     tokensInput: result.tokensInput,
@@ -116,6 +114,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
       jobId: job.id,
       songId,
       targetLang,
+      provider: result.providerName,
       tokensUsed: result.tokensUsed,
       costUsd: estimatedCostUsd.toFixed(6),
     },
