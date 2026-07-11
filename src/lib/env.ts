@@ -27,8 +27,14 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM_EMAIL: z.string().email().optional(),
   GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),
+  OPENAI_API_KEY: z.string().optional(),
   AI_PROVIDER: z.string().optional(),
   AI_TRANSLATION_PROVIDER: z.string().default('gemini'),
+  TRANSLATION_RATE_LIMIT_PER_DAY: z.coerce.number().int().positive().default(20),
+  TRANSLATION_DAILY_BUDGET_USD: z.coerce.number().positive().default(5.0),
+  SYNC_STALE_THRESHOLD_HOURS: z.coerce.number().int().positive().default(72),
+  SYNC_MAX_BATCH: z.coerce.number().int().positive().default(50),
+  SYNC_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(60),
   APP_VERSION: z.string().default('1.0.0'),
   ENABLE_WORKERS: z.coerce.boolean().default(false)
 });

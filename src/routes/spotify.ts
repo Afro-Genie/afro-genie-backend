@@ -1,7 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { body, param, query } from 'express-validator';
-import path from 'path';
 import { authenticate, requireRole } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import {
@@ -11,16 +10,6 @@ import {
 } from '../services/spotifyService';
 
 export const spotifyRouter = Router();
-
-spotifyRouter.get('/spotify/fallback-preview.mp3', (req: Request, res: Response) => {
-  const fallbackPath = path.resolve(process.cwd(), 'assets', 'fallback-preview.mp3');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.sendFile(fallbackPath, (error) => {
-    if (error) {
-      res.status(404).json({ error: 'Fallback preview file not found' });
-    }
-  });
-});
 
 spotifyRouter.get(
   '/spotify/track/:trackId',

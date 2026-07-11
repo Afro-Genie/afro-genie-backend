@@ -33,3 +33,4 @@ export const searchIndexQueue = createQueue('searchIndexQueue');
 export const languageCategorizationQueue = createQueue('languageCategorizationQueue');
 export const viewCountFlushQueue = createQueue('viewCountFlushQueue');
 export const lyricsEnrichmentQueue = createQueue('lyricsEnrichmentQueue');
+export const syncQueue = createQueue('syncQueue');

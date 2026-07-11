@@ -3,10 +3,10 @@ import { redis } from '../lib/redis';
 import { enqueueIndexArtist } from '../jobs/searchIndexJob';
 import { env } from '../lib/env';
 import { ApiError } from '../middleware/errorHandler';
+import { selectBestSpotifyImage } from './imageService';
 
 const SPOTIFY_ACCOUNTS_URL = 'https://accounts.spotify.com/api/token';
 const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
-const FALLBACK_PREVIEW_URL = '/api/spotify/fallback-preview.mp3';
 
 interface SpotifyTokenResponse {
   access_token: string;
@@ -102,55 +102,21 @@ const isPremiumEntitlementError = (error: unknown): boolean => {
 };
 
 const fallbackSearch = (query: string, type: string): SpotifySearchResponse => {
+  void query;
   if (type !== 'track') {
     return { tracks: { items: [], total: 0 } };
   }
 
-  if (query.toLowerCase().includes('woju')) {
-    return { tracks: { items: [], total: 0 } };
-  }
-
-  return {
-    tracks: {
-      items: [
-        {
-          id: 'mock-track-30s',
-          name: 'Fallback Preview Track',
-          preview_url: FALLBACK_PREVIEW_URL,
-          artists: [{ name: 'Fallback Artist' }],
-          album: {
-            name: 'Fallback Album',
-            images: [{ url: 'https://picsum.photos/300', height: 300, width: 300 }]
-          },
-          duration_ms: 30000,
-          external_urls: { spotify: 'https://open.spotify.com/track/mock-track-30s' }
-        }
-      ],
-      total: 1
-    }
-  };
+  return { tracks: { items: [], total: 0 } };
 };
 
 const fallbackTrack = (trackId: string): SimplifiedSpotifyTrack => {
-  if (trackId === 'mock-track-30s') {
-    return {
-      id: trackId,
-      name: 'Fallback Preview Track',
-      artistName: 'Fallback Artist',
-      albumName: 'Fallback Album',
-      imageUrl: 'https://picsum.photos/300',
-      previewUrl: FALLBACK_PREVIEW_URL,
-      durationMs: 30000,
-      externalUrl: 'https://open.spotify.com/track/mock-track-30s'
-    };
-  }
-
   return {
     id: trackId,
     name: 'Fallback Track',
     artistName: 'Fallback Artist',
     albumName: 'Fallback Album',
-    imageUrl: 'https://picsum.photos/300',
+    imageUrl: '',
     previewUrl: null,
     durationMs: 0,
     externalUrl: null
@@ -163,26 +129,10 @@ const fallbackArtist = (spotifyArtistId: string): SpotifyArtistResponse => {
     name: 'Fallback Synced Artist',
     genres: ['Afrobeats', 'Afropop'],
     popularity: 77,
-    images: [{ url: 'https://picsum.photos/640', height: 640, width: 640 }],
+    images: [],
     followers: { total: 123456 },
     external_urls: { spotify: `https://open.spotify.com/artist/${spotifyArtistId}` }
   };
-};
-
-const selectBestImageUrl = (
-  images: Array<{ url: string; height: number | null; width: number | null }> | undefined
-): string | null => {
-  if (!images || images.length === 0) {
-    return null;
-  }
-
-  const sorted = [...images].sort((a, b) => {
-    const areaA = (a.height ?? 0) * (a.width ?? 0);
-    const areaB = (b.height ?? 0) * (b.width ?? 0);
-    return areaB - areaA;
-  });
-
-  return sorted[0]?.url ?? null;
 };
 
 const requireSpotifyCredentials = () => {
@@ -292,7 +242,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
     name: track.name,
     artistName: track.artists?.[0]?.name ?? 'Unknown Artist',
     albumName: track.album?.name ?? null,
-    imageUrl: selectBestImageUrl(track.album?.images),
+    imageUrl: selectBestSpotifyImage(track.album?.images),
     previewUrl: track.preview_url ?? null,
     durationMs: track.duration_ms ?? 0,
     externalUrl: track.external_urls?.spotify ?? null
@@ -310,7 +260,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
 export const searchSpotify = async (
   q: string,
   type: string,
-  limit: number = 20
+  limit: number = 10
 ): Promise<SpotifySearchResponse> => {
   const normalizedQuery = q.trim().toLowerCase();
   const cacheKey = `spotify:search:${type}:${limit}:${normalizedQuery}`;
@@ -375,7 +325,7 @@ export const syncArtistFromSpotify = async (
     data: {
       spotifyId: spotifyArtist.id,
       name: spotifyArtist.name,
-      imageUrl: selectBestImageUrl(spotifyArtist.images),
+      imageUrl: selectBestSpotifyImage(spotifyArtist.images),
       popularity: spotifyArtist.popularity ?? 0,
       genres: spotifyArtist.genres ?? [],
       followers: spotifyArtist.followers?.total ?? 0,

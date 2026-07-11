@@ -3,53 +3,7 @@ import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { searchSpotify } from './spotifyService';
 import { genreService } from './genreService';
-
-const FALLBACK_PREVIEW = '/api/spotify/fallback-preview.mp3';
-
-// Color mapping for genres
-const GENRE_COLORS: Record<string, { primary: string; secondary: string }> = {
-  'afrobeats': { primary: '#FF6B35', secondary: '#F7931E' },
-  'afropop': { primary: '#F4A261', secondary: '#E76F51' },
-  'amapiano': { primary: '#2A9D8F', secondary: '#264653' },
-  'highlife': { primary: '#E9C46A', secondary: '#F4A261' },
-  'dancehall': { primary: '#D62828', secondary: '#F77F00' },
-  'reggae': { primary: '#06A77D', secondary: '#118B7C' },
-  'hipop': { primary: '#D62828', secondary: '#F77F00' },
-  'r&b': { primary: '#7209B7', secondary: '#B5179E' },
-  'alt-r&b': { primary: '#7209B7', secondary: '#B5179E' },
-  'house': { primary: '#00A8E8', secondary: '#00C9FF' },
-  'electronic': { primary: '#FF0080', secondary: '#FF8C00' },
-  'pop': { primary: '#FF006E', secondary: '#FB5607' },
-  'mbalax': { primary: '#FFB703', secondary: '#FB8500' },
-  'benga': { primary: '#8ECAE6', secondary: '#219EBC' },
-  'kwaito': { primary: '#023047', secondary: '#FB8500' },
-  'afro-fusion': { primary: '#FF006E', secondary: '#FB5607' },
-};
-
-/**
- * Generate a gradient-based image URL for genres
- */
-function generateGradientImage(genreName: string): string {
-  const config = GENRE_COLORS[genreName.toLowerCase()] || {
-    primary: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
-    secondary: '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0'),
-  };
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
-    <defs>
-      <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" style="stop-color:${config.primary};stop-opacity:1" />
-        <stop offset="100%" style="stop-color:${config.secondary};stop-opacity:1" />
-      </linearGradient>
-    </defs>
-    <rect width="300" height="300" fill="url(#grad)" />
-    <text x="50%" y="50%" text-anchor="middle" dy="0.3em" font-size="36" font-weight="bold" fill="white" font-family="Arial" opacity="0.3">
-      ${genreName.substring(0, 1).toUpperCase()}
-    </text>
-  </svg>`;
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-}
+import { generateGradientImage } from './imageService';
 
 interface UnifiedSong {
   id: string;
@@ -145,7 +99,7 @@ class CatalogService {
           artistName: t.artists?.[0]?.name || 'Unknown',
           albumName: t.album?.name,
           imageUrl: t.album?.images?.[0]?.url,
-          previewUrl: t.preview_url || FALLBACK_PREVIEW,
+          previewUrl: t.preview_url || null,
           spotifyId: t.id,
           source: 'SPOTIFY' as const,
           genres: [],
