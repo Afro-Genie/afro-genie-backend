@@ -591,9 +591,14 @@ main()
     if (redisUrl) {
       const redis = new Redis(redisUrl);
       try {
-        const cacheKey = 'catalog:homepage:v11';
-        const deleted = await redis.del(cacheKey);
-        console.log(`Cache cleared: ${cacheKey} (${deleted} key${deleted !== 1 ? 's' : ''})`);
+        const patterns = ['catalog:homepage:v*', 'spotify:search:*'];
+        for (const pattern of patterns) {
+          const keys = await redis.keys(pattern);
+          if (keys.length > 0) {
+            await redis.del(...keys);
+            console.log(`Cache cleared: ${keys.length} keys matching "${pattern}"`);
+          }
+        }
       } catch (err) {
         console.warn('Cache invalidation skipped (Redis unavailable):', (err as Error).message);
       } finally {
