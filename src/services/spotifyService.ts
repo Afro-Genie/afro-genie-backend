@@ -248,6 +248,29 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
     externalUrl: track.external_urls?.spotify ?? null
   };
 
+  // Fallback: if primary lookup returned null preview, try searching by name.
+  // Some tracks have preview available via search but not via individual lookup.
+  if (!result.previewUrl) {
+    try {
+      const searchQuery = `${result.artistName} ${result.name}`;
+      const searchResult = await spotifyFetch<SpotifySearchResponse>(
+        `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=5`
+      );
+      const searchTracks = searchResult.tracks?.items ?? [];
+      for (const st of searchTracks) {
+        if (st.preview_url && st.id !== trackId) {
+          result.previewUrl = st.preview_url;
+          if (!result.imageUrl) {
+            result.imageUrl = selectBestSpotifyImage(st.album?.images);
+          }
+          break;
+        }
+      }
+    } catch {
+      // Fallback search is best-effort; keep the original null preview.
+    }
+  }
+
   try {
     await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60);
   } catch {
