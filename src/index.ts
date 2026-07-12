@@ -40,6 +40,21 @@ const scheduleSyncJobs = async () => {
   logger.info('Sync cron jobs scheduled: daily sync-all at 3am, refresh-stale at 6am');
 };
 
+const invalidateStaleCaches = async () => {
+  try {
+    const patterns = ['catalog:homepage:v*', 'spotify:search:*'];
+    for (const pattern of patterns) {
+      const keys = await redis.keys(pattern);
+      if (keys.length > 0) {
+        await redis.del(...keys);
+        logger.info({ pattern, count: keys.length }, 'Cleared stale cache keys on deploy');
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Cache invalidation failed on deploy — non-fatal');
+  }
+};
+
 async function checkDatabasePopulation(): Promise<void> {
   try {
     const [artistCount, songCount, genreCount, languageCount] = await Promise.all([
@@ -81,6 +96,7 @@ async function checkDatabasePopulation(): Promise<void> {
 
 const server = app.listen(env.PORT, async () => {
   logger.info({ port: env.PORT }, 'Server started');
+  await invalidateStaleCaches();
   await checkDatabasePopulation();
 
   if (env.ENABLE_WORKERS) {
