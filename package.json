@@ -16,6 +16,8 @@
     "test:lyrics-enrichment": "tsx scripts/lyrics-enrichment-acceptance-test.ts",
     "test:community": "tsx scripts/community-acceptance-test.ts",
     "search:index": "tsx scripts/indexExistingSongs.ts",
+    "spotify:backfill": "tsx scripts/backfillSpotifyIds.ts",
+    "spotify:backfill:dry": "tsx scripts/backfillSpotifyIds.ts --dry-run",
     "search:bulk": "tsx -e \"import('./src/services/searchService').then((m)=>m.bulkIndex())\"",
     "docs:api:generate": "tsx scripts/generate-openapi-json.ts",
     "docs:api:build": "npm run docs:api:generate",

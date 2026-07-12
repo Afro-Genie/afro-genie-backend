@@ -6,6 +6,14 @@ import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { ApiError } from '../middleware/errorHandler';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
+import { getTrack } from './spotifyService';
+
+const SPOTIFY_ID_PREFIX = 'spotify:';
+
+const isSpotifyId = (id: string): boolean => id.startsWith(SPOTIFY_ID_PREFIX);
+
+const extractSpotifyTrackId = (prefixedId: string): string =>
+  prefixedId.slice(SPOTIFY_ID_PREFIX.length);
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
@@ -303,6 +311,10 @@ export const listSongs = async (params: SongListParams) => {
 };
 
 export const getSongById = async (songId: string, options?: { incrementViewCount?: boolean }) => {
+  if (isSpotifyId(songId)) {
+    return getSpotifySongById(songId);
+  }
+
   const active = await isSongActive(songId);
   if (!active) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
@@ -341,6 +353,40 @@ export const getSongById = async (songId: string, options?: { incrementViewCount
     ...song,
     latestApprovedTranslations: approvedTranslationsByLanguage,
     viewCount: song.views + currentCount,
+  };
+};
+
+const getSpotifySongById = async (prefixedId: string) => {
+  const spotifyTrackId = extractSpotifyTrackId(prefixedId);
+  if (!spotifyTrackId) {
+    throw new ApiError('Invalid Spotify song ID', 'BAD_REQUEST', 400);
+  }
+
+  const track = await getTrack(spotifyTrackId);
+
+  return {
+    id: prefixedId,
+    title: track.name,
+    artistId: '',
+    artist: { id: '', name: track.artistName, imageUrl: track.imageUrl, genres: [] },
+    artistName: track.artistName,
+    albumName: track.albumName,
+    imageUrl: track.imageUrl,
+    spotifyId: track.id,
+    spotifyPreviewUrl: track.previewUrl,
+    previewAvailable: !!track.previewUrl,
+    durationMs: track.durationMs,
+    views: 0,
+    requestCount: 0,
+    softDeleted: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    releaseYear: null,
+    lyrics: [],
+    songLanguages: [],
+    genres: [],
+    latestApprovedTranslations: {},
+    source: 'SPOTIFY' as const,
   };
 };
 
