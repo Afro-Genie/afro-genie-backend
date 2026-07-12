@@ -245,11 +245,15 @@ const syncArtistPreviewUrls = async (spotifyArtistId: string): Promise<void> => 
       `/artists/${encodeURIComponent(spotifyArtistId)}/top-tracks?market=US`
     );
 
+    // Build maps for tracks that have data
     const previewMap = new Map<string, string>();
+    const nullPreviewIds = new Set<string>();
     const imageMap = new Map<string, string>();
     for (const track of topTracks.tracks) {
       if (track.preview_url) {
         previewMap.set(track.id, track.preview_url);
+      } else {
+        nullPreviewIds.add(track.id);
       }
       const imageUrl = selectBestSpotifyImage(track.album?.images);
       if (imageUrl) {
@@ -257,24 +261,34 @@ const syncArtistPreviewUrls = async (spotifyArtistId: string): Promise<void> => 
       }
     }
 
-    if (previewMap.size === 0 && imageMap.size === 0) return;
+    // Skip songs already known to have no preview — avoid redundant lookups
+    const candidateIds = [...previewMap.keys(), ...nullPreviewIds.keys()];
+    const allTrackIds = new Set([...previewMap.keys(), ...imageMap.keys(), ...nullPreviewIds]);
+    if (allTrackIds.size === 0) return;
 
-    const allTrackIds = new Set([...previewMap.keys(), ...imageMap.keys()]);
     const songs = await prisma.song.findMany({
       where: {
         spotifyId: { in: Array.from(allTrackIds) },
         softDeleted: false,
       },
-      select: { id: true, spotifyId: true, imageUrl: true },
+      select: { id: true, spotifyId: true, imageUrl: true, previewAvailable: true },
     });
 
     for (const song of songs) {
       if (!song.spotifyId) continue;
       const previewUrl = previewMap.get(song.spotifyId);
       const imageUrl = imageMap.get(song.spotifyId);
-      const updateData: Record<string, string> = {};
-      if (previewUrl) updateData.spotifyPreviewUrl = previewUrl;
+      const hasNullPreview = nullPreviewIds.has(song.spotifyId);
+
+      const updateData: Record<string, unknown> = {};
+      if (previewUrl) {
+        updateData.spotifyPreviewUrl = previewUrl;
+        if (song.previewAvailable !== true) updateData.previewAvailable = true;
+      }
       if (imageUrl && !song.imageUrl) updateData.imageUrl = imageUrl;
+      if (hasNullPreview && song.previewAvailable !== false) {
+        updateData.previewAvailable = false;
+      }
       if (Object.keys(updateData).length > 0) {
         await prisma.song.update({
           where: { id: song.id },
@@ -284,7 +298,7 @@ const syncArtistPreviewUrls = async (spotifyArtistId: string): Promise<void> => 
     }
 
     logger.debug(
-      { spotifyArtistId, matchedSongs: songs.length, previewsFound: previewMap.size, imagesFound: imageMap.size },
+      { spotifyArtistId, matchedSongs: songs.length, previewsFound: previewMap.size, nullPreviews: nullPreviewIds.size, imagesFound: imageMap.size },
       'Artist preview URLs and artwork synced'
     );
   } catch (error) {

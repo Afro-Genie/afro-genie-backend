@@ -278,6 +278,45 @@ translationsRouter.post(
 );
 
 // ---------------------------------------------------------------------------
+// PUT /api/translations/:id
+// Authenticated. Updates translation content (e.g. reset to empty).
+// ---------------------------------------------------------------------------
+translationsRouter.put(
+  '/translations/:id',
+  authenticate,
+  [param('id').isString().notEmpty(), body('translatedLyrics').isString()],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { translatedLyrics } = req.body as { translatedLyrics: string };
+
+      const translation = await prisma.translation.findUnique({
+        where: { id },
+        select: { id: true, userId: true },
+      });
+
+      if (!translation) {
+        return next(new ApiError('Translation not found', 'NOT_FOUND', 404));
+      }
+
+      if (translation.userId !== req.user!.id && req.user!.role !== 'ADMIN') {
+        return next(new ApiError('Forbidden', 'FORBIDDEN', 403));
+      }
+
+      const updated = await prisma.translation.update({
+        where: { id },
+        data: { translatedLyrics },
+      });
+
+      return res.status(200).json(updated);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /api/translations/:id/correction
 // Authenticated. Creates a correction record with PENDING status.
 // ---------------------------------------------------------------------------

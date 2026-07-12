@@ -93,6 +93,7 @@ model User {
   passwordHash       String?
   googleId           String?               @unique
   spotifyId          String?               @unique
+  spotifyProduct     String?
   displayName        String?
   photoUrl           String?
   role               UserRole              @default(USER)
@@ -174,6 +175,7 @@ model Song {
   imageUrl          String?
   spotifyId         String?           @unique
   spotifyPreviewUrl String?
+  previewAvailable  Boolean?
   durationMs        Int?
   trackNumber       Int?
   views             Int               @default(0)
@@ -198,6 +200,7 @@ model Song {
   @@index([views])
   @@index([requestCount])
   @@index([softDeleted])
+  @@index([previewAvailable])
   @@index([createdAt])
 }
 

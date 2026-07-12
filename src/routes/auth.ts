@@ -16,8 +16,11 @@ import {
   register,
   registerArtist,
   resetPassword,
-  signInWithSpotify
+  signInWithSpotify,
+  syncSpotifyProduct,
+  linkSpotifyToUser
 } from '../services/authService';
+import { requireAuth } from '../middleware/auth';
 
 export const authRouter = Router();
 
@@ -147,6 +150,40 @@ authRouter.post(
       const { accessToken } = req.body as { accessToken: string };
       const auth = await signInWithSpotify(accessToken);
       res.status(200).json(auth);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/spotify/sync-product',
+  requireAuth,
+  [body('spotifyAccessToken').isString().notEmpty().withMessage('Spotify access token is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+      const { spotifyAccessToken } = req.body as { spotifyAccessToken: string };
+      const result = await syncSpotifyProduct(userId, spotifyAccessToken);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/spotify/link',
+  requireAuth,
+  [body('spotifyAccessToken').isString().notEmpty().withMessage('Spotify access token is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+      const { spotifyAccessToken } = req.body as { spotifyAccessToken: string };
+      const result = await linkSpotifyToUser(userId, spotifyAccessToken);
+      res.status(200).json(result);
     } catch (error) {
       next(error);
     }

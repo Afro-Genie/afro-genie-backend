@@ -8,7 +8,7 @@ import { ApiError } from '../middleware/errorHandler';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
 
 const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 50;
+const MAX_LIMIT = 500;
 
 type SortBy = 'views' | 'popularity' | 'createdAt';
 type SortOrder = 'asc' | 'desc';
