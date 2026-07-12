@@ -286,6 +286,7 @@ class CatalogService {
       album: s.albumName || '',
       requestCount: s.requestCount,
       createdAt: s.createdAt,
+      spotifyId: s.spotifyId || null,
     }));
 
     return { songs, total };

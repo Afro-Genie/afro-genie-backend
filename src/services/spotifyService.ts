@@ -20,6 +20,7 @@ interface SpotifySearchResponse {
       id: string;
       name: string;
       preview_url?: string | null;
+      uri?: string;
       artists?: Array<{ name: string }>;
       album?: {
         name?: string;
@@ -74,6 +75,7 @@ interface SpotifyTrackResponse {
     images?: Array<{ url: string; height: number | null; width: number | null }>;
   };
   preview_url?: string | null;
+  uri?: string;
   duration_ms?: number;
   external_urls?: { spotify?: string };
 }
@@ -85,6 +87,7 @@ export interface SimplifiedSpotifyTrack {
   albumName: string | null;
   imageUrl: string | null;
   previewUrl: string | null;
+  uri: string | null;
   durationMs: number;
   externalUrl: string | null;
 }
@@ -118,6 +121,7 @@ const fallbackTrack = (trackId: string): SimplifiedSpotifyTrack => {
     albumName: 'Fallback Album',
     imageUrl: '',
     previewUrl: null,
+    uri: null,
     durationMs: 0,
     externalUrl: null
   };
@@ -244,6 +248,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
     albumName: track.album?.name ?? null,
     imageUrl: selectBestSpotifyImage(track.album?.images),
     previewUrl: track.preview_url ?? null,
+    uri: track.uri ?? `spotify:track:${track.id}`,
     durationMs: track.duration_ms ?? 0,
     externalUrl: track.external_urls?.spotify ?? null
   };
