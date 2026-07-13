@@ -21,9 +21,13 @@ interface UnifiedSong {
 
 class CatalogService {
   async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
-    const cacheKey = 'catalog:homepage:v13';
-    const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached);
+    const cacheKey = 'catalog:homepage:v16';
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch {
+      // Redis unavailable — proceed with live fetch
+    }
 
     let dbSongs: any[] = [];
     let dbArtists: any[] = [];
@@ -90,26 +94,27 @@ class CatalogService {
       });
     };
 
-    if (songs.length < 10) {
-      try {
-        const spotifyResults = await searchSpotify('afrobeats', 'track');
-        const spotifyTracks = (spotifyResults.tracks?.items ?? []).map((t: any) => ({
-          id: `spotify:${t.id}`,
-          title: t.name,
-          artistName: t.artists?.[0]?.name || 'Unknown',
-          albumName: t.album?.name,
-          imageUrl: t.album?.images?.[0]?.url,
-          previewUrl: t.preview_url || null,
-          spotifyId: t.id,
-          source: 'SPOTIFY' as const,
-          genres: [],
-          popularity: t.popularity,
-        }));
+    // Always fetch Spotify tracks to keep the homepage fresh and Spotify-predominant.
+    // Spotify results are placed FIRST, followed by DB songs.
+    try {
+      const spotifyResults = await searchSpotify('afrobeats', 'track', 10);
+      const spotifyTracks = (spotifyResults.tracks?.items ?? []).map((t: any) => ({
+        id: `spotify:${t.id}`,
+        title: t.name,
+        artistName: t.artists?.[0]?.name || 'Unknown',
+        albumName: t.album?.name,
+        imageUrl: t.album?.images?.[0]?.url,
+        previewUrl: t.preview_url || null,
+        spotifyId: t.id,
+        source: 'SPOTIFY' as const,
+        genres: [],
+        popularity: t.popularity,
+      }));
 
-        songs = dedupeById([...songs, ...spotifyTracks]);
-      } catch (err) {
-        logger.warn({ err }, 'Spotify fallback for songs failed');
-      }
+      // Spotify first, then DB songs, deduplicated
+      songs = dedupeById([...spotifyTracks, ...songs]);
+    } catch (err) {
+      logger.warn({ err }, 'Spotify fetch for homepage failed — using DB songs only');
     }
 
     let artists = dbArtists.map((a) => ({
@@ -193,7 +198,10 @@ class CatalogService {
     }
 
     const result = {
-      songs: songs.slice(0, 20).map(s => ({
+      songs: songs
+        .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+        .slice(0, 20)
+        .map(s => ({
         id: s.id,
         title: s.title,
         artistName: s.artistName,
@@ -214,7 +222,11 @@ class CatalogService {
 
     const hasRealData = result.songs.length > 0 && result.genres.length > 0;
     if (hasRealData) {
-      await redis.set(cacheKey, JSON.stringify(result), 'EX', 21600);
+      try {
+        await redis.set(cacheKey, JSON.stringify(result), 'EX', 3600);
+      } catch {
+        // Non-fatal cache write failure
+      }
     } else {
       logger.warn('Catalog homepage result is empty — skipping Redis cache to avoid poisoning');
     }
@@ -230,6 +242,7 @@ class CatalogService {
     search?: string;
     sortBy?: string;
     sortOrder?: string;
+    spotifyFallback?: boolean;
   }): Promise<{ songs: any[]; total: number }> {
     const where: any = { softDeleted: false };
 
@@ -266,6 +279,7 @@ class CatalogService {
         include: {
           artist: { select: { name: true, imageUrl: true } },
           genres: { include: { genre: { select: { name: true } } }, take: 1 },
+          _count: { select: { lyrics: true } },
         },
         skip: (page - 1) * limit,
         take: limit,
@@ -287,9 +301,64 @@ class CatalogService {
       requestCount: s.requestCount,
       createdAt: s.createdAt,
       spotifyId: s.spotifyId || null,
+      source: (s as any)._count?.lyrics > 0 ? 'DB' as const : s.spotifyId ? 'SPOTIFY' as const : 'DB' as const,
     }));
 
-    return { songs, total };
+    if (params.spotifyFallback) {
+      const cacheKey = `catalog:spotifyFallback:${params.search || 'default'}:${params.page || 1}:${params.limit || 50}`;
+
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const cachedData = JSON.parse(cached);
+          songs.push(...cachedData);
+          return { songs, total: songs.length };
+        }
+      } catch {
+        // Cache miss — proceed with live fetch
+      }
+
+      const localSpotifyIds = new Set(
+        songs.filter((s) => s.spotifyId).map((s) => s.spotifyId)
+      );
+
+      try {
+        const searchQuery = params.search?.trim() || 'afrobeats';
+        const spotifyResults = await searchSpotify(searchQuery, 'track', 10);
+        const spotifyTracks = (spotifyResults.tracks?.items ?? [])
+          .filter((t: any) => !localSpotifyIds.has(t.id))
+          .map((t: any) => ({
+            id: `spotify:${t.id}`,
+            title: t.name,
+            artist: t.artists?.[0]?.name || 'Unknown',
+            artistId: '',
+            image: t.album?.images?.[0]?.url || '',
+            views: 0,
+            year: t.album?.release_date ? parseInt(t.album.release_date.slice(0, 4)) || null : null,
+            genre: '',
+            album: t.album?.name || '',
+            requestCount: 0,
+            createdAt: null as any,
+            spotifyId: t.id,
+            source: 'SPOTIFY' as const,
+            popularity: t.popularity ?? 0,
+            previewUrl: t.preview_url || null,
+          }));
+
+        // Cache Spotify results for 1 hour
+        try {
+          await redis.set(cacheKey, JSON.stringify(spotifyTracks), 'EX', 3600);
+        } catch {
+          // Non-fatal cache write failure
+        }
+
+        songs.push(...spotifyTracks);
+      } catch (err) {
+        logger.warn({ err }, 'Spotify fallback for catalog songs failed');
+      }
+    }
+
+    return { songs, total: songs.length };
   }
 
   async getCatalogArtists(params: {

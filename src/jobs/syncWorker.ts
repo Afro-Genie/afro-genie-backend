@@ -7,9 +7,10 @@ import {
   syncAllArtists,
   refreshStaleArtists,
   syncGenres,
+  syncPopularTracks,
 } from '../services/syncEngine';
 
-export type SyncJobType = 'artist' | 'artist-albums' | 'artist-full' | 'sync-all' | 'refresh-stale' | 'sync-genres';
+export type SyncJobType = 'artist' | 'artist-albums' | 'artist-full' | 'sync-all' | 'refresh-stale' | 'sync-genres' | 'sync-popular-tracks';
 
 export interface SyncJobData {
   type: SyncJobType;
@@ -64,6 +65,11 @@ export const processSyncJob = async (job: Job<SyncJobData>): Promise<unknown> =>
       const result = await syncGenres();
       await job.updateProgress({ stage: 'sync-genres', current: 1, total: 1 });
       return result;
+    }
+    case 'sync-popular-tracks': {
+      return syncPopularTracks((completed, total) => {
+        void job.updateProgress({ stage: 'sync-popular-tracks', current: completed, total });
+      });
     }
     default: {
       throw new Error(`Unknown sync job type: ${String(type)}`);

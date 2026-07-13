@@ -10,6 +10,8 @@ const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
 const LAST_SYNC_KEY_PREFIX = 'sync:lastSync:';
 const SYNC_DURATION_KEY_PREFIX = 'sync:duration:';
 const SYNC_STATS_KEY = 'sync:stats';
+const POPULAR_TRACKS_CACHE_KEY = 'catalog:popularTracks';
+const POPULAR_TRACKS_SYNC_KEY = 'sync:lastSync:popularTracks';
 
 interface SpotifyArtistResponse {
   id: string;
@@ -64,10 +66,12 @@ export interface SyncDashboard {
     syncAll: string | null;
     refreshStale: string | null;
     syncGenres: string | null;
+    popularTracks: string | null;
   };
   lastSyncDuration: {
     syncAll: number | null;
     refreshStale: number | null;
+    popularTracks: number | null;
   };
   queueDepth: {
     waiting: number;
@@ -79,6 +83,10 @@ export interface SyncDashboard {
     totalSynced: number;
     totalFailed: number;
     lastRunAt: string | null;
+  };
+  popularTracksStats: {
+    lastSync: string | null;
+    durationMs: number | null;
   };
 }
 
@@ -523,6 +531,173 @@ export const refreshStaleArtists = async (
 };
 
 // ---------------------------------------------------------------------------
+// Popular African tracks sync — weekly background job
+// ---------------------------------------------------------------------------
+const SPOTIFY_TARGET_GENRES = [
+  'afrobeats',
+  'amapiano',
+  'afropop',
+  'afro fusion',
+  'highlife',
+  'r&b',
+  'hip hop',
+  'banku',
+  'dancehall',
+  'alternative',
+] as const;
+
+const TRACKS_PER_GENRE = 50;
+
+interface SpotifySearchTracksResponse {
+  tracks: {
+    items: Array<{
+      id: string;
+      name: string;
+      artists: Array<{ id: string; name: string }>;
+      album: {
+        name: string;
+        images?: Array<{ url: string; height: number | null; width: number | null }>;
+        release_date?: string;
+      };
+      popularity: number;
+      preview_url?: string | null;
+      duration_ms: number;
+      track_number: number;
+    }>;
+    total: number;
+  };
+}
+
+export const syncPopularTracks = async (
+  onProgress?: (completed: number, total: number) => void
+): Promise<{ synced: number; failed: number; genres: number }> => {
+  const start = Date.now();
+  let totalSynced = 0;
+  let totalFailed = 0;
+
+  logger.info({ genres: SPOTIFY_TARGET_GENRES.length, tracksPerGenre: TRACKS_PER_GENRE }, 'Starting popular tracks sync');
+
+  for (let i = 0; i < SPOTIFY_TARGET_GENRES.length; i++) {
+    const genre = SPOTIFY_TARGET_GENRES[i];
+
+    try {
+      const searchResult = await spotifyFetchWithRetry<SpotifySearchTracksResponse>(
+        `/search?q=${encodeURIComponent(genre)}&type=track&limit=${TRACKS_PER_GENRE}&market=US`
+      );
+
+      const tracks = searchResult.tracks?.items ?? [];
+      logger.info({ genre, tracksFound: tracks.length }, 'Spotify tracks found for genre');
+
+      let genreSynced = 0;
+      let genreFailed = 0;
+
+      for (const track of tracks) {
+        try {
+          const artistName = track.artists?.[0]?.name || 'Unknown';
+          const spotifyArtistId = track.artists?.[0]?.id || null;
+
+          // Upsert artist
+          let artistId: string;
+          const existingArtist = spotifyArtistId
+            ? await prisma.artist.findFirst({ where: { spotifyId: spotifyArtistId }, select: { id: true } })
+            : await prisma.artist.findFirst({ where: { name: artistName }, select: { id: true } });
+
+          if (existingArtist) {
+            artistId = existingArtist.id;
+          } else {
+            const newArtist = await prisma.artist.create({
+              data: {
+                name: artistName,
+                spotifyId: spotifyArtistId,
+                genres: [genre],
+                imageUrl: selectBestSpotifyImage(track.album?.images),
+                popularity: 0,
+                followers: 0,
+              },
+            });
+            artistId = newArtist.id;
+            if (spotifyArtistId) {
+              void enqueueIndexArtist(artistId);
+            }
+          }
+
+          // Upsert song by spotifyId (unique) or title+artistId
+          const releaseYear = track.album?.release_date
+            ? parseInt(track.album.release_date.substring(0, 4), 10)
+            : null;
+
+          const imageUrl = selectBestSpotifyImage(track.album?.images);
+          const songData = {
+            title: track.name,
+            artistId,
+            albumName: track.album?.name || null,
+            releaseYear: releaseYear && !Number.isNaN(releaseYear) ? releaseYear : null,
+            imageUrl,
+            spotifyId: track.id,
+            spotifyPreviewUrl: track.preview_url || null,
+            previewAvailable: track.preview_url ? true : false,
+            durationMs: track.duration_ms || null,
+            trackNumber: track.track_number || null,
+          };
+
+          const existingBySpotify = track.id
+            ? await prisma.song.findFirst({ where: { spotifyId: track.id }, select: { id: true } })
+            : null;
+
+          if (existingBySpotify) {
+            await prisma.song.update({
+              where: { id: existingBySpotify.id },
+              data: songData,
+            });
+          } else {
+            // Use upsert on the compound unique [title, artistId]
+            await prisma.song.upsert({
+              where: { title_artistId: { title: track.name, artistId } },
+              create: songData,
+              update: {
+                spotifyId: track.id,
+                spotifyPreviewUrl: track.preview_url || null,
+                previewAvailable: track.preview_url ? true : false,
+                imageUrl: imageUrl || undefined,
+              },
+            });
+          }
+
+          genreSynced++;
+        } catch (err) {
+          genreFailed++;
+          logger.debug({ trackId: track.id, genre, err }, 'Failed to upsert popular track');
+        }
+      }
+
+      totalSynced += genreSynced;
+      totalFailed += genreFailed;
+      logger.info({ genre, synced: genreSynced, failed: genreFailed }, 'Genre popular tracks synced');
+
+      // Small delay between genres to respect rate limits
+      if (i < SPOTIFY_TARGET_GENRES.length - 1) {
+        await sleep(500);
+      }
+    } catch (err) {
+      logger.error({ genre, err }, 'Failed to sync popular tracks for genre');
+      totalFailed++;
+    }
+
+    onProgress?.(i + 1, SPOTIFY_TARGET_GENRES.length);
+  }
+
+  await setLastSyncTimestamp('popularTracks');
+  await recordSyncDuration('popularTracks', Date.now() - start);
+
+  logger.info(
+    { synced: totalSynced, failed: totalFailed, genres: SPOTIFY_TARGET_GENRES.length, durationMs: Date.now() - start },
+    'Popular tracks sync completed',
+  );
+
+  return { synced: totalSynced, failed: totalFailed, genres: SPOTIFY_TARGET_GENRES.length };
+};
+
+// ---------------------------------------------------------------------------
 // Dashboard stats
 // ---------------------------------------------------------------------------
 export const getSyncDashboard = async (): Promise<SyncDashboard> => {
@@ -535,8 +710,10 @@ export const getSyncDashboard = async (): Promise<SyncDashboard> => {
     lastSyncAll,
     lastRefreshStale,
     lastSyncGenres,
+    lastSyncPopularTracks,
     durationSyncAll,
     durationRefreshStale,
+    durationPopularTracks,
     syncStats,
   ] = await Promise.all([
     prisma.artist.count({ where: { softDeleted: false } }),
@@ -551,8 +728,10 @@ export const getSyncDashboard = async (): Promise<SyncDashboard> => {
     getLastSyncTimestamp('syncAll'),
     getLastSyncTimestamp('refreshStale'),
     getLastSyncTimestamp('syncGenres'),
+    getLastSyncTimestamp('popularTracks'),
     getSyncDuration('syncAll'),
     getSyncDuration('refreshStale'),
+    getSyncDuration('popularTracks'),
     getSyncStats(),
   ]);
 
@@ -580,13 +759,19 @@ export const getSyncDashboard = async (): Promise<SyncDashboard> => {
       syncAll: lastSyncAll,
       refreshStale: lastRefreshStale,
       syncGenres: lastSyncGenres,
+      popularTracks: lastSyncPopularTracks,
     },
     lastSyncDuration: {
       syncAll: durationSyncAll,
       refreshStale: durationRefreshStale,
+      popularTracks: durationPopularTracks,
     },
     queueDepth,
     recentStats: syncStats,
+    popularTracksStats: {
+      lastSync: lastSyncPopularTracks,
+      durationMs: durationPopularTracks,
+    },
   };
 };
 

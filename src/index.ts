@@ -3,7 +3,7 @@ import { env } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
-import { syncQueue } from './lib/queue';
+import { syncQueue, syncPopularTracksQueue } from './lib/queue';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -37,7 +37,18 @@ const scheduleSyncJobs = async () => {
     }
   );
 
-  logger.info('Sync cron jobs scheduled: daily sync-all at 3am, refresh-stale at 6am');
+  await syncPopularTracksQueue.add(
+    'sync-popular-tracks',
+    {},
+    {
+      repeat: { pattern: '0 2 * * 0' },
+      jobId: 'sync-popular-tracks-weekly',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  logger.info('Sync cron jobs scheduled: daily sync-all at 3am, refresh-stale at 6am, popular tracks weekly Sunday 2am');
 };
 
 const invalidateStaleCaches = async () => {

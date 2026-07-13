@@ -7,6 +7,7 @@ import { processSearchIndexJob } from './searchIndexJob';
 import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
 import { processSyncJob } from './syncWorker';
+import { processPopularTracksSyncJob } from './popularTracksSyncJob';
 import type { TranslationJobData } from '../types/translation';
 import type { SyncJobData } from './syncWorker';
 
@@ -70,6 +71,15 @@ export const syncWorker = new Worker<SyncJobData>(
     await processSyncJob(job);
   },
   { connection, concurrency: 2 }
+);
+
+export const popularTracksSyncWorker = new Worker(
+  'syncPopularTracksQueue',
+  async (job) => {
+    logger.info({ jobId: job.id }, 'Processing popular tracks sync job');
+    await processPopularTracksSyncJob(job);
+  },
+  { connection, concurrency: 1 }
 );
 
 void scheduleViewCountFlush();

@@ -14,6 +14,7 @@ async function getPlaylistImage(genreName: string): Promise<string | null> {
     const playlists = results.playlists?.items || [];
     
     for (const playlist of playlists) {
+      if (!playlist) continue;
       if (playlist.images && playlist.images.length > 0) {
         const image = playlist.images.find(img => img.width === 300) || 
                       playlist.images.find(img => img.width === 340) ||

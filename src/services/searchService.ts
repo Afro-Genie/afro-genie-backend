@@ -424,9 +424,9 @@ export const searchCatalog = async (input: SearchParams) => {
     page: number;
     limit: number;
     tookMs: number;
-    songs?: unknown;
-    artists?: unknown;
-    genres?: unknown;
+    songs?: { found: number; page: number; hits: ReturnType<typeof mapHit>[] };
+    artists?: { found: number; page: number; hits: ReturnType<typeof mapHit>[] };
+    genres?: { found: number; page: number; hits: ReturnType<typeof mapHit>[] };
   } = {
     query: q === EMPTY_Q ? '' : q,
     type,
@@ -520,6 +520,19 @@ export const suggestCatalog = async (query: string) => {
         prefix: true,
         exhaustive_search: false,
         search_cutoff_ms: 90
+      },
+      {
+        collection: COLLECTIONS.genres,
+        q,
+        query_by: 'name,nameNormalized',
+        include_fields: 'id,name,imageUrl,songCount',
+        sort_by: '_text_match:desc,songCount:desc',
+        per_page: 3,
+        num_typos: 1,
+        typo_tokens_threshold: 1,
+        prefix: true,
+        exhaustive_search: false,
+        search_cutoff_ms: 90
       }
     ]
   })) as MultiSearchResponse;
@@ -527,7 +540,7 @@ export const suggestCatalog = async (query: string) => {
   const mapped = multi.results.flatMap((result) => {
     const collection = result.request_params.collection_name;
     return (result.hits ?? []).map((hit) => ({
-      type: collection === COLLECTIONS.songs ? 'song' : 'artist',
+      type: collection === COLLECTIONS.songs ? 'song' : collection === COLLECTIONS.artists ? 'artist' : 'genre',
       textMatch: hit.text_match,
       highlights: hit.highlights ?? [],
       document: hit.document
@@ -540,8 +553,8 @@ export const suggestCatalog = async (query: string) => {
       return diff;
     }
 
-    const aPopularity = Number((a.document as { popularity?: number }).popularity ?? 0);
-    const bPopularity = Number((b.document as { popularity?: number }).popularity ?? 0);
+    const aPopularity = Number((a.document as { popularity?: number; songCount?: number }).popularity ?? (a.document as { songCount?: number }).songCount ?? 0);
+    const bPopularity = Number((b.document as { popularity?: number; songCount?: number }).popularity ?? (b.document as { songCount?: number }).songCount ?? 0);
     return bPopularity - aPopularity;
   });
 
@@ -550,7 +563,7 @@ export const suggestCatalog = async (query: string) => {
   return {
     query: q,
     tookMs,
-    suggestions: mapped.slice(0, 5)
+    suggestions: mapped.slice(0, 8)
   };
 };
 

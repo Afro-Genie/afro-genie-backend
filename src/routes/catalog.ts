@@ -29,11 +29,15 @@ catalogRouter.get(
     query('search').optional().isString(),
     query('sortBy').optional().isString(),
     query('sortOrder').optional().isIn(['asc', 'desc']),
+    query('spotifyFallback').optional().isBoolean(),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const data = await catalogService.getCatalogSongs(req.query as any);
+      const data = await catalogService.getCatalogSongs({
+        ...req.query,
+        spotifyFallback: req.query.spotifyFallback === 'true',
+      } as any);
       res.json(data);
     } catch (error) {
       next(error);
