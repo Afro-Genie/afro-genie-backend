@@ -21,6 +21,7 @@ interface SpotifySearchResponse {
       name: string;
       preview_url?: string | null;
       uri?: string;
+      popularity?: number;
       artists?: Array<{ name: string }>;
       album?: {
         name?: string;

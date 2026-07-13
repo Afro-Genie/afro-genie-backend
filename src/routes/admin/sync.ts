@@ -4,14 +4,14 @@ import rateLimit from 'express-rate-limit';
 import { body } from 'express-validator';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
-import { syncQueue } from '../../lib/queue';
+import { syncQueue, syncPopularTracksQueue } from '../../lib/queue';
 import { getLastSyncStatus, getSyncDashboard } from '../../services/syncEngine';
 
 export const adminSyncRouter = Router();
 
 adminSyncRouter.use(authenticate, requireRole('ADMIN'));
 
-const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres'];
+const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks'];
 
 const syncRunLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -72,9 +72,13 @@ adminSyncRouter.post(
             ? 'refresh-stale'
             : type === 'sync-genres'
               ? 'sync-genres'
-              : `sync-${type}-${artistId}`;
+              : type === 'sync-popular-tracks'
+                ? 'sync-popular-tracks'
+                : `sync-${type}-${artistId}`;
 
-      const job = await syncQueue.add(jobName, { type, artistId }, {
+      const targetQueue = type === 'sync-popular-tracks' ? syncPopularTracksQueue : syncQueue;
+
+      const job = await targetQueue.add(jobName, { type, artistId }, {
         attempts: 3,
         backoff: { type: 'exponential', delay: 10000 },
         removeOnComplete: 100,

@@ -128,6 +128,7 @@ const main = async () => {
   let registered: AuthResponse | null = null;
   let loggedIn: AuthResponse | null = null;
   let refreshed: AuthResponse | null = null;
+  let spotifyUser: AuthResponse | null = null;
 
   try {
     await prisma.user.deleteMany({ where: { email: { in: [email] } } });
@@ -354,6 +355,118 @@ const main = async () => {
       'Verified by middleware implementation: role read from JWT claims and assigned to req.user directly.'
     );
 
+    // --- Spotify Auth Tests ---
+    // Mock fetch to intercept calls to https://api.spotify.com/v1/me
+    const originalFetch = globalThis.fetch;
+    let spotifyMeResponse: { status: number; body: any } = {
+      status: 200,
+      body: {
+        id: 'spotify_test_user_123',
+        display_name: 'Test Spotify User',
+        email: 'spotify_test@example.com',
+        product: 'premium',
+        images: [],
+      }
+    };
+
+    globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.spotify.com/v1/me')) {
+        return new Response(JSON.stringify(spotifyMeResponse.body), {
+          status: spotifyMeResponse.status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return originalFetch(url, init);
+    };
+
+    const spotifyLoginRes = await jsonFetch<AuthResponse>(`${baseUrl}/spotify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'mock_spotify_access_token_abc123' }),
+    });
+
+    const spotifyLoginPass =
+      spotifyLoginRes.status === 200 &&
+      Boolean((spotifyLoginRes.body as AuthResponse).user?.id) &&
+      Boolean((spotifyLoginRes.body as AuthResponse).accessToken);
+
+    addResult(
+      'Spotify sign-in creates/finds user and returns tokens',
+      spotifyLoginPass,
+      `status=${spotifyLoginRes.status}`
+    );
+
+    if (spotifyLoginPass) {
+      spotifyUser = spotifyLoginRes.body as AuthResponse;
+    }
+
+    // Test invalid Spotify token
+    spotifyMeResponse = { status: 401, body: { error: 'Invalid access token' } };
+
+    const spotifyInvalidRes = await jsonFetch<{ code?: string }>(`${baseUrl}/spotify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'invalid_token' }),
+    });
+
+    addResult(
+      'Spotify sign-in with invalid token returns 401',
+      spotifyInvalidRes.status === 401,
+      `status=${spotifyInvalidRes.status}`
+    );
+
+    // Restore Spotify mock to real fetch for sync-product test
+    spotifyMeResponse = {
+      status: 200,
+      body: { id: 'spotify_test_user_123', display_name: 'Test', email: 'spotify_test@example.com', product: 'premium', images: [] },
+    };
+
+    // Test sync-product (requires auth — use the email/password loggedIn user)
+    const syncRes = await jsonFetch<{ spotifyProduct: string }>(`${baseUrl}/spotify/sync-product`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${loggedIn!.accessToken}`,
+      },
+      body: JSON.stringify({ spotifyAccessToken: 'mock_spotify_token_for_sync' }),
+    });
+
+    addResult(
+      'Spotify sync-product returns product status',
+      syncRes.status === 200 && (syncRes.body as any)?.spotifyProduct === 'premium',
+      `status=${syncRes.status}`
+    );
+
+    // Test sync-product without auth returns 401
+    const syncNoAuthRes = await jsonFetch<{ code?: string }>(`${baseUrl}/spotify/sync-product`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spotifyAccessToken: 'mock_token' }),
+    });
+
+    addResult(
+      'Spotify sync-product without auth returns 401',
+      syncNoAuthRes.status === 401,
+      `status=${syncNoAuthRes.status}`
+    );
+
+    // Test link without auth returns 401
+    const linkNoAuthRes = await jsonFetch<{ code?: string }>(`${baseUrl}/spotify/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spotifyAccessToken: 'mock_token' }),
+    });
+
+    addResult(
+      'Spotify link without auth returns 401',
+      linkNoAuthRes.status === 401,
+      `status=${linkNoAuthRes.status}`
+    );
+
+    // Restore original fetch
+    globalThis.fetch = originalFetch;
+
     const googleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
     if (!googleConfigured) {
       addResult(
@@ -391,6 +504,15 @@ const main = async () => {
         await redis.del(`refresh:${refreshed.user.id}`);
       } catch (error) {
         console.warn('Cleanup warning: failed to delete refreshed token key', error);
+      }
+    }
+
+    if (spotifyUser) {
+      try {
+        await prisma.user.deleteMany({ where: { spotifyId: 'spotify_test_user_123' } });
+        await redis.del(`refresh:${spotifyUser.user.id}`);
+      } catch (error) {
+        console.warn('Cleanup warning: failed to delete Spotify test user', error);
       }
     }
 
