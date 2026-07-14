@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "startedAt": "2026-07-14T11:42:02.312Z",
+  "lastUpdatedAt": "2026-07-14T11:47:10.335Z",
+  "status": "running",
+  "queries": {
+    "total": 25,
+    "completed": [],
+    "failed": [
+      "afrobeats"
+    ],
+    "remaining": [
+      "amapiano",
+      "afropop",
+      "nigerian music",
+      "african music",
+      "afro fusion",
+      "highlife",
+      "bongo flava",
+      "gengetone",
+      "afro r&b",
+      "dancehall africa",
+      "naija hits",
+      "burna boy",
+      "wizkid",
+      "davido",
+      "tems",
+      "asake",
+      "rema",
+      "fireboy dml",
+      "ayra starr",
+      "black sherif",
+      "tiwa savage",
+      "sauti sol",
+      "sarkodie",
+      "diamond platnumz"
+    ]
+  },
+  "stats": {
+    "tracksFetched": 0,
+    "songsCreated": 0,
+    "songsSkipped": 0,
+    "artistsCreated": 0,
+    "artistsUpdated": 0,
+    "albumsCreated": 0,
+    "albumsSkipped": 0,
+    "errors": 1
+  },
+  "dbCounts": {
+    "songs": 319,
+    "artists": 270,
+    "albums": 554
+  },
+  "rateLimitHits": 2,
+  "lastRateLimitAt": "2026-07-14T11:47:10.335Z",
+  "logs": [
+    "[11:42:02] Starting fresh — 25 queries",
+    "[11:42:03] Spotify token acquired",
+    "[11:42:06] DB: 319 songs, 270 artists",
+    "[11:42:06] 🔍 Searching: \"afrobeats\" (1/25)",
+    "[11:42:06]   ❌ \"afrobeats\" failed: Spotify API 400: {\"error\": {\"status\": 400, \"message\": \"Invalid limit\" } }"
+  ]
+}

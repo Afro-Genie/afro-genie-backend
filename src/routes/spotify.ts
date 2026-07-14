@@ -6,10 +6,17 @@ import { validateRequest } from '../middleware/validateRequest';
 import {
   getTrack,
   searchSpotify,
-  syncArtistFromSpotify
+  syncArtistFromSpotify,
+  getLastSpotifyRateLimit
 } from '../services/spotifyService';
 
 export const spotifyRouter = Router();
+
+const applyRateLimitHeaders = (res: Response) => {
+  const rl = getLastSpotifyRateLimit();
+  if (rl?.remaining != null) res.set('X-Spotify-RateLimit-Remaining', rl.remaining);
+  if (rl?.reset != null) res.set('X-Spotify-RateLimit-Reset', rl.reset);
+};
 
 spotifyRouter.get(
   '/spotify/track/:trackId',
@@ -18,6 +25,7 @@ spotifyRouter.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const track = await getTrack(req.params.trackId);
+      applyRateLimitHeaders(res);
       res.status(200).json(track);
     } catch (error) {
       next(error);
@@ -37,6 +45,7 @@ spotifyRouter.get(
       const q = String(req.query.q);
       const type = String(req.query.type);
       const results = await searchSpotify(q, type);
+      applyRateLimitHeaders(res);
       res.status(200).json(results);
     } catch (error) {
       next(error);

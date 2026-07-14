@@ -4,6 +4,7 @@ import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 import { syncQueue, syncPopularTracksQueue } from './lib/queue';
+import { catalogService } from './services/catalogService';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -113,6 +114,13 @@ const server = app.listen(env.PORT, async () => {
   if (env.ENABLE_WORKERS) {
     await scheduleSyncJobs();
   }
+
+  // Pre-warm homepage cache in background so first user request hits Redis
+  catalogService.getHomepageData().then(() => {
+    logger.info('Homepage cache warmed');
+  }).catch((err) => {
+    logger.warn({ err }, 'Homepage cache warmup failed — non-fatal');
+  });
 });
 
 const gracefulShutdown = async (signal: string) => {
