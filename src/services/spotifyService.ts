@@ -96,6 +96,12 @@ export interface SimplifiedSpotifyTrack {
 const tokenCacheKey = 'spotify:token';
 const spotifyFallbackEnabled = process.env.SPOTIFY_TEST_FALLBACK === 'true';
 
+// Dedupe concurrent identical Spotify API requests to avoid thundering herd on cold cache.
+const inflightRequests = new Map<string, Promise<unknown>>();
+
+// Store the most recent Spotify rate-limit headers so route handlers can forward them.
+let lastSpotifyRateLimit: { remaining?: string; reset?: string } | null = null;
+
 const isPremiumEntitlementError = (error: unknown): boolean => {
   if (!(error instanceof ApiError)) {
     return false;
@@ -150,7 +156,23 @@ const requireSpotifyCredentials = () => {
   }
 };
 
-const spotifyFetch = async <T>(path: string): Promise<T> => {
+const spotifyFetch = async <T>(path: string, retries = 2): Promise<T> => {
+  // Dedupe concurrent identical requests so multiple callers share one in-flight call.
+  const existing = inflightRequests.get(path);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const promise = spotifyFetchInner<T>(path, retries);
+  inflightRequests.set(path, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightRequests.delete(path);
+  }
+};
+
+const spotifyFetchInner = async <T>(path: string, retries: number): Promise<T> => {
   const token = await getSpotifyToken();
   const response = await fetch(`${SPOTIFY_API_BASE}${path}`, {
     headers: {
@@ -158,13 +180,31 @@ const spotifyFetch = async <T>(path: string): Promise<T> => {
     }
   });
 
+  if (response.status === 429 && retries > 0) {
+    const waitSec = parseInt(response.headers.get('retry-after') || '2', 10);
+    console.warn(`[Spotify API] 429 on ${path}, retrying after ${waitSec}s (${retries} retries left)`);
+    await new Promise((r) => setTimeout(r, waitSec * 1000));
+    return spotifyFetchInner<T>(path, retries - 1);
+  }
+
   if (!response.ok) {
     const details = await response.text();
+    console.error(`[Spotify API] ${response.status} ${path}: ${details}`);
     throw new ApiError(
       `Spotify API request failed (${response.status}): ${details}`,
       'SPOTIFY_API_ERROR',
-      response.status >= 400 && response.status < 500 ? 502 : 500
+      response.status
     );
+  }
+
+  // Capture rate-limit headers for route handlers to forward.
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  const reset = response.headers.get('x-ratelimit-reset');
+  if (remaining != null || reset != null) {
+    lastSpotifyRateLimit = {
+      remaining: remaining ?? undefined,
+      reset: reset ?? undefined,
+    };
   }
 
   return response.json() as Promise<T>;
@@ -179,7 +219,7 @@ export const getSpotifyToken = async (): Promise<string> => {
       return cachedToken;
     }
   } catch {
-    // Cache is a performance optimization; continue with live token fetch.
+    console.warn('[Spotify] Redis cache miss (unavailable), fetching fresh token');
   }
 
   const clientId = env.SPOTIFY_CLIENT_ID as string;
@@ -205,6 +245,7 @@ export const getSpotifyToken = async (): Promise<string> => {
   }
 
   const data = (await response.json()) as SpotifyTokenResponse;
+  console.log(`[Spotify] Fresh token fetched, expires in ${data.expires_in}s`);
   const ttlSeconds = Math.max(1, data.expires_in - 60);
 
   try {
@@ -216,11 +257,11 @@ export const getSpotifyToken = async (): Promise<string> => {
   return data.access_token;
 };
 
-export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack> => {
-  if (trackId === 'mock-track-30s') {
-    return fallbackTrack(trackId);
-  }
+export const getLastSpotifyRateLimit = (): { remaining?: string; reset?: string } | null => {
+  return lastSpotifyRateLimit;
+};
 
+export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack> => {
   const cacheKey = `spotify:track:${trackId}`;
   try {
     const cached = await redis.get(cacheKey);
@@ -229,7 +270,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
       return JSON.parse(cached) as SimplifiedSpotifyTrack;
     }
   } catch {
-    // Non-fatal when cache read is unavailable.
+    console.warn(`[Spotify] Track cache miss (unavailable) for ${trackId}`);
   }
 
   let track: SpotifyTrackResponse;
@@ -254,29 +295,6 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
     externalUrl: track.external_urls?.spotify ?? null
   };
 
-  // Fallback: if primary lookup returned null preview, try searching by name.
-  // Some tracks have preview available via search but not via individual lookup.
-  if (!result.previewUrl) {
-    try {
-      const searchQuery = `${result.artistName} ${result.name}`;
-      const searchResult = await spotifyFetch<SpotifySearchResponse>(
-        `/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=5`
-      );
-      const searchTracks = searchResult.tracks?.items ?? [];
-      for (const st of searchTracks) {
-        if (st.preview_url && st.id !== trackId) {
-          result.previewUrl = st.preview_url;
-          if (!result.imageUrl) {
-            result.imageUrl = selectBestSpotifyImage(st.album?.images);
-          }
-          break;
-        }
-      }
-    } catch {
-      // Fallback search is best-effort; keep the original null preview.
-    }
-  }
-
   try {
     await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60);
   } catch {
@@ -300,7 +318,7 @@ export const searchSpotify = async (
       return JSON.parse(cached) as SpotifySearchResponse;
     }
   } catch {
-    // Cache is a performance optimization; continue with live Spotify search.
+    console.warn(`[Spotify] Search cache miss (unavailable) for "${q}" type=${type}`);
   }
 
   const params = new URLSearchParams({ q, type, limit: String(limit), offset: '0' });

@@ -8,9 +8,11 @@ export const catalogRouter = Router();
 
 catalogRouter.get(
   '/catalog/home',
-  async (_req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const data = await catalogService.getHomepageData();
+      const data = await catalogService.getHomepageData({
+        spotifyFallback: req.query.spotifyFallback !== 'false',
+      });
       res.json(data);
     } catch (error) {
       next(error);

@@ -5,6 +5,15 @@ import { searchSpotify } from './spotifyService';
 import { genreService } from './genreService';
 import { generateGradientImage } from './imageService';
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[${label}] Timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 interface UnifiedSong {
   id: string;
   title: string;
@@ -19,14 +28,26 @@ interface UnifiedSong {
   popularity?: number;
 }
 
+// In-process memory cache fallback for when Redis is unavailable
+let memCache: { data: any; expiresAt: number } | null = null;
+const MEM_CACHE_TTL_MS = 3600 * 1000;
+
 class CatalogService {
-  async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
+  async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
+    const enableSpotifyEnrichment = options?.spotifyFallback !== false;
     const cacheKey = 'catalog:homepage:v16';
+
+    // 1. Try Redis (fast path)
     try {
-      const cached = await redis.get(cacheKey);
+      const cached = await withTimeout(redis.get(cacheKey), 500, 'redis:homepage:get');
       if (cached) return JSON.parse(cached);
     } catch {
-      // Redis unavailable — proceed with live fetch
+      // Redis unavailable or slow — fall through
+    }
+
+    // 2. Try in-process memory cache (protects against repeated Neon cold starts)
+    if (memCache && memCache.expiresAt > Date.now()) {
+      return memCache.data;
     }
 
     let dbSongs: any[] = [];
@@ -34,7 +55,7 @@ class CatalogService {
     let genres: any[] = [];
 
     try {
-      const results = await Promise.all([
+      const results = await withTimeout(Promise.all([
         prisma.song.findMany({
           where: { softDeleted: false },
           include: { artist: { select: { name: true, imageUrl: true } } },
@@ -57,7 +78,7 @@ class CatalogService {
           orderBy: { popularity: 'desc' },
         }),
         prisma.genre.findMany({ take: 10 }),
-      ]);
+      ]), 6000, 'db:homepage');
 
       dbSongs = results[0];
       dbArtists = results[1];
@@ -93,75 +114,14 @@ class CatalogService {
       followers: a.followers,
     }));
 
-    // ALWAYS fetch from Spotify to enrich with images
-    try {
-      // Search for each artist individually to get their images
-      for (const artist of artists) {
-        if (!artist.image) {
-          try {
-            const result = await searchSpotify(artist.name, 'artist');
-            const firstArtist = result.artists?.items?.[0];
-            if (firstArtist && firstArtist.images?.[0]?.url) {
-              artist.image = firstArtist.images[0].url;
-            }
-          } catch {
-            // Individual search failed, continue
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Artist image enrichment failed');
-    }
-
-    // Get genres from additional Spotify search
-    try {
-      const spotifyResults = await searchSpotify('afrobeats', 'artist');
-      if (genres.length < 5) {
-        const seen = new Set<string>();
-        for (const a of (spotifyResults.artists?.items || [])) {
-          for (const g of (a.genres || [])) {
-            const name = g as string;
-            if (!seen.has(name) && name) {
-              seen.add(name);
-              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-            }
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Spotify genre extraction failed');
-    }
-
-    // If genres still low, try secondary search
-    if (genres.length < 5) {
-      try {
-        const additionalResults = await searchSpotify('amapiano', 'artist');
-        const seen = new Set<string>(genres.map(g => g.name.toLowerCase()));
-        for (const a of (additionalResults.artists?.items || [])) {
-          if (genres.length >= 10) break;
-          for (const g of (a.genres || [])) {
-            const name = g as string;
-            if (!seen.has(name.toLowerCase()) && name) {
-              seen.add(name.toLowerCase());
-              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-            }
-          }
-        }
-      } catch (err2) {
-        logger.warn({ err: err2 }, 'Secondary Spotify genre search failed');
-      }
-    }
-
-    // Fetch genre images from Spotify playlists with gradient fallbacks
-    const genreNames = genres.slice(0, 10).map((g: any) => g.name);
-    const genreImageMap = await genreService.getGenreImages(genreNames);
-
-    // Convert Map to object for proper serialization
+    // Genre images — use gradient fallbacks immediately (no I/O)
     const genreImageObj: Record<string, string> = {};
-    for (const [name, image] of genreImageMap.entries()) {
-      genreImageObj[name] = image;
+    const genreNames = genres.slice(0, 10).map((g: any) => g.name);
+    for (const name of genreNames) {
+      genreImageObj[name] = generateGradientImage(name);
     }
 
+    // Assemble and return result immediately (DB data only)
     const result = {
       songs: songs
         .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
@@ -187,15 +147,152 @@ class CatalogService {
 
     const hasRealData = result.songs.length > 0 && result.genres.length > 0;
     if (hasRealData) {
-      try {
-        await redis.set(cacheKey, JSON.stringify(result), 'EX', 3600);
-      } catch {
+      memCache = { data: result, expiresAt: Date.now() + MEM_CACHE_TTL_MS };
+      withTimeout(redis.set(cacheKey, JSON.stringify(result), 'EX', 3600), 500, 'redis:homepage:set').catch(() => {
         // Non-fatal cache write failure
-      }
+      });
     } else {
       logger.warn('Catalog homepage result is empty — skipping Redis cache to avoid poisoning');
     }
+
+    // Kick off Spotify enrichment in background (non-blocking)
+    if (enableSpotifyEnrichment && hasRealData) {
+      this.enrichHomepageCache(cacheKey).catch((err) => {
+        logger.warn({ err }, 'Background homepage enrichment failed');
+      });
+    }
+
     return result;
+  }
+
+  private async enrichHomepageCache(cacheKey: string): Promise<void> {
+    const dbSongs = await prisma.song.findMany({
+      where: { softDeleted: false },
+      include: { artist: { select: { name: true, imageUrl: true } } },
+      orderBy: { views: 'desc' },
+      take: 20,
+    });
+    const dbArtists = await prisma.artist.findMany({
+      where: { softDeleted: false },
+      select: {
+        id: true, name: true, imageUrl: true, genres: true,
+        spotifyId: true, bio: true, popularity: true, followers: true,
+      },
+      take: 12,
+      orderBy: { popularity: 'desc' },
+    });
+    const genres = await prisma.genre.findMany({ take: 10 });
+
+    const artists = dbArtists.map((a) => ({
+      id: a.id,
+      name: a.name,
+      genre: a.genres?.[0] || '',
+      image: a.imageUrl || '',
+      spotifyId: a.spotifyId,
+      bio: a.bio,
+      popularity: a.popularity,
+      followers: a.followers,
+    }));
+
+    // Artist images — parallel batches
+    const artistsNeedingImages = artists.filter(a => !a.image);
+    if (artistsNeedingImages.length > 0) {
+      const CONCURRENCY = 5;
+      for (let i = 0; i < artistsNeedingImages.length; i += CONCURRENCY) {
+        const batch = artistsNeedingImages.slice(i, i + CONCURRENCY);
+        await Promise.allSettled(
+          batch.map(async (artist) => {
+            try {
+              const result = await searchSpotify(artist.name, 'artist');
+              const firstArtist = result.artists?.items?.[0];
+              if (firstArtist?.images?.[0]?.url) {
+                artist.image = firstArtist.images[0].url;
+              }
+            } catch {
+              // Individual search failed
+            }
+          })
+        );
+      }
+    }
+
+    // Genre enrichment from Spotify
+    if (genres.length < 5) {
+      const [afrobeatsResult, amapianoResult] = await Promise.allSettled([
+        searchSpotify('afrobeats', 'artist'),
+        searchSpotify('amapiano', 'artist'),
+      ]);
+
+      const seen = new Set<string>(genres.map(g => g.name?.toLowerCase()));
+
+      if (afrobeatsResult.status === 'fulfilled') {
+        for (const a of (afrobeatsResult.value.artists?.items || [])) {
+          for (const g of (a.genres || [])) {
+            const name = g as string;
+            if (!seen.has(name.toLowerCase()) && name && genres.length < 10) {
+              seen.add(name.toLowerCase());
+              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+            }
+          }
+        }
+      }
+
+      if (genres.length < 5 && amapianoResult.status === 'fulfilled') {
+        for (const a of (amapianoResult.value.artists?.items || [])) {
+          for (const g of (a.genres || [])) {
+            const name = g as string;
+            if (!seen.has(name.toLowerCase()) && name && genres.length < 10) {
+              seen.add(name.toLowerCase());
+              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
+            }
+          }
+        }
+      }
+    }
+
+    // Genre images — parallel from Spotify playlists
+    const genreNames = genres.slice(0, 10).map((g: any) => g.name);
+    const genreImageMap = new Map<string, string>();
+    const genreResults = await Promise.allSettled(
+      genreNames.map(name => genreService.getGenreImage(name))
+    );
+    for (let i = 0; i < genreNames.length; i++) {
+      if (genreResults[i].status === 'fulfilled') {
+        genreImageMap.set(genreNames[i], (genreResults[i] as PromiseFulfilledResult<string>).value);
+      }
+    }
+
+    const genreImageObj: Record<string, string> = {};
+    for (const [name, image] of genreImageMap.entries()) {
+      genreImageObj[name] = image;
+    }
+
+    const enrichedResult = {
+      songs: dbSongs.map((s) => ({
+        id: s.id,
+        title: s.title,
+        artistName: (s as any).artist.name,
+        artistId: s.artistId || '',
+        albumName: s.albumName || '',
+        imageUrl: s.imageUrl || '',
+        previewUrl: s.spotifyPreviewUrl || null,
+        spotifyId: s.spotifyId || null,
+        source: 'DB' as const,
+      })).sort((a, b) => 0).slice(0, 20),
+      artists,
+      genres: genres.slice(0, 10).map((g: any) => ({
+        id: g.id,
+        name: g.name,
+        image: genreImageObj[g.name] || generateGradientImage(g.name),
+      })),
+    };
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(enrichedResult), 'EX', 3600);
+      logger.info('Homepage cache enriched with Spotify data');
+    } catch {
+      // Non-fatal
+    }
   }
 
   async getCatalogSongs(params: {

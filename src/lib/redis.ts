@@ -29,8 +29,8 @@ export const redis =
       }));
 
 if (!redisDisabled) {
-  redis.on('error', () => {
-    // Redis is used as a cache/queue backend. Keep API process alive on transient outages.
+  redis.on('error', (err) => {
+    console.error('[Redis] Connection error:', err.message);
   });
 }
 

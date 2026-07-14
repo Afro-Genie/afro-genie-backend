@@ -22,7 +22,22 @@
     "docs:api:generate": "tsx scripts/generate-openapi-json.ts",
     "docs:api:build": "npm run docs:api:generate",
     "prisma:generate": "prisma generate",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "seed:batch": "tsx scripts/batch-seed.ts",
+    "seed:resume": "tsx scripts/batch-seed.ts --resume",
+    "seed:monitor": "tsx scripts/seed-monitor.ts",
+    "seed:status": "tsx scripts/seed-monitor.ts --once",
+    "link:data": "tsx scripts/link-song-data.ts",
+    "link:dry": "tsx scripts/link-song-data.ts --dry-run",
+    "link:genres": "tsx scripts/link-song-data.ts --genres-only",
+    "link:languages": "tsx scripts/link-song-data.ts --languages-only",
+    "db:status": "tsx scripts/db-status.ts",
+    "seed:community": "tsx scripts/seed-community.ts",
+    "seed:robust": "tsx scripts/robust-seed.ts",
+    "seed:robust:resume": "tsx scripts/robust-seed.ts --resume",
+    "seed:robust:status": "tsx scripts/robust-seed.ts --status",
+    "audit:seed": "tsx scripts/audit-seed-data.ts",
+    "seed:full": "tsx scripts/scheduled-seed.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

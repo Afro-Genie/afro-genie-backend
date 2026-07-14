@@ -1,0 +1,30 @@
+{
+  "startedAt": "2026-07-14T07:58:07.541Z",
+  "lastUpdatedAt": "2026-07-14T08:00:00.000Z",
+  "totalQueries": 25,
+  "completedQueries": 0,
+  "failedQueries": [],
+  "currentBatch": 5,
+  "totalBatches": 5,
+  "stats": {
+    "songsCreated": 319,
+    "artistsCreated": 270,
+    "albumsCreated": 554,
+    "songsSkipped": 0,
+    "artistsSkipped": 0,
+    "albumsSkipped": 0,
+    "errors": 0
+  },
+  "dbCounts": {
+    "songs": 319,
+    "artists": 270,
+    "albums": 554
+  },
+  "status": "completed",
+  "logs": [
+    "[07:58:07] Starting fresh seed run",
+    "[07:58:08] Spotify token acquired",
+    "[07:58:13] Initial DB: 319 songs, 270 artists, 554 albums",
+    "[07:58:13] All seed criteria already met - DB is fully populated"
+  ]
+}
