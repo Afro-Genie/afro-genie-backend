@@ -29,13 +29,13 @@ interface UnifiedSong {
 }
 
 // In-process memory cache fallback for when Redis is unavailable
-let memCache: { data: any; expiresAt: number } | null = null;
+let memCache: { data: any; expiresAt: number; cacheKey: string } | null = null;
 const MEM_CACHE_TTL_MS = 3600 * 1000;
 
 class CatalogService {
   async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
     const enableSpotifyEnrichment = options?.spotifyFallback !== false;
-    const cacheKey = 'catalog:homepage:v16';
+    const cacheKey = 'catalog:homepage:v17';
 
     // 1. Try Redis (fast path)
     try {
@@ -46,7 +46,7 @@ class CatalogService {
     }
 
     // 2. Try in-process memory cache (protects against repeated Neon cold starts)
-    if (memCache && memCache.expiresAt > Date.now()) {
+    if (memCache && memCache.expiresAt > Date.now() && memCache.cacheKey === cacheKey) {
       return memCache.data;
     }
 
@@ -147,7 +147,7 @@ class CatalogService {
 
     const hasRealData = result.songs.length > 0 && result.genres.length > 0;
     if (hasRealData) {
-      memCache = { data: result, expiresAt: Date.now() + MEM_CACHE_TTL_MS };
+      memCache = { data: result, expiresAt: Date.now() + MEM_CACHE_TTL_MS, cacheKey };
       withTimeout(redis.set(cacheKey, JSON.stringify(result), 'EX', 3600), 500, 'redis:homepage:set').catch(() => {
         // Non-fatal cache write failure
       });
@@ -414,6 +414,30 @@ class CatalogService {
       })),
       total,
     };
+  }
+
+  async clearCache(): Promise<{ cleared: string[] }> {
+    const cleared: string[] = [];
+
+    // Clear in-process memory cache
+    memCache = null;
+    cleared.push('memCache');
+
+    // Clear all known Redis cache keys
+    const patterns = ['catalog:homepage:v*', 'spotify:search:*', 'song:views:*'];
+    for (const pattern of patterns) {
+      try {
+        const keys = await withTimeout(redis.keys(pattern), 2000, `redis:keys:${pattern}`);
+        if (keys.length > 0) {
+          await withTimeout(redis.del(...keys), 2000, `redis:del:${pattern}`);
+          cleared.push(...keys);
+        }
+      } catch {
+        // Redis unavailable — skip
+      }
+    }
+
+    return { cleared };
   }
 
   async getCatalogAlbums(artistId: string): Promise<{ albums: any[] }> {

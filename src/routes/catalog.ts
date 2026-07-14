@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { query, param } from 'express-validator';
 import { validateRequest } from '../middleware/validateRequest';
 import { catalogService } from '../services/catalogService';
+import { authenticate, requireRole } from '../middleware/auth';
 
 export const catalogRouter = Router();
 
@@ -72,6 +73,20 @@ catalogRouter.get(
     try {
       const data = await catalogService.getCatalogAlbums(req.params.artistId);
       res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+catalogRouter.post(
+  '/catalog/cache/clear',
+  authenticate,
+  requireRole('ADMIN'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await catalogService.clearCache();
+      res.json({ success: true, ...result });
     } catch (error) {
       next(error);
     }
