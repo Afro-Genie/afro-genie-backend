@@ -31,6 +31,8 @@ const SPOTIFY_API = 'https://api.spotify.com/v1';
 
 // ─── Spotify Auth (Client Credentials) ───────────────────────────────────────
 
+let currentToken = '';
+
 async function getSpotifyToken(): Promise<string> {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
@@ -47,56 +49,52 @@ async function getSpotifyToken(): Promise<string> {
   });
   if (!res.ok) throw new Error(`Spotify token error: ${res.status}`);
   const data = await res.json();
-  return data.access_token;
+  currentToken = data.access_token;
+  return currentToken;
 }
 
-// ─── Curated African Playlists ───────────────────────────────────────────────
+async function refreshSpotifyToken(): Promise<string> {
+  console.log('  ⏳ Refreshing Spotify token...');
+  return getSpotifyToken();
+}
 
-const CURATED_PLAYLISTS = [
-  '37i9dQZF1DX70RN3TfWWJh', // Afrobeats Hits
-  '37i9dQZF1DX48TUlHJFJQy', // African Heat
-  '37i9dQZF1DWYn5uZTUxl32', // Amapiano Grooves
-  '37i9dQZF1DWZFmyF5TOM5K', // Amapiano Africa
-  '37i9dQZF1DX7Q6hK1gDMcS', // Bongo Flava
-  '37i9dQZF1DX9tPFwDMEDy1', // Africa Rising
-  '37i9dQZF1DX1lVhptIYRsa', // Highlife classics
-  '37i9dQZF1DXcFwqoL3JWZR', // Afro Fusion
-  '37i9dQZF1DX0SM0LYsmbmt', // Dancehall Official
-  '37i9dQZF1DWVqJMsg4Crbp', // African R&B
-];
+async function spotifyFetch(url: string): Promise<Response> {
+  let res = await fetch(url, { headers: { Authorization: `Bearer ${currentToken}` } });
+  if (res.status === 401) {
+    await refreshSpotifyToken();
+    res = await fetch(url, { headers: { Authorization: `Bearer ${currentToken}` } });
+  }
+  return res;
+}
 
-const TARGET_GENRES = [
+// ─── Search Queries (Client Credentials can't access playlists) ────────────────
+
+const SEARCH_QUERIES = [
   'afrobeats',
   'amapiano',
   'afropop',
+  'nigerian music',
+  'african music',
   'afro fusion',
   'highlife',
-  'r&b',
-  'hip-hop',
-  'dancehall',
-];
-
-// ─── Fallback Hardcoded Songs (when Spotify unavailable) ─────────────────────
-
-type SeedSong = {
-  title: string;
-  artist: string;
-  albumName: string;
-  releaseYear: number;
-  primaryGenre: string;
-};
-
-const FALLBACK_SONGS: SeedSong[] = [
-  { title: 'Last Last', artist: 'Burna Boy', albumName: 'Love, Damini', releaseYear: 2022, primaryGenre: 'Afrobeats' },
-  { title: 'Essence', artist: 'Wizkid', albumName: 'Made in Lagos', releaseYear: 2020, primaryGenre: 'Afropop' },
-  { title: 'Free Mind', artist: 'Tems', albumName: 'For Broken Ears', releaseYear: 2020, primaryGenre: 'R&B' },
-  { title: 'Fall', artist: 'Davido', albumName: 'A Good Time', releaseYear: 2017, primaryGenre: 'Afropop' },
-  { title: 'Calm Down', artist: 'Rema', albumName: 'Rave & Roses', releaseYear: 2022, primaryGenre: 'Afropop' },
-  { title: 'Rush', artist: 'Ayra Starr', albumName: '19 & Dangerous Deluxe', releaseYear: 2022, primaryGenre: 'Afropop' },
-  { title: 'Lonely At The Top', artist: 'Asake', albumName: 'Work of Art', releaseYear: 2023, primaryGenre: 'Afrobeats' },
-  { title: 'Buga', artist: 'Kizz Daniel', albumName: 'Single', releaseYear: 2022, primaryGenre: 'Afrobeats' },
-  { title: 'Peru', artist: 'Fireboy DML', albumName: 'Playboy', releaseYear: 2021, primaryGenre: 'Afropop' },
-  { title: 'Leg Over', artist: 'Mr Eazi', albumName: 'Life Is Eazi, Vol. 2', releaseYear: 2017, primaryGenre: 'Banku' },
+  'bongo flava',
+  'gengetone',
+  'afro r&b',
+  'dancehall africa',
+  'naija hits',
+  'burna boy',
+  'wizkid',
+  'davido',
+  'tems',
+  'asake',
+  'rema',
+  'fireboy dml',
+  'ayra starr',
+  'black sherif',
+  'tiwa savage',
+  'sauti sol',
+  'sarkodie',
+  'diamond platnumz',
 ];
 
 // ─── Seed Data ───────────────────────────────────────────────────────────────
@@ -141,224 +139,292 @@ const forumCategorySeed = [
 
 // ─── Spotify Seeding Functions ───────────────────────────────────────────────
 
-async function seedFromSpotifyPlaylists(
-  token: string,
-  playlistIds: string[],
-  limitPerPlaylist: number = 100,
-): Promise<{ songsCreated: number; artistsCreated: number }> {
-  let songsCreated = 0;
-  let artistsCreated = 0;
+interface TrackData {
+  track: any;
+  artistId: string;
+  artistName: string;
+  artistSpotifyId: string;
+  albumId: string | null;
+  albumName: string | null;
+  albumSpotifyId: string | null;
+  albumImage: string | null;
+  albumYear: number | null;
+}
 
-  for (const playlistId of playlistIds) {
-    console.log(`  Importing playlist: ${playlistId}`);
+async function fetchTracksFromSpotify(
+  queries: string[],
+  limitPerQuery: number = 30,
+): Promise<TrackData[]> {
+  const seenTrackIds = new Set<string>();
+  const artistIdsSeen = new Set<string>();
+  const albumIdsSeen = new Set<string>();
+  const allTracks: TrackData[] = [];
+
+  for (const query of queries) {
+    console.log(`  Searching: "${query}"`);
     let offset = 0;
-    const playlistTracks: any[] = [];
+    let querySongs = 0;
 
-    while (playlistTracks.length < limitPerPlaylist) {
-      const res = await fetch(
-        `${SPOTIFY_API}/playlists/${playlistId}/tracks?limit=${Math.min(100, limitPerPlaylist - playlistTracks.length)}&offset=${offset}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
+    while (querySongs < limitPerQuery) {
+      const limit = 10;
+      const url = `${SPOTIFY_API}/search?q=${encodeURIComponent(query)}&type=track&limit=${limit}&offset=${offset}`;
+      let res: Response;
+      try {
+        res = await spotifyFetch(url);
+      } catch (err) {
+        console.warn(`  Network error for "${query}" at offset ${offset}, retrying in 2s`);
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          res = await spotifyFetch(url);
+        } catch {
+          break;
+        }
+      }
       if (!res.ok) {
-        console.warn(`  Failed to fetch playlist ${playlistId}: ${res.status}`);
+        const errBody = await res.text();
+        console.warn(`  Failed "${query}" at offset ${offset}: ${res.status} — ${errBody.substring(0, 200)}`);
         break;
       }
       const data = await res.json();
-      const items = data.items || [];
-      if (!items.length) break;
-      playlistTracks.push(...items);
-      offset += items.length;
-      if (!data.next || playlistTracks.length >= limitPerPlaylist) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+      const tracks = data?.tracks?.items || [];
+      if (!tracks.length) break;
 
-    for (const item of playlistTracks.slice(0, limitPerPlaylist)) {
-      try {
-        const track = item.track;
-        if (!track || !track.artists?.[0]) continue;
+      for (const track of tracks) {
+        if (!track?.id || seenTrackIds.has(track.id) || !track.artists?.[0]) continue;
+        seenTrackIds.add(track.id);
 
-        const artistData = track.artists[0];
-        let artist = await prisma.artist.findFirst({ where: { spotifyId: artistData.id } });
-        if (!artist) {
-          const aRes = await fetch(`${SPOTIFY_API}/artists/${artistData.id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const aData = aRes.ok ? await aRes.json() : {};
-          artist = await prisma.artist.create({
-            data: {
-              name: artistData.name,
-              spotifyId: artistData.id,
-              imageUrl: aData.images?.[0]?.url || null,
-              genres: aData.genres || [],
-              popularity: aData.popularity || 0,
-              followers: aData.followers?.total || 0,
-              verified: false,
-            },
-          });
-          artistsCreated++;
-        }
-
+        const primaryArtist = track.artists[0];
         const albumData = track.album;
-        let albumId: string | undefined;
-        if (albumData) {
-          let album = await prisma.album.findFirst({ where: { spotifyId: albumData.id } });
-          if (!album) {
-            album = await prisma.album.create({
-              data: {
-                name: albumData.name,
-                artistId: artist.id,
-                spotifyId: albumData.id,
-                imageUrl: albumData.images?.[0]?.url || null,
-                releaseYear: albumData.release_date
-                  ? parseInt(albumData.release_date.substring(0, 4), 10)
-                  : null,
-                totalTracks: albumData.total_tracks || null,
-                popularity: 0,
-                genres: [],
-              },
-            });
-          }
-          albumId = album.id;
-        }
 
-        const existingSong = await prisma.song.findUnique({ where: { spotifyId: track.id } });
-        if (!existingSong) {
-          await prisma.song.create({
-            data: {
-              title: track.name,
-              artistId: artist.id,
-              albumId: albumId || null,
-              albumName: albumData?.name || null,
-              imageUrl: albumData?.images?.[0]?.url || null,
-              spotifyId: track.id,
-              spotifyPreviewUrl: track.preview_url || null,
-              previewAvailable: !!track.preview_url,
-              durationMs: track.duration_ms || null,
-              trackNumber: track.track_number || null,
-              releaseYear: albumData?.release_date
-                ? parseInt(albumData.release_date.substring(0, 4), 10)
-                : null,
-              views: Math.floor(Math.random() * 5000),
-            },
-          });
-          songsCreated++;
-        }
-      } catch {
-        // Skip individual track errors
+        allTracks.push({
+          track,
+          artistId: primaryArtist.id,
+          artistName: primaryArtist.name,
+          artistSpotifyId: primaryArtist.id,
+          albumId: albumData?.id || null,
+          albumName: albumData?.name || null,
+          albumSpotifyId: albumData?.id || null,
+          albumImage: albumData?.images?.[0]?.url || null,
+          albumYear: albumData?.release_date
+            ? parseInt(albumData.release_date.substring(0, 4), 10)
+            : null,
+        });
+
+        artistIdsSeen.add(primaryArtist.id);
+        if (albumData?.id) albumIdsSeen.add(albumData.id);
+        querySongs++;
       }
+
+      offset += tracks.length;
+      if (tracks.length < limit) break;
+      await new Promise((r) => setTimeout(r, 150));
     }
 
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 200));
   }
 
+  console.log(`  Fetched ${allTracks.length} tracks from Spotify (${artistIdsSeen.size} unique artists, ${albumIdsSeen.size} unique albums)`);
+  return allTracks;
+}
+
+async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: number; artistsCreated: number }> {
+  if (!allTracks.length) return { songsCreated: 0, artistsCreated: 0 };
+
+  // ── Phase 1: Collect unique artist IDs and fetch their details from Spotify ──
+  const artistMap = new Map<string, { name: string; spotifyId: string }>();
+  for (const t of allTracks) {
+    if (!artistMap.has(t.artistSpotifyId)) {
+      artistMap.set(t.artistSpotifyId, { name: t.artistName, spotifyId: t.artistSpotifyId });
+    }
+  }
+  console.log(`  Fetching details for ${artistMap.size} artists...`);
+
+  const artistDetails = new Map<string, any>();
+  const artistEntries = [...artistMap.entries()];
+  for (let i = 0; i < artistEntries.length; i++) {
+    const [spotifyId, info] = artistEntries[i];
+    try {
+      const res = await spotifyFetch(`${SPOTIFY_API}/artists/${spotifyId}`);
+      artistDetails.set(spotifyId, res.ok ? await res.json() : {});
+    } catch {
+      artistDetails.set(spotifyId, {});
+    }
+    if (i % 20 === 0 && i > 0) {
+      console.log(`    ...${i}/${artistEntries.length} artists fetched`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  // ── Phase 2: Bulk upsert artists ──
+  console.log(`  Inserting ${artistMap.size} artists into DB...`);
+  let artistsCreated = 0;
+  const dbArtistMap = new Map<string, string>(); // spotifyId -> dbId
+
+  let artistCount = 0;
+  for (const [spotifyId, info] of artistMap) {
+    try {
+      const existing = await prisma.artist.findFirst({ where: { spotifyId } });
+      if (existing) {
+        dbArtistMap.set(spotifyId, existing.id);
+      } else {
+        const details = artistDetails.get(spotifyId) || {};
+        const created = await prisma.artist.create({
+          data: {
+            name: info.name,
+            spotifyId,
+            imageUrl: details.images?.[0]?.url || null,
+            genres: details.genres || [],
+            popularity: details.popularity || 0,
+            followers: details.followers?.total || 0,
+            verified: false,
+          },
+        });
+        dbArtistMap.set(spotifyId, created.id);
+        artistsCreated++;
+      }
+    } catch (err: any) {
+      if (err?.code === 'P1001' || err?.message?.includes('terminated') || err?.message?.includes('ECONNRESET')) {
+        console.log(`    DB connection lost at artist ${artistCount}, reconnecting in 3s...`);
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+        } catch {
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        continue;
+      }
+      throw err;
+    }
+    artistCount++;
+    if (artistCount % 50 === 0) {
+      console.log(`    ...${artistCount}/${artistMap.size} artists processed`);
+    }
+  }
+  console.log(`  Artists: ${artistsCreated} created, ${artistMap.size - artistsCreated} existed`);
+
+  // ── Phase 3: Bulk upsert albums ──
+  const albumMap = new Map<string, { name: string; spotifyId: string; artistSpotifyId: string; image: string | null; year: number | null }>();
+  for (const t of allTracks) {
+    if (t.albumSpotifyId && !albumMap.has(t.albumSpotifyId)) {
+      albumMap.set(t.albumSpotifyId, {
+        name: t.albumName || 'Unknown',
+        spotifyId: t.albumSpotifyId,
+        artistSpotifyId: t.artistSpotifyId,
+        image: t.albumImage,
+        year: t.albumYear,
+      });
+    }
+  }
+  console.log(`  Inserting ${albumMap.size} albums into DB...`);
+
+  let albumCount = 0;
+  const dbAlbumMap = new Map<string, string>(); // spotifyId -> dbId
+  for (const [spotifyId, info] of albumMap) {
+    try {
+      const existing = await prisma.album.findFirst({ where: { spotifyId } });
+      if (existing) {
+        dbAlbumMap.set(spotifyId, existing.id);
+      } else {
+        const dbArtistId = dbArtistMap.get(info.artistSpotifyId);
+        if (dbArtistId) {
+          const created = await prisma.album.create({
+            data: {
+              name: info.name,
+              artistId: dbArtistId,
+              spotifyId,
+              imageUrl: info.image,
+              releaseYear: info.year,
+              totalTracks: null,
+              popularity: 0,
+              genres: [],
+            },
+          });
+          dbAlbumMap.set(spotifyId, created.id);
+        }
+      }
+    } catch (err: any) {
+      if (err?.code === 'P1001' || err?.message?.includes('terminated') || err?.message?.includes('ECONNRESET')) {
+        console.log(`    DB connection lost at album ${albumCount}, reconnecting in 3s...`);
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+        } catch {
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        continue;
+      }
+      throw err;
+    }
+    albumCount++;
+    if (albumCount % 50 === 0) {
+      console.log(`    ...${albumCount}/${albumMap.size} albums`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  // ── Phase 4: Bulk upsert songs ──
+  console.log(`  Inserting songs into DB...`);
+  let songsCreated = 0;
+  let songAttempt = 0;
+
+  for (const t of allTracks) {
+    songAttempt++;
+    try {
+      const existingSong = await prisma.song.findUnique({ where: { spotifyId: t.track.id } });
+      if (existingSong) continue;
+
+      const dbArtistId = dbArtistMap.get(t.artistSpotifyId);
+      if (!dbArtistId) continue;
+      const dbAlbumId = t.albumSpotifyId ? dbAlbumMap.get(t.albumSpotifyId) || null : null;
+
+      await prisma.song.create({
+        data: {
+          title: t.track.name,
+          artistId: dbArtistId,
+          albumId: dbAlbumId || null,
+          albumName: t.albumName || null,
+          imageUrl: t.albumImage || null,
+          spotifyId: t.track.id,
+          spotifyPreviewUrl: t.track.preview_url || null,
+          previewAvailable: !!t.track.preview_url,
+          durationMs: t.track.duration_ms || null,
+          trackNumber: t.track.track_number || null,
+          releaseYear: t.albumYear,
+          views: Math.floor(Math.random() * 5000),
+        },
+      });
+      songsCreated++;
+      if (songsCreated % 50 === 0) {
+        console.log(`    ...${songsCreated} songs created (${songAttempt}/${allTracks.length} processed)`);
+      }
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        continue;
+      }
+      if (err?.code === 'P1001' || err?.message?.includes('terminated') || err?.message?.includes('ECONNRESET')) {
+        console.log(`    DB connection lost at song ${songsCreated}, reconnecting in 3s...`);
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+        } catch {
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  console.log(`  Songs: ${songsCreated} created`);
   return { songsCreated, artistsCreated };
 }
 
-async function seedFromSpotifyGenres(
-  token: string,
-  genres: string[],
-  limitPerGenre: number = 50,
+async function seedFromSpotifySearch(
+  queries: string[],
+  limitPerQuery: number = 30,
 ): Promise<{ songsCreated: number; artistsCreated: number }> {
-  let songsCreated = 0;
-  let artistsCreated = 0;
-
-  for (const genre of genres) {
-    console.log(`  Discovering genre: ${genre}`);
-    const dedupedTracks = new Map<string, any>();
-
-    for (let offset = 0; dedupedTracks.size < limitPerGenre; offset += 50) {
-      const res = await fetch(
-        `${SPOTIFY_API}/search?q=genre:${encodeURIComponent(genre)}&type=track&limit=${Math.min(50, limitPerGenre - dedupedTracks.size)}&offset=${offset}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (!res.ok) break;
-      const data = await res.json();
-      const tracks = data?.tracks?.items || [];
-      if (!tracks.length) break;
-      for (const track of tracks) {
-        if (track?.id) dedupedTracks.set(track.id, track);
-      }
-      if (tracks.length < 50) break;
-    }
-
-    for (const track of dedupedTracks.values()) {
-      try {
-        if (!track.artists?.[0]) continue;
-        const artistData = track.artists[0];
-        let artist = await prisma.artist.findFirst({ where: { spotifyId: artistData.id } });
-        if (!artist) {
-          const aRes = await fetch(`${SPOTIFY_API}/artists/${artistData.id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const aData = aRes.ok ? await aRes.json() : {};
-          artist = await prisma.artist.create({
-            data: {
-              name: artistData.name,
-              spotifyId: artistData.id,
-              imageUrl: aData.images?.[0]?.url || null,
-              genres: aData.genres || [],
-              popularity: aData.popularity || 0,
-              followers: aData.followers?.total || 0,
-              verified: false,
-            },
-          });
-          artistsCreated++;
-        }
-
-        const albumData = track.album;
-        let albumId: string | undefined;
-        if (albumData) {
-          let album = await prisma.album.findFirst({ where: { spotifyId: albumData.id } });
-          if (!album) {
-            album = await prisma.album.create({
-              data: {
-                name: albumData.name,
-                artistId: artist.id,
-                spotifyId: albumData.id,
-                imageUrl: albumData.images?.[0]?.url || null,
-                releaseYear: albumData.release_date
-                  ? parseInt(albumData.release_date.substring(0, 4), 10)
-                  : null,
-                totalTracks: albumData.total_tracks || null,
-                popularity: 0,
-                genres: [],
-              },
-            });
-          }
-          albumId = album.id;
-        }
-
-        const existingSong = await prisma.song.findUnique({ where: { spotifyId: track.id } });
-        if (!existingSong) {
-          await prisma.song.create({
-            data: {
-              title: track.name,
-              artistId: artist.id,
-              albumId: albumId || null,
-              albumName: albumData?.name || null,
-              imageUrl: albumData?.images?.[0]?.url || null,
-              spotifyId: track.id,
-              spotifyPreviewUrl: track.preview_url || null,
-              previewAvailable: !!track.preview_url,
-              durationMs: track.duration_ms || null,
-              trackNumber: track.track_number || null,
-              releaseYear: albumData?.release_date
-                ? parseInt(albumData.release_date.substring(0, 4), 10)
-                : null,
-              views: Math.floor(Math.random() * 5000),
-            },
-          });
-          songsCreated++;
-        }
-      } catch {
-        // Skip individual track errors
-      }
-    }
-
-    await new Promise((r) => setTimeout(r, 500));
-  }
-
-  return { songsCreated, artistsCreated };
+  const allTracks = await fetchTracksFromSpotify(queries, limitPerQuery);
+  return bulkInsertToDb(allTracks);
 }
 
 // ─── Database Reset ──────────────────────────────────────────────────────────
@@ -465,80 +531,24 @@ async function main() {
     )
   );
 
-  // ── Songs: Spotify-first or Fallback ──
+  // ── Songs: Spotify only ──
   let totalSongsCreated = 0;
-  let useSpotify = false;
-  let token = '';
 
-  try {
-    if (process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET) {
-      token = await getSpotifyToken();
-      useSpotify = true;
-    }
-  } catch {
-    // Spotify not configured
+  if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+    throw new Error(
+      'SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set for seeding.\n' +
+      'Fallback songs have been removed — all catalog data comes from Spotify.'
+    );
   }
 
-  if (useSpotify) {
-    console.log('\n🎵 Seeding from Spotify (curated playlists + genre discovery)...\n');
+  const token = await getSpotifyToken();
+  console.log('\n🎵 Seeding from Spotify (keyword search across African music)...\n');
 
-    const playlistResult = await seedFromSpotifyPlaylists(token, CURATED_PLAYLISTS, 100);
-    console.log(`  Playlists: ${playlistResult.songsCreated} songs, ${playlistResult.artistsCreated} artists`);
+  const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30);
+  console.log(`  Search: ${searchResult.songsCreated} songs, ${searchResult.artistsCreated} artists`);
 
-    const genreResult = await seedFromSpotifyGenres(token, TARGET_GENRES, 50);
-    console.log(`  Genres: ${genreResult.songsCreated} songs, ${genreResult.artistsCreated} artists`);
-
-    totalSongsCreated = playlistResult.songsCreated + genreResult.songsCreated;
-    console.log(`\n✅ Total Spotify songs seeded: ${totalSongsCreated}\n`);
-  } else {
-    console.log('\n⚠️  Spotify not configured — using fallback songs\n');
-    console.log('  Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET for full catalog.\n');
-
-    // Create fallback artists
-    const artistMap = new Map<string, string>();
-    const fallbackArtists = [...new Set(FALLBACK_SONGS.map((s) => s.artist))];
-    for (const artistName of fallbackArtists) {
-      const created = await prisma.artist.create({
-        data: {
-          name: artistName,
-          genres: ['Afrobeats'],
-          popularity: 80,
-          followers: 5000000,
-          verified: true,
-          bio: `${artistName} is a leading voice in African music.`,
-        }
-      });
-      artistMap.set(artistName, created.id);
-    }
-
-    const genreMap = new Map<string, string>();
-    const allGenres = await prisma.genre.findMany();
-    allGenres.forEach((g) => genreMap.set(g.name, g.id));
-
-    for (const item of FALLBACK_SONGS) {
-      const artistId = artistMap.get(item.artist);
-      if (!artistId) continue;
-
-      const song = await prisma.song.create({
-        data: {
-          title: item.title,
-          artistId,
-          albumName: item.albumName,
-          releaseYear: item.releaseYear,
-          imageUrl: '',
-          views: 1000 + Math.floor(Math.random() * 9000),
-          requestCount: Math.floor(Math.random() * 200),
-        }
-      });
-
-      const genreId = genreMap.get(item.primaryGenre);
-      if (genreId) {
-        await prisma.songGenre.create({ data: { songId: song.id, genreId } });
-      }
-
-      totalSongsCreated++;
-    }
-  }
+  totalSongsCreated = searchResult.songsCreated;
+  console.log(`\n✅ Total Spotify songs seeded: ${totalSongsCreated}\n`);
 
   // ── Community Data (uses first songs in DB) ──
   const dbSongs = await prisma.song.findMany({
@@ -730,7 +740,7 @@ async function main() {
   console.log(`- Songs: ${finalSongCount}`);
   console.log(`- Languages: ${languageSeed.length}`);
   console.log(`- Genres: ${genreSeed.length}`);
-  console.log(`- Source: ${useSpotify ? 'Spotify (curated playlists + genre discovery)' : 'Fallback (hardcoded)'}`);
+  console.log(`- Source: Spotify (curated playlists + genre discovery)`);
   console.log('- Core community and translation tables seeded');
 }
 

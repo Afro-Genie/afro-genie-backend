@@ -272,3 +272,31 @@ authRouter.post(
     }
   }
 );
+
+/**
+ * Diagnostic endpoint: returns Spotify OAuth configuration status.
+ * Helps verify that the redirect URI and client ID are configured correctly.
+ * No secrets are exposed — only shows whether values are set.
+ */
+authRouter.get('/auth/spotify/debug', (_req: Request, res: Response) => {
+  const clientId = process.env.SPOTIFY_CLIENT_ID || '';
+  const configuredRedirectUris = [
+    process.env.SPOTIFY_REDIRECT_URI_LOCAL || 'http://127.0.0.1:3000',
+    process.env.SPOTIFY_REDIRECT_URI_STAGING || 'https://afro-genie-staging.vercel.app',
+  ];
+
+  res.json({
+    clientIdConfigured: !!clientId,
+    clientIdPrefix: clientId ? `${clientId.slice(0, 6)}...` : 'NOT SET',
+    configuredRedirectUris,
+    clientUrl: process.env.CLIENT_URL || 'NOT SET',
+    corsOrigin: process.env.CORS_ORIGIN || 'NOT SET',
+    nodeEnv: process.env.NODE_ENV || 'NOT SET',
+    instructions: {
+      step1: 'Go to https://developer.spotify.com/dashboard → your app → Settings → Redirect URIs',
+      step2: 'Add ALL of these redirect URIs:',
+      uris: configuredRedirectUris,
+      note: 'Spotify requires EXACT match. Use http://127.0.0.1 (not http://localhost) — localhost was removed Nov 2025.',
+    },
+  });
+});
