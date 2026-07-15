@@ -157,7 +157,7 @@ async function main() {
       // Insert songs
       for (const track of tracks) {
         try {
-          // Find or create artist
+          // Find or create artist (idempotent upsert)
           let artist = await prisma.artist.findFirst({ where: { spotifyId: track.artists[0].id } });
           if (!artist) {
             // Fetch artist details
@@ -167,8 +167,9 @@ async function main() {
                 headers: { Authorization: `Bearer ${t}` },
               });
               const aData = aRes.ok ? await aRes.json() : {};
-              artist = await prisma.artist.create({
-                data: {
+              artist = await prisma.artist.upsert({
+                where: { spotifyId: track.artists[0].id },
+                create: {
                   name: track.artists[0].name, spotifyId: track.artists[0].id,
                   imageUrl: aData.images?.[0]?.url || null,
                   genres: aData.genres || [],
@@ -176,11 +177,14 @@ async function main() {
                   followers: aData.followers?.total || 0,
                   verified: false,
                 },
+                update: {},
               });
               progress.stats.artistsCreated++;
             } catch {
-              artist = await prisma.artist.create({
-                data: { name: track.artists[0].name, spotifyId: track.artists[0].id, genres: [], verified: false },
+              artist = await prisma.artist.upsert({
+                where: { spotifyId: track.artists[0].id },
+                create: { name: track.artists[0].name, spotifyId: track.artists[0].id, genres: [], verified: false },
+                update: {},
               });
               progress.stats.artistsCreated++;
             }

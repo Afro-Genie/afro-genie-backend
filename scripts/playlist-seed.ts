@@ -154,8 +154,9 @@ async function main() {
                 artistDetails = aRes || {};
               } catch { /* skip details */ }
 
-              artist = await prisma.artist.create({
-                data: {
+              artist = await prisma.artist.upsert({
+                where: { spotifyId: track.artists[0].id },
+                create: {
                   name: track.artists[0].name,
                   spotifyId: track.artists[0].id,
                   imageUrl: artistDetails.images?.[0]?.url || null,
@@ -164,6 +165,7 @@ async function main() {
                   followers: artistDetails.followers?.total || 0,
                   verified: false,
                 },
+                update: {},
               });
               progress.artistsCreated++;
             }
@@ -173,8 +175,9 @@ async function main() {
             if (track.album) {
               let album = await prisma.album.findFirst({ where: { spotifyId: track.album.id } });
               if (!album) {
-                album = await prisma.album.create({
-                  data: {
+                album = await prisma.album.upsert({
+                  where: { spotifyId: track.album.id },
+                  create: {
                     name: track.album.name, artistId: artist.id,
                     spotifyId: track.album.id,
                     imageUrl: track.album.images?.[0]?.url || null,
@@ -182,6 +185,7 @@ async function main() {
                     totalTracks: track.album.total_tracks || null,
                     popularity: 0, genres: [],
                   },
+                  update: {},
                 });
                 progress.albumsCreated++;
               }
@@ -219,8 +223,12 @@ async function main() {
                 await prisma.songLanguage.create({ data: { songId: song.id, languageCode: l.code, percentage: l.pct } });
               }
 
-              // Create lyric placeholder
-              await prisma.lyric.create({ data: { songId: song.id, content: null, sourceProvider: 'MANUAL', licenseStatus: 'UNKNOWN' } });
+              // Create lyric placeholder (idempotent upsert)
+              await prisma.lyric.upsert({
+                where: { songId: song.id },
+                create: { songId: song.id, content: null, sourceProvider: 'MANUAL', licenseStatus: 'UNKNOWN' },
+                update: {},
+              });
 
               created++;
             } else {

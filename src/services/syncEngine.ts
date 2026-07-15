@@ -596,17 +596,12 @@ export const syncPopularTracks = async (
           const artistName = track.artists?.[0]?.name || 'Unknown';
           const spotifyArtistId = track.artists?.[0]?.id || null;
 
-          // Upsert artist
+          // Upsert artist (idempotent by spotifyId)
           let artistId: string;
-          const existingArtist = spotifyArtistId
-            ? await prisma.artist.findFirst({ where: { spotifyId: spotifyArtistId }, select: { id: true } })
-            : await prisma.artist.findFirst({ where: { name: artistName }, select: { id: true } });
-
-          if (existingArtist) {
-            artistId = existingArtist.id;
-          } else {
-            const newArtist = await prisma.artist.create({
-              data: {
+          if (spotifyArtistId) {
+            const upserted = await prisma.artist.upsert({
+              where: { spotifyId: spotifyArtistId },
+              create: {
                 name: artistName,
                 spotifyId: spotifyArtistId,
                 genres: [genre],
@@ -614,10 +609,24 @@ export const syncPopularTracks = async (
                 popularity: 0,
                 followers: 0,
               },
+              update: {},
             });
-            artistId = newArtist.id;
-            if (spotifyArtistId) {
-              void enqueueIndexArtist(artistId);
+            artistId = upserted.id;
+          } else {
+            const existingArtist = await prisma.artist.findFirst({ where: { name: artistName }, select: { id: true } });
+            if (existingArtist) {
+              artistId = existingArtist.id;
+            } else {
+              const newArtist = await prisma.artist.create({
+                data: {
+                  name: artistName,
+                  genres: [genre],
+                  imageUrl: selectBestSpotifyImage(track.album?.images),
+                  popularity: 0,
+                  followers: 0,
+                },
+              });
+              artistId = newArtist.id;
             }
           }
 

@@ -8,6 +8,21 @@ export interface LyricsInput {
   lineBreaks?: string[];
 }
 
+export interface LyricLine {
+  time: number;
+  text: string;
+}
+
+export interface StructuredLyrics {
+  songId: string;
+  content: string | null;
+  syncedLyrics: string | null;
+  lyricLines: LyricLine[] | null;
+  sourceProvider: string;
+  licenseStatus: string;
+  language: string | null;
+}
+
 const CHUNK_SIZE = 600;
 const MIN_LANGUAGE_PERCENTAGE = 30;
 
@@ -67,9 +82,15 @@ export const upsertLyrics = async (songId: string, lyrics: LyricsInput): Promise
     return;
   }
 
-  await prisma.lyric.create({
-    data: {
+  await prisma.lyric.upsert({
+    where: { songId },
+    create: {
       songId,
+      content,
+      sourceProvider: LyricSourceProvider.MANUAL,
+      licenseStatus: LicenseStatus.UNKNOWN,
+    },
+    update: {
       content,
       sourceProvider: LyricSourceProvider.MANUAL,
       licenseStatus: LicenseStatus.UNKNOWN,
@@ -151,4 +172,78 @@ export const getLatestLyricsContent = async (songId: string): Promise<string | n
 
   const content = (lyric as { content?: string | null } | null)?.content;
   return content ?? null;
+};
+
+/**
+ * Parse LRC format timestamps into structured line arrays.
+ * LRC format: [mm:ss.xx]text or [mm:ss.xxx]text
+ * Returns an array of { time: number (seconds), text: string } objects.
+ */
+export const parseLrcTimestamps = (lrcContent: string): LyricLine[] => {
+  if (!lrcContent?.trim()) return [];
+
+  const lines = lrcContent.split('\n');
+  const result: LyricLine[] = [];
+  const lrcRegex = /^\[(\d{1,3}):(\d{2})\.(\d{2,3})\]\s*(.*)$/;
+
+  for (const line of lines) {
+    const match = line.trim().match(lrcRegex);
+    if (!match) continue;
+
+    const minutes = parseInt(match[1], 10);
+    const seconds = parseInt(match[2], 10);
+    const msStr = match[3];
+    // Normalize milliseconds: if 2 digits, multiply by 10; if 3, parse directly
+    const ms = msStr.length === 2 ? parseInt(msStr, 10) * 10 : parseInt(msStr, 10);
+    const time = minutes * 60 + seconds + ms / 1000;
+    const text = match[4].trim();
+
+    // Skip empty timestamp lines (e.g., instrumental markers)
+    if (text) {
+      result.push({ time, text });
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Get the latest non-taken-down lyrics for a song, including structured data.
+ * Returns a complete lyrics record with content, synced lyrics, parsed lines,
+ * source provider, license status, and detected language.
+ */
+export const getLyricsForSong = async (songId: string): Promise<StructuredLyrics | null> => {
+  const lyric = await prisma.lyric.findFirst({
+    where: {
+      songId,
+      licenseStatus: { not: LicenseStatus.TAKEDOWN },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      content: true,
+      syncedLyrics: true,
+      lyricLines: true,
+      sourceProvider: true,
+      licenseStatus: true,
+    },
+  });
+
+  if (!lyric) return null;
+
+  // Get detected language from SongLanguage (highest percentage)
+  const langRecord = await prisma.songLanguage.findFirst({
+    where: { songId },
+    orderBy: { percentage: 'desc' },
+    select: { languageCode: true },
+  });
+
+  return {
+    songId,
+    content: lyric.content ?? null,
+    syncedLyrics: lyric.syncedLyrics ?? null,
+    lyricLines: (lyric.lyricLines as LyricLine[] | null) ?? null,
+    sourceProvider: lyric.sourceProvider,
+    licenseStatus: lyric.licenseStatus,
+    language: langRecord?.languageCode ?? null,
+  };
 };

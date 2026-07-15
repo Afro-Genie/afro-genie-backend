@@ -192,7 +192,7 @@ async function spotifyGet(url: string, retries = 3): Promise<any> {
 
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Spotify API ${res.status}: ${body.substring(0, 200)}`);
+      throw new Error(`Spotify API ${res.status}: ${body.substring(0, 200)} [url: ${url}]`);
     }
 
     return res.json();
@@ -212,7 +212,7 @@ async function searchTracks(query: string, limit: number): Promise<TrackData[]> 
   let offset = 0;
 
   while (tracks.length < limit) {
-    const pageLimit = Math.min(50, limit - tracks.length);
+    const pageLimit = Math.max(1, Math.min(10, limit - tracks.length));
     const url = `${SPOTIFY_API}/search?q=${encodeURIComponent(query)}&type=track&limit=${pageLimit}&offset=${offset}`;
 
     const data = await spotifyGet(url);
@@ -248,7 +248,7 @@ async function searchTracks(query: string, limit: number): Promise<TrackData[]> 
 async function fetchArtistDetails(spotifyIds: string[]): Promise<Map<string, any>> {
   const details = new Map<string, any>();
 
-  // Spotify /v1/artists supports up to 50 IDs per call
+  // Try batch endpoint first (50 per call), fall back to individual on 403
   const BATCH = 50;
   for (let i = 0; i < spotifyIds.length; i += BATCH) {
     const batch = spotifyIds.slice(i, i + BATCH);
@@ -260,7 +260,18 @@ async function fetchArtistDetails(spotifyIds: string[]): Promise<Map<string, any
         }
       }
     } catch (err: any) {
-      console.log(`  ⚠️  Failed to fetch artist batch: ${err.message}`);
+      if (err.message.includes('403')) {
+        // Batch endpoint unavailable — fall back to individual fetches
+        for (const id of batch) {
+          try {
+            const artistData = await spotifyGet(`${SPOTIFY_API}/artists/${id}`);
+            if (artistData) details.set(id, artistData);
+          } catch { /* skip individual failure */ }
+          await sleep(100);
+        }
+      } else {
+        console.log(`  ⚠️  Failed to fetch artist batch: ${err.message}`);
+      }
     }
     if (i + BATCH < spotifyIds.length) await sleep(300);
   }
@@ -281,6 +292,7 @@ async function insertBatch(
   const uniqueArtistIds = [...new Set(tracks.map(t => t.artistSpotifyId))];
 
   // ── Phase 2: Fetch artist details in bulk (50 per call) ──
+  // Check which artists already exist in the DB
   const existingArtists = await prisma.artist.findMany({
     where: { spotifyId: { in: uniqueArtistIds } },
     select: { id: true, spotifyId: true },
@@ -288,6 +300,7 @@ async function insertBatch(
   const existingArtistMap = new Map(existingArtists.map(a => [a.spotifyId, a.id]));
   const missingArtistIds = uniqueArtistIds.filter(id => !existingArtistMap.has(id));
 
+  // Create missing artists via bulk API fetch + createMany
   if (missingArtistIds.length > 0) {
     console.log(`  📡 Fetching details for ${missingArtistIds.length} new artists (bulk API)...`);
     const artistDetails = await fetchArtistDetails(missingArtistIds);
@@ -310,15 +323,17 @@ async function insertBatch(
     progress.stats.artistsCreated += newArtists.length;
   }
 
-  // ── Update existing artists with missing details ──
+  // ── Update ALL existing artists with richer details from Spotify ──
+  // This ensures metadata (genres, image, popularity) stays fresh on resume.
   const allArtists = await prisma.artist.findMany({
     where: { spotifyId: { in: uniqueArtistIds } },
-    select: { id: true, spotifyId: true, genres: true, imageUrl: true },
+    select: { id: true, spotifyId: true, genres: true, imageUrl: true, popularity: true },
   });
   const dbArtistMap = new Map(allArtists.map(a => [a.spotifyId, a.id]));
 
-  // Find artists that have empty genres/image — update them
-  const artistsToUpdate = allArtists.filter(a => (!a.genres || a.genres.length === 0) && !a.imageUrl);
+  const artistsToUpdate = allArtists.filter(a =>
+    (!a.genres || a.genres.length === 0) || !a.imageUrl || a.popularity === 0
+  );
   if (artistsToUpdate.length > 0) {
     const idsToUpdate = artistsToUpdate.map(a => a.spotifyId);
     const details = await fetchArtistDetails(idsToUpdate);
@@ -328,9 +343,9 @@ async function insertBatch(
         await prisma.artist.update({
           where: { id: artist.id },
           data: {
-            imageUrl: d.images?.[0]?.url || null,
-            genres: d.genres || [],
-            popularity: d.popularity || 0,
+            imageUrl: d.images?.[0]?.url || artist.imageUrl,
+            genres: d.genres?.length ? d.genres : artist.genres,
+            popularity: d.popularity ?? artist.popularity,
             followers: d.followers?.total || 0,
           },
         });
@@ -346,7 +361,7 @@ async function insertBatch(
   });
   const finalArtistMap = new Map(finalArtists.map(a => [a.spotifyId, a.id]));
 
-  // ── Albums ──
+  // ── Albums — upsert semantics: create new, refresh existing ──
   const albumMap = new Map<string, { name: string; spotifyId: string; artistSpotifyId: string; image: string | null; year: number | null }>();
   for (const t of tracks) {
     if (t.albumSpotifyId && !albumMap.has(t.albumSpotifyId)) {
@@ -359,26 +374,49 @@ async function insertBatch(
 
   const existingAlbums = await prisma.album.findMany({
     where: { spotifyId: { in: [...albumMap.keys()] } },
-    select: { id: true, spotifyId: true },
+    select: { id: true, spotifyId: true, imageUrl: true, releaseYear: true },
   });
-  const existingAlbumIds = new Set(existingAlbums.map(a => a.spotifyId));
-  progress.stats.albumsSkipped += existingAlbumIds.size;
+  const existingAlbumMap = new Map(existingAlbums.map(a => [a.spotifyId, a]));
 
   const newAlbums: any[] = [];
+  const albumsToUpdate: { id: string; spotifyId: string; data: any }[] = [];
+
   for (const [spotifyId, info] of albumMap) {
-    if (existingAlbumIds.has(spotifyId)) continue;
     const dbArtistId = finalArtistMap.get(info.artistSpotifyId);
     if (!dbArtistId) continue;
-    newAlbums.push({
-      name: info.name, artistId: dbArtistId, spotifyId,
-      imageUrl: info.image, releaseYear: info.year,
-      totalTracks: null, popularity: 0, genres: [],
-    });
+
+    const existing = existingAlbumMap.get(spotifyId);
+    if (existing) {
+      // Refresh album if missing image or year
+      if ((!existing.imageUrl && info.image) || (!existing.releaseYear && info.year)) {
+        albumsToUpdate.push({
+          id: existing.id,
+          spotifyId,
+          data: {
+            imageUrl: info.image || undefined,
+            releaseYear: info.year || undefined,
+          },
+        });
+      }
+    } else {
+      newAlbums.push({
+        name: info.name, artistId: dbArtistId, spotifyId,
+        imageUrl: info.image, releaseYear: info.year,
+        totalTracks: null, popularity: 0, genres: [],
+      });
+    }
   }
 
   if (newAlbums.length > 0) {
     await prisma.album.createMany({ data: newAlbums, skipDuplicates: true });
     progress.stats.albumsCreated += newAlbums.length;
+  }
+
+  for (const update of albumsToUpdate) {
+    await prisma.album.update({
+      where: { id: update.id },
+      data: update.data,
+    });
   }
 
   const finalAlbums = await prisma.album.findMany({
@@ -387,40 +425,65 @@ async function insertBatch(
   });
   const dbAlbumMap = new Map(finalAlbums.map(a => [a.spotifyId, a.id]));
 
-  // ── Songs ──
+  // ── Songs — upsert semantics: create new, refresh existing metadata ──
   const existingSongs = await prisma.song.findMany({
     where: { spotifyId: { in: tracks.map(t => t.track.id) } },
-    select: { spotifyId: true },
+    select: { spotifyId: true, id: true, previewAvailable: true },
   });
-  const existingSongIds = new Set(existingSongs.map(s => s.spotifyId));
-  progress.stats.songsSkipped += existingSongIds.size;
+  const existingSongMap = new Map(existingSongs.map(s => [s.spotifyId, s]));
 
   const newSongs: any[] = [];
+  const songsToUpdate: { id: string; data: any }[] = [];
+
   for (const t of tracks) {
-    if (existingSongIds.has(t.track.id)) continue;
     const dbArtistId = finalArtistMap.get(t.artistSpotifyId);
     if (!dbArtistId) continue;
-    newSongs.push({
-      title: t.track.name,
-      artistId: dbArtistId,
-      albumId: t.albumSpotifyId ? dbAlbumMap.get(t.albumSpotifyId) || null : null,
-      albumName: t.albumName || null,
-      imageUrl: t.albumImage || null,
-      spotifyId: t.track.id,
-      spotifyPreviewUrl: t.track.preview_url || null,
-      previewAvailable: !!t.track.preview_url,
-      durationMs: t.track.duration_ms || null,
-      trackNumber: t.track.track_number || null,
-      releaseYear: t.albumYear,
-      views: Math.floor(Math.random() * 5000),
-    });
+
+    const existing = existingSongMap.get(t.track.id);
+    if (existing) {
+      // Refresh song if missing preview or duration
+      const needsUpdate = !existing.previewAvailable && !!t.track.preview_url;
+      if (needsUpdate) {
+        songsToUpdate.push({
+          id: existing.id,
+          data: {
+            spotifyPreviewUrl: t.track.preview_url || null,
+            previewAvailable: !!t.track.preview_url,
+            durationMs: t.track.duration_ms || null,
+          },
+        });
+      }
+    } else {
+      newSongs.push({
+        title: t.track.name,
+        artistId: dbArtistId,
+        albumId: t.albumSpotifyId ? dbAlbumMap.get(t.albumSpotifyId) || null : null,
+        albumName: t.albumName || null,
+        imageUrl: t.albumImage || null,
+        spotifyId: t.track.id,
+        spotifyPreviewUrl: t.track.preview_url || null,
+        previewAvailable: !!t.track.preview_url,
+        durationMs: t.track.duration_ms || null,
+        trackNumber: t.track.track_number || null,
+        releaseYear: t.albumYear,
+        views: Math.floor(Math.random() * 5000),
+      });
+    }
   }
 
-  // Insert songs in sub-batches of 100
+  // Insert new songs in sub-batches of 100
   for (let i = 0; i < newSongs.length; i += 100) {
     const batch = newSongs.slice(i, i + 100);
     await prisma.song.createMany({ data: batch, skipDuplicates: true });
     progress.stats.songsCreated += batch.length;
+  }
+
+  // Update existing songs with richer metadata
+  for (const update of songsToUpdate) {
+    await prisma.song.update({
+      where: { id: update.id },
+      data: update.data,
+    });
   }
 }
 

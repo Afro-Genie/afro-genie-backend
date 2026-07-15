@@ -16,6 +16,31 @@ import {
   requestTranslation,
 } from '../services/translationService';
 
+// ---------------------------------------------------------------------------
+// Canonical language code → human-readable name mapping
+// ---------------------------------------------------------------------------
+const LANGUAGE_NAME_MAP: Record<string, string> = {
+  en: 'English',
+  fr: 'French',
+  es: 'Spanish',
+  pt: 'Portuguese',
+  sw: 'Swahili',
+  yo: 'Yoruba',
+  ig: 'Igbo',
+  ha: 'Hausa',
+  pcm: 'Nigerian Pidgin',
+  pidgin: 'Nigerian Pidgin',
+  ar: 'Arabic',
+  zu: 'Zulu',
+  am: 'Amharic',
+  mixed: 'Mixed Languages',
+};
+
+function resolveLanguageName(code: string): string {
+  const normalized = code?.toLowerCase()?.trim();
+  return LANGUAGE_NAME_MAP[normalized] || normalized || 'Unknown';
+}
+
 export const translationsRouter = Router();
 
 const validate = (req: Request, res: Response, next: NextFunction) => {
@@ -398,9 +423,92 @@ translationsRouter.post(
 
       return res.status(200).json({
         languageCode: result.languageCode,
-        languageName: result.languageCode,
+        languageName: resolveLanguageName(result.languageCode),
         confidence,
       });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/translations/direct
+// Authenticated. Creates or upserts a translation record directly without
+// queuing an AI job. Used for admin manual uploads, artist lyrics, and API
+// imports where the translated text is already available.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/direct',
+  authenticate,
+  [
+    body('songId').isString().notEmpty().withMessage('songId is required'),
+    body('originalLyrics').isString().notEmpty().withMessage('originalLyrics is required'),
+    body('translatedLyrics').isString().notEmpty().withMessage('translatedLyrics is required'),
+    body('sourceLang').isString().notEmpty().withMessage('sourceLang is required'),
+    body('targetLang').isString().notEmpty().withMessage('targetLang is required'),
+    body('culturalContext').optional({ nullable: true }).isString(),
+    body('status').optional({ nullable: true }).isIn(['PENDING', 'APPROVED', 'REJECTED', 'PUBLISHED']),
+  ],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+      const {
+        songId,
+        originalLyrics,
+        translatedLyrics,
+        sourceLang,
+        targetLang,
+        culturalContext,
+        status,
+      } = req.body as {
+        songId: string;
+        originalLyrics: string;
+        translatedLyrics: string;
+        sourceLang: string;
+        targetLang: string;
+        culturalContext?: string;
+        status?: string;
+      };
+
+      // Verify song exists
+      const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
+      if (!song) {
+        return next(new ApiError('Song not found', 'NOT_FOUND', 404));
+      }
+
+      // Upsert: match on the unique constraint [songId, userId, sourceLang, targetLang]
+      const translationStatus = (status as TranslationStatus) || TranslationStatus.APPROVED;
+
+      const translation = await prisma.translation.upsert({
+        where: {
+          songId_userId_sourceLang_targetLang: {
+            songId,
+            userId,
+            sourceLang,
+            targetLang,
+          },
+        },
+        update: {
+          originalLyrics,
+          translatedLyrics,
+          culturalContext: culturalContext || null,
+          status: translationStatus,
+        },
+        create: {
+          songId,
+          userId,
+          originalLyrics,
+          translatedLyrics,
+          culturalContext: culturalContext || null,
+          sourceLang,
+          targetLang,
+          status: translationStatus,
+        },
+      });
+
+      return res.status(201).json({ translation });
     } catch (err) {
       return next(err);
     }

@@ -1,14 +1,17 @@
 import type { Job } from 'bullmq';
 import type { LyricSourceProvider } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { languageCategorizationQueue, lyricsEnrichmentQueue, searchIndexQueue } from '../lib/queue';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { MusicMatchProvider, MusicMatchRateLimitError } from '../services/lyricsProviders/musicMatchProvider';
 import { LyricFindProvider } from '../services/lyricsProviders/lyricFindProvider';
 import { GeniusProvider } from '../services/lyricsProviders/geniusProvider';
+import { LrcLibProvider } from '../services/lyricsProviders/lrclibProvider';
 import { cachedSearch, cachedFetchLyrics } from '../services/lyricsProviders/lyricsCache';
 import type { LyricsProvider } from '../services/lyricsProviders/lyricsProvider';
 import { logAICall } from '../services/translationService';
+import { parseLrcTimestamps } from '../services/lyricsService';
 
 interface LyricsEnrichmentJobData {
   songId: string;
@@ -28,6 +31,7 @@ interface ProviderEntry {
 
 function buildProviderChain(songId: string): ProviderEntry[] {
   return [
+    { provider: new LrcLibProvider(songId), providerLabel: 'LRCLIB' },
     { provider: new MusicMatchProvider(songId), providerLabel: 'MUSICMATCH' },
     { provider: new LyricFindProvider(songId), providerLabel: 'LYRICFIND' },
     { provider: new GeniusProvider(songId), providerLabel: 'GENIUS' },
@@ -39,10 +43,29 @@ async function tryProvider(
   artistName: string,
   title: string,
   songId: string,
-): Promise<{ content: string; provider: LyricSourceProvider } | null> {
+): Promise<{ content: string; provider: LyricSourceProvider; syncedLyrics?: string | null } | null> {
   const { provider, providerLabel } = entry;
 
   try {
+    // LRCLIB provider supports fetching both plain and synced lyrics
+    if (provider instanceof LrcLibProvider) {
+      const results = await cachedSearch(provider, artistName, title);
+      if (!results || results.length === 0) {
+        logger.info({ songId, provider: providerLabel }, 'No search results from provider');
+        return null;
+      }
+
+      const { plain, synced } = await provider.fetchLyricsWithSync(results[0].trackId);
+      if (!plain && !synced) {
+        logger.info({ songId, provider: providerLabel }, 'No lyrics content from provider');
+        return null;
+      }
+
+      // Use synced lyrics as the primary content if available, plain as fallback
+      const content = synced || plain!;
+      return { content, provider: providerLabel, syncedLyrics: synced };
+    }
+
     const results = await cachedSearch(provider, artistName, title);
     if (!results || results.length === 0) {
       logger.info({ songId, provider: providerLabel }, 'No search results from provider');
@@ -99,10 +122,23 @@ export async function processLyricsEnrichmentJob(job: Job<LyricsEnrichmentJobDat
           'Lyrics fetched successfully',
         );
 
-        await prisma.lyric.create({
-          data: {
+        // Parse LRC timestamps into structured line arrays when synced lyrics are available
+        const lyricLines = result.syncedLyrics ? parseLrcTimestamps(result.syncedLyrics) : null;
+
+        await prisma.lyric.upsert({
+          where: { songId },
+          create: {
             songId,
             content: result.content,
+            syncedLyrics: result.syncedLyrics ?? null,
+            lyricLines: lyricLines ? (lyricLines as unknown as Prisma.InputJsonValue) : undefined,
+            sourceProvider: result.provider,
+            licenseStatus: 'LICENSED',
+          },
+          update: {
+            content: result.content,
+            syncedLyrics: result.syncedLyrics ?? null,
+            lyricLines: lyricLines ? (lyricLines as unknown as Prisma.InputJsonValue) : undefined,
             sourceProvider: result.provider,
             licenseStatus: 'LICENSED',
           },
@@ -145,18 +181,17 @@ export async function processLyricsEnrichmentJob(job: Job<LyricsEnrichmentJobDat
     logger.error({ err: error, songId }, 'Unexpected error during lyrics enrichment');
   }
 
-  // All providers exhausted — create empty lyric record
-  const existing = await prisma.lyric.findFirst({ where: { songId } });
-  if (!existing) {
-    await prisma.lyric.create({
-      data: {
-        songId,
-        content: null,
-        sourceProvider: 'MANUAL',
-        licenseStatus: 'UNKNOWN',
-      },
-    });
-  }
+  // All providers exhausted — create empty lyric record if none exists
+  await prisma.lyric.upsert({
+    where: { songId },
+    create: {
+      songId,
+      content: null,
+      sourceProvider: 'MANUAL',
+      licenseStatus: 'UNKNOWN',
+    },
+    update: {}, // no change if row already exists
+  });
 
   logger.info({ songId, elapsedMs: Date.now() - start }, 'All lyrics providers exhausted');
 }
