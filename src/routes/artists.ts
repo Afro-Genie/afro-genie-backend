@@ -20,6 +20,8 @@ artistsRouter.get(
     query('limit').optional().isInt({ min: 1, max: 200 }),
     query('genre').optional().isString(),
     query('search').optional().isString(),
+    query('sortBy').optional().isIn(['popularity', 'followers', 'name', 'createdAt']),
+    query('sortOrder').optional().isIn(['asc', 'desc']),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -29,6 +31,8 @@ artistsRouter.get(
         limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
         genre: typeof req.query.genre === 'string' ? req.query.genre : undefined,
         search: typeof req.query.search === 'string' ? req.query.search : undefined,
+        sortBy: typeof req.query.sortBy === 'string' ? req.query.sortBy : undefined,
+        sortOrder: typeof req.query.sortOrder === 'string' ? req.query.sortOrder : undefined,
       });
 
       res.status(200).json(result);
