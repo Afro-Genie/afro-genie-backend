@@ -19,12 +19,12 @@ export const redis =
         maxRetriesPerRequest: null,
         enableReadyCheck: true,
         lazyConnect: true,
-        enableOfflineQueue: false,
-        connectTimeout: 5000,
-        commandTimeout: 3000,
+        enableOfflineQueue: true,
+        connectTimeout: 10000,
+        commandTimeout: 5000,
         retryStrategy(times: number) {
-          if (times > 10) return null;
-          return Math.min(times * 200, 5000);
+          if (times > 15) return null;
+          return Math.min(times * 300, 10000);
         }
       }));
 
