@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
-import { env } from '../lib/env';
 import { logger } from '../lib/logger';
+import { sharedConnection } from '../lib/queue';
 import { processLanguageCategorizationJob } from './languageCategorizationJob';
 import { processLyricsEnrichmentJob } from './lyricsEnrichmentJob';
 import { processSearchIndexJob } from './searchIndexJob';
@@ -11,7 +11,10 @@ import { processPopularTracksSyncJob } from './popularTracksSyncJob';
 import type { TranslationJobData } from '../types/translation';
 import type { SyncJobData } from './syncWorker';
 
-const connection = { url: env.REDIS_URL };
+// Reuse the single shared connection from queue.ts (1 Redis connection for all workers)
+// Cast needed because project ioredis and BullMQ's bundled ioredis have divergent types,
+// but they are identical at runtime (same Redis protocol).
+const connection = sharedConnection as any;
 
 export const translationWorker = new Worker<TranslationJobData>(
   'translationQueue',

@@ -1,30 +1,52 @@
 import { Queue } from 'bullmq';
+// Use BullMQ's bundled ioredis to avoid type mismatch with the project's ioredis
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const IORedis = require('bullmq/node_modules/ioredis') as typeof import('ioredis').default;
 import { env } from './env';
-
-const connection = {
-	url: env.REDIS_URL
-};
 
 const redisDisabled = process.env.DISABLE_REDIS === 'true';
 
-const createQueue = (name: string) => {
-	if (redisDisabled) {
-		return {
-			add: async () => ({ id: undefined }),
-			addBulk: async () => [],
-			close: async () => undefined,
-		} as unknown as Queue;
-	}
+// Single shared ioredis connection for ALL BullMQ queues and workers
+// This keeps us under Redis Cloud's max connections limit (~10 free tier)
+const sharedConnection = redisDisabled
+  ? null
+  : new IORedis(env.REDIS_URL, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+      lazyConnect: true,
+      enableOfflineQueue: false,
+      connectTimeout: 5000,
+      commandTimeout: 3000,
+      retryStrategy(times: number) {
+        if (times > 10) return null;
+        return Math.min(times * 200, 5000);
+      },
+    });
 
-	try {
-		return new Queue(name, { connection });
-	} catch {
-		return {
-			add: async () => ({ id: undefined }),
-			addBulk: async () => [],
-			close: async () => undefined,
-		} as unknown as Queue;
-	}
+if (sharedConnection) {
+  sharedConnection.on('error', (err: Error) => {
+    console.error('[Redis-Queue] Connection error:', err.message);
+  });
+}
+
+const createQueue = (name: string) => {
+  if (redisDisabled) {
+    return {
+      add: async () => ({ id: undefined }),
+      addBulk: async () => [],
+      close: async () => undefined,
+    } as unknown as Queue;
+  }
+
+  try {
+    return new Queue(name, { connection: sharedConnection as any });
+  } catch {
+    return {
+      add: async () => ({ id: undefined }),
+      addBulk: async () => [],
+      close: async () => undefined,
+    } as unknown as Queue;
+  }
 };
 
 export const translationQueue = createQueue('translationQueue');
@@ -35,3 +57,6 @@ export const viewCountFlushQueue = createQueue('viewCountFlushQueue');
 export const lyricsEnrichmentQueue = createQueue('lyricsEnrichmentQueue');
 export const syncQueue = createQueue('syncQueue');
 export const syncPopularTracksQueue = createQueue('syncPopularTracksQueue');
+
+// Export shared connection for workers to reuse (1 connection total, not 17)
+export { sharedConnection };
