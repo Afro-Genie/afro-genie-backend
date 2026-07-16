@@ -242,6 +242,8 @@ translationsRouter.get(
         }),
         ...(job.failedReason && { failedReason: job.failedReason }),
         ...(job.finishedOn && { finishedOn: new Date(job.finishedOn) }),
+        ...(job.timestamp && { queuedAt: new Date(job.timestamp) }),
+        attemptsMade: job.attemptsMade,
       });
     } catch (err) {
       return next(err);

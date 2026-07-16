@@ -7,8 +7,12 @@ import type { TranslationJobData } from '../types/translation';
 
 export async function processTranslationJob(job: Job<TranslationJobData>): Promise<void> {
   const { songId, userId, sourceLang, targetLang, promptVersion } = job.data;
+  const startTime = Date.now();
 
-  logger.info({ jobId: job.id, songId, targetLang, attempt: job.attemptsMade }, 'Translation job started');
+  logger.info({ jobId: job.id, songId, sourceLang, targetLang, attempt: job.attemptsMade }, 'Translation job started');
+
+  // Report progress: fetching song data
+  await job.updateProgress({ stage: 'fetching_song', percent: 10 });
 
   // Fetch song, artist name, and most recent lyrics in one query
   const song = await prisma.song.findUnique({
@@ -61,16 +65,41 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     return;
   }
 
-  const result = await translateWithFallback({
-    artist: song.artist.name,
-    title: song.title,
-    lyrics: lyric.content!,
-    sourceLang,
-    targetLang,
-    promptVersion,
-  });
+  const lyricsLength = lyric.content.length;
+  const estimatedTokens = Math.ceil(lyricsLength / 4);
 
+  logger.info(
+    { jobId: job.id, songId, lyricsLength, estimatedTokens },
+    'Song lyrics loaded, proceeding with AI translation',
+  );
+
+  // Report progress: calling AI provider
+  await job.updateProgress({ stage: 'translating', percent: 30 });
+
+  let result;
+  try {
+    result = await translateWithFallback({
+      artist: song.artist.name,
+      title: song.title,
+      lyrics: lyric.content!,
+      sourceLang,
+      targetLang,
+      promptVersion,
+    });
+  } catch (translateError) {
+    const elapsed = Date.now() - startTime;
+    logger.error(
+      { jobId: job.id, songId, targetLang, elapsed, err: translateError },
+      'Translation provider call failed',
+    );
+    throw translateError;
+  }
+
+  const elapsed = Date.now() - startTime;
   const estimatedCostUsd = estimateCostUsd(result.tokensInput, result.tokensOutput);
+
+  // Report progress: saving translation
+  await job.updateProgress({ stage: 'saving', percent: 80 });
 
   // Upsert so retried jobs overwrite rather than violate the unique constraint
   await prisma.translation.upsert({
@@ -109,14 +138,22 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     userId,
   });
 
+  // Report progress: complete
+  await job.updateProgress({ stage: 'completed', percent: 100 });
+
   logger.info(
     {
       jobId: job.id,
       songId,
       targetLang,
       provider: result.providerName,
+      model: result.model,
+      tokensInput: result.tokensInput,
+      tokensOutput: result.tokensOutput,
       tokensUsed: result.tokensUsed,
       costUsd: estimatedCostUsd.toFixed(6),
+      lyricsLength,
+      elapsedMs: elapsed,
     },
     'Translation job completed',
   );

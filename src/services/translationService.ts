@@ -193,19 +193,42 @@ export async function translateWithFallback(params: {
   const providers = getProvidersWithFallback();
   let lastError: unknown;
 
+  logger.info(
+    {
+      providers: providers.map((p) => p.name),
+      lyricsLength: params.lyrics.length,
+      sourceLang: params.sourceLang,
+      targetLang: params.targetLang,
+    },
+    'Starting translation with fallback chain',
+  );
+
   for (const provider of providers) {
+    const startTime = Date.now();
     try {
       const result = await provider.translate(params);
+      const elapsed = Date.now() - startTime;
+      logger.info(
+        {
+          provider: provider.name,
+          elapsed,
+          tokensUsed: result.tokensUsed,
+          model: result.model,
+        },
+        'Translation provider succeeded',
+      );
       return { ...result, providerName: provider.name };
     } catch (err) {
+      const elapsed = Date.now() - startTime;
       lastError = err;
       logger.warn(
-        { provider: provider.name, err },
+        { provider: provider.name, elapsed, err },
         'Translation provider failed, trying fallback',
       );
     }
   }
 
+  logger.error({ providers: providers.map((p) => p.name) }, 'All translation providers failed');
   throw lastError;
 }
 
@@ -226,6 +249,7 @@ export async function requestTranslation(params: {
   });
 
   if (existing) {
+    logger.info({ songId, sourceLang, targetLang, translationId: existing.id }, 'Returning existing approved translation');
     return { status: 'existing', translation: existing };
   }
 
@@ -252,6 +276,8 @@ export async function requestTranslation(params: {
     removeOnComplete: { age: 60 * 60 * 24 * 7 },   // retain 7 days
     removeOnFail: { age: 60 * 60 * 24 * 30 },       // retain failures 30 days
   });
+
+  logger.info({ jobId: job.id, songId, userId, sourceLang, targetLang }, 'Translation job enqueued');
 
   return { status: 'queued', jobId: job.id! };
 }

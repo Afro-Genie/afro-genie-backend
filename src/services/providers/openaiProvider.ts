@@ -14,6 +14,13 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const INPUT_COST_PER_TOKEN = 0.15 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 0.60 / 1_000_000;
 
+// Timeout for OpenAI API calls (90 seconds)
+const API_TIMEOUT_MS = 90_000;
+
+// Chunking threshold: lyrics longer than this get split
+const CHUNK_CHAR_THRESHOLD = 8000;
+const MAX_SINGLE_PROMPT_CHARS = 12000;
+
 export function estimateOpenAICostUsd(tokensInput: number, tokensOutput: number): number {
   return tokensInput * INPUT_COST_PER_TOKEN + tokensOutput * OUTPUT_COST_PER_TOKEN;
 }
@@ -27,11 +34,60 @@ async function withExponentialBackoff<T>(fn: () => Promise<T>, maxAttempts = 3):
       lastError = err;
       logger.warn({ attempt: attempt + 1, maxAttempts, err }, 'OpenAI API call failed, retrying');
       if (attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+        await new Promise((resolve) => setTimeout(resolve, 2000 * 2 ** attempt));
       }
     }
   }
   throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Lyric chunking — split long lyrics into translatable segments
+// ---------------------------------------------------------------------------
+function splitLyricsIntoChunks(lyrics: string): string[] {
+  if (lyrics.length <= CHUNK_CHAR_THRESHOLD) {
+    return [lyrics];
+  }
+
+  const stanzas = lyrics.split(/\n\n+/);
+  const chunks: string[] = [];
+  let currentChunk = '';
+
+  for (const stanza of stanzas) {
+    if (stanza.length > MAX_SINGLE_PROMPT_CHARS) {
+      if (currentChunk) {
+        chunks.push(currentChunk.trim());
+        currentChunk = '';
+      }
+      const lines = stanza.split('\n');
+      let lineChunk = '';
+      for (const line of lines) {
+        if ((lineChunk + '\n' + line).length > MAX_SINGLE_PROMPT_CHARS && lineChunk) {
+          chunks.push(lineChunk.trim());
+          lineChunk = line;
+        } else {
+          lineChunk = lineChunk ? lineChunk + '\n' + line : line;
+        }
+      }
+      if (lineChunk.trim()) {
+        chunks.push(lineChunk.trim());
+      }
+      continue;
+    }
+
+    if ((currentChunk + '\n\n' + stanza).length > MAX_SINGLE_PROMPT_CHARS && currentChunk) {
+      chunks.push(currentChunk.trim());
+      currentChunk = stanza;
+    } else {
+      currentChunk = currentChunk ? currentChunk + '\n\n' + stanza : stanza;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  return chunks.length > 0 ? chunks : [lyrics];
 }
 
 function buildTranslationPrompt(
@@ -40,7 +96,14 @@ function buildTranslationPrompt(
   lyrics: string,
   sourceLang: string,
   targetLang: string,
+  chunkIndex?: number,
+  totalChunks?: number,
 ): string {
+  const chunkContext =
+    chunkIndex !== undefined && totalChunks !== undefined && totalChunks > 1
+      ? `\nIMPORTANT: This is part ${chunkIndex + 1} of ${totalChunks} of the full lyrics. Translate ONLY this section. Do NOT add any text outside the JSON response.`
+      : '';
+
   return `You are an expert translator specializing in West African music and languages, with deep cultural knowledge of:
 - Yoruba language, proverbs, orisha references, and Yoruba-English code-switching
 - Nigerian Pidgin English (Naija Pidgin) — a distinct creole, NOT broken English; translate its meaning accurately
@@ -48,7 +111,7 @@ function buildTranslationPrompt(
 - Hausa language and Northern Nigerian cultural references
 - How these languages fluidly mix (code-switching) in contemporary Afrobeats, Afropop, and Highlife music
 
-Your task: Translate ALL lyrics of "${title}" by ${artist} from ${sourceLang} to ${targetLang}.
+Your task: Translate ALL lyrics of "${title}" by ${artist} from ${sourceLang} to ${targetLang}.${chunkContext}
 
 TRANSLATION GUIDELINES:
 1. Translate every code-switched segment accurately (Yoruba, Pidgin, Igbo, Hausa, or English sections each get proper treatment).
@@ -56,6 +119,7 @@ TRANSLATION GUIDELINES:
 3. Nigerian Pidgin phrases (e.g. "e don do", "no go", "wahala") must be translated by meaning, not transliterated.
 4. Preserve proper nouns (artist names, place names, deity names) but explain them in culturalContext.
 5. In culturalContext, explain all: cultural idioms, proverbs, code-switching patterns, slang terms, and any reference that a non-Nigerian reader would miss.
+6. CRITICAL: Every single line of the input lyrics must appear in the translatedLyrics output. Do NOT skip, summarize, or omit any lines.
 
 LYRICS TO TRANSLATE:
 ${lyrics}
@@ -98,34 +162,43 @@ async function callOpenAI(
   systemPrompt: string,
   userMessage: string,
 ): Promise<{ content: string; tokensInput: number; tokensOutput: number }> {
-  const response = await fetch(OPENAI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL_NAME,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 300)}`);
+  try {
+    const response = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: MODEL_NAME,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+        max_tokens: 16384,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`OpenAI API error ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    const data = (await response.json()) as OpenAIResponse;
+    const content = data.choices?.[0]?.message?.content ?? '';
+    const tokensInput = data.usage?.prompt_tokens ?? 0;
+    const tokensOutput = data.usage?.completion_tokens ?? 0;
+
+    return { content, tokensInput, tokensOutput };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = (await response.json()) as OpenAIResponse;
-  const content = data.choices?.[0]?.message?.content ?? '';
-  const tokensInput = data.usage?.prompt_tokens ?? 0;
-  const tokensOutput = data.usage?.completion_tokens ?? 0;
-
-  return { content, tokensInput, tokensOutput };
 }
 
 export class OpenAIProvider implements TranslationProvider {
@@ -151,6 +224,29 @@ export class OpenAIProvider implements TranslationProvider {
       promptVersion = CURRENT_PROMPT_VERSION,
     } = params;
 
+    const chunks = splitLyricsIntoChunks(lyrics);
+    const isChunked = chunks.length > 1;
+
+    logger.info(
+      { lyricsLength: lyrics.length, chunks: chunks.length, isChunked },
+      'OpenAI translation started',
+    );
+
+    if (isChunked) {
+      return this.translateChunked(artist, title, chunks, sourceLang, targetLang, promptVersion);
+    }
+
+    return this.translateSingle(artist, title, lyrics, sourceLang, targetLang, promptVersion);
+  }
+
+  private async translateSingle(
+    artist: string,
+    title: string,
+    lyrics: string,
+    sourceLang: string,
+    targetLang: string,
+    promptVersion: string,
+  ): Promise<TranslationResult> {
     const systemPrompt =
       'You are an expert translator specializing in West African music and languages. ' +
       'Always respond with valid JSON only, no markdown.';
@@ -174,6 +270,47 @@ export class OpenAIProvider implements TranslationProvider {
       tokensInput,
       tokensOutput,
       tokensUsed: tokensInput + tokensOutput,
+      model: MODEL_NAME,
+      promptVersion,
+    };
+  }
+
+  private async translateChunked(
+    artist: string,
+    title: string,
+    chunks: string[],
+    sourceLang: string,
+    targetLang: string,
+    promptVersion: string,
+  ): Promise<TranslationResult> {
+    const translatedChunks: string[] = [];
+    let totalTokensInput = 0;
+    let totalTokensOutput = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+      logger.info({ chunk: i + 1, totalChunks: chunks.length, length: chunks[i].length }, 'OpenAI translating chunk');
+
+      const result = await this.translateSingle(
+        artist,
+        title,
+        chunks[i],
+        sourceLang,
+        targetLang,
+        promptVersion,
+      );
+
+      translatedChunks.push(result.translatedLyrics);
+      totalTokensInput += result.tokensInput;
+      totalTokensOutput += result.tokensOutput;
+    }
+
+    const mergedTranslation = translatedChunks.join('\n\n');
+
+    return {
+      translatedLyrics: mergedTranslation,
+      tokensInput: totalTokensInput,
+      tokensOutput: totalTokensOutput,
+      tokensUsed: totalTokensInput + totalTokensOutput,
       model: MODEL_NAME,
       promptVersion,
     };
