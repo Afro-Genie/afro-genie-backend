@@ -4,6 +4,7 @@ import { query, param } from 'express-validator';
 import { validateRequest } from '../middleware/validateRequest';
 import { catalogService } from '../services/catalogService';
 import { authenticate, requireRole } from '../middleware/auth';
+import { prisma } from '../lib/prisma';
 
 export const catalogRouter = Router();
 
@@ -15,6 +16,44 @@ catalogRouter.get(
         spotifyFallback: req.query.spotifyFallback !== 'false',
       });
       res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+catalogRouter.get(
+  '/genres',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const genres = await prisma.genre.findMany({
+        orderBy: { name: 'asc' },
+        include: { _count: { select: { songs: true } } },
+      });
+      res.status(200).json(genres);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+catalogRouter.get(
+  '/genres/:name',
+  [param('name').isString().trim().isLength({ min: 1, max: 100 })],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const genre = await prisma.genre.findFirst({
+        where: { name: { equals: req.params.name.trim(), mode: 'insensitive' } },
+        include: { _count: { select: { songs: true } } },
+      });
+
+      if (!genre) {
+        res.status(404).json({ error: 'Genre not found', code: 'NOT_FOUND' });
+        return;
+      }
+
+      res.status(200).json(genre);
     } catch (error) {
       next(error);
     }

@@ -37,6 +37,12 @@
     "seed:robust:resume": "tsx scripts/robust-seed.ts --resume",
     "seed:robust:status": "tsx scripts/robust-seed.ts --status",
     "audit:seed": "tsx scripts/audit-seed-data.ts",
+    "audit:artists": "tsx scripts/audit-artists.ts",
+    "audit:artists:json": "tsx scripts/audit-artists.ts --json",
+    "backfill:artists": "tsx scripts/backfill-artists.ts",
+    "backfill:artists:dry": "tsx scripts/backfill-artists.ts --dry-run",
+    "backfill:artists:priority": "tsx scripts/backfill-artists.ts --priority",
+    "backfill:artists:priority:dry": "tsx scripts/backfill-artists.ts --priority --dry-run",
     "seed:full": "tsx scripts/scheduled-seed.ts"
   },
   "dependencies": {

@@ -12,6 +12,8 @@ interface ArtistListParams {
   limit?: number;
   genre?: string;
   search?: string;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 interface ArtistInput {
@@ -124,9 +126,15 @@ export const listArtists = async (params: ArtistListParams) => {
   const limit = normalizeLimit(params.limit);
   const where = buildArtistWhere(params);
 
+  const sortField = params.sortBy === 'followers' ? 'followers'
+    : params.sortBy === 'name' ? 'name'
+    : params.sortBy === 'createdAt' ? 'createdAt'
+    : 'popularity';
+  const sortOrder = params.sortOrder === 'asc' ? 'asc' : 'desc';
+
   const rows = await prisma.artist.findMany({
     where,
-    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    orderBy: [{ [sortField]: sortOrder }, { id: 'desc' }],
     ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
     take: limit + 1,
     include: {
