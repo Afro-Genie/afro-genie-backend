@@ -482,15 +482,41 @@ export const signInWithSpotify = async (accessToken: string): Promise<AuthResult
 };
 
 export const syncSpotifyProduct = async (userId: string, spotifyAccessToken: string): Promise<{ spotifyProduct: string | null }> => {
+  // Guard: only sync for users who have an active Spotify link
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { spotifyId: true },
+  });
+
+  if (!user || !user.spotifyId) {
+    return { spotifyProduct: null };
+  }
+
   const spotifyRes = await fetch('https://api.spotify.com/v1/me', {
     headers: { Authorization: `Bearer ${spotifyAccessToken}` },
   });
 
   if (!spotifyRes.ok) {
-    throw new ApiError('Failed to fetch Spotify profile', 'SPOTIFY_API_ERROR', 502);
+    // If the Spotify token is invalid/expired, do not blindly clear the product.
+    // Return the current state so the client can decide what to do.
+    const current = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { spotifyProduct: true },
+    });
+    return { spotifyProduct: current?.spotifyProduct ?? null };
   }
 
-  const profile = await spotifyRes.json() as { product?: string };
+  const profile = await spotifyRes.json() as { id?: string; product?: string };
+
+  // Safety: ensure the Spotify profile matches the linked account
+  if (profile.id && profile.id !== user.spotifyId) {
+    throw new ApiError(
+      'Spotify profile does not match the linked account',
+      'CONFLICT',
+      409,
+    );
+  }
+
   const spotifyProduct = profile.product ?? null;
 
   await prisma.user.update({
