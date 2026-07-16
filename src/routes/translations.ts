@@ -41,6 +41,98 @@ function resolveLanguageName(code: string): string {
   return LANGUAGE_NAME_MAP[normalized] || normalized || 'Unknown';
 }
 
+// ---------------------------------------------------------------------------
+// Heuristic language detection — offline fallback when AI provider is unreachable
+// ---------------------------------------------------------------------------
+const HEURISTIC_PATTERNS: Array<{ code: string; patterns: RegExp[]; weight: number }> = [
+  {
+    code: 'yo',
+    weight: 3,
+    patterns: [
+      /\b(omo|omo|ojo|owo|ile|aaye|orun|igbo|oriki|abiku|ijapa|ese|ife|ori)\b/i,
+      /\b(omi|omi|ogun|osa|shango|yemoja|obatala|sango|oshun|oya)\b/i,
+    ],
+  },
+  {
+    code: 'pcm',
+    weight: 3,
+    patterns: [
+      /\bwetin\b/i, /\bwahala\b/i, /\bnaija\b/i, /\boya\b/i, /\bno\s+dey\b/i,
+      /\bI\s+no\s+be\b/i, /\bmy\s+guy\b/i, /\be\s+don\b/i, /\bdey\b/i,
+      /\bwey\b/i, /\babeg\b/i, /\bjapa\b/i, /\bobodo\b/i, /\bsabi\b/i,
+      /\bI\s+dey\b/i, /\bno\s+wahala\b/i, /\bfit\b/i, /\bsha\b/i,
+    ],
+  },
+  {
+    code: 'ig',
+    weight: 3,
+    patterns: [
+      /\b(ala|nna|nne|ada|ndi|di|be|ka|na|si|ye|ga|chi|oha)\b/i,
+      /\b(ife|ife|ogini|ola|eze|ugo|nka|mmiri|ani|ala)\b/i,
+    ],
+  },
+  {
+    code: 'ha',
+    weight: 3,
+    patterns: [
+      /\b(kai|yauwa|gaisuwa|sannu|lahan|daga|kuma|wani|wata|har|in)\b/i,
+      /\b(duba|ruwa|aska|faskara|mai|gida|uya|karanta|rubuta)\b/i,
+    ],
+  },
+  {
+    code: 'fr',
+    weight: 2,
+    patterns: [
+      /\b(le|la|les|de|du|des|un|une|et|est|je|tu|nous|vous|ils|elles)\b/i,
+      /\b(c'est|qu'est|mon|ton|son|mais|pour|avec|dans|sur|pas|très)\b/i,
+    ],
+  },
+  {
+    code: 'sw',
+    weight: 2,
+    patterns: [
+      /\b(na|ni|ya|wa|kwa|ku|wa|za|la|ma)\b/i,
+      /\b(sawa|pole|asante|habari|jambo|ndio|hapana|nzuri|mbaya)\b/i,
+    ],
+  },
+];
+
+function heuristicDetectLanguage(lyrics: string): {
+  languageCode: string;
+  confidence: 'high' | 'medium' | 'low';
+} {
+  const text = lyrics.toLowerCase();
+  const scores: Record<string, number> = {};
+
+  for (const { code, patterns, weight } of HEURISTIC_PATTERNS) {
+    let hits = 0;
+    for (const pat of patterns) {
+      const matches = text.match(new RegExp(pat.source, 'gi'));
+      if (matches) hits += matches.length;
+    }
+    scores[code] = (scores[code] || 0) + hits * weight;
+  }
+
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const totalHits = sorted.reduce((sum, [, v]) => sum + v, 0);
+
+  if (sorted.length === 0 || sorted[0][1] === 0) {
+    return { languageCode: 'en', confidence: 'low' };
+  }
+
+  const [topCode, topScore] = sorted[0];
+  const ratio = totalHits > 0 ? topScore / totalHits : 1;
+  const confidence = ratio > 0.7 ? 'high' : ratio > 0.4 ? 'medium' : 'low';
+
+  // Check for heavy code-switching
+  const significantCodes = sorted.filter(([, v]) => v > 0 && v >= topScore * 0.3);
+  if (significantCodes.length >= 2) {
+    return { languageCode: 'mixed', confidence: 'low' };
+  }
+
+  return { languageCode: topCode, confidence };
+}
+
 export const translationsRouter = Router();
 
 const validate = (req: Request, res: Response, next: NextFunction) => {
@@ -403,29 +495,40 @@ translationsRouter.post(
     try {
       const { lyrics } = req.body as { lyrics: string };
 
-      const provider = getActiveProvider();
-      const result = await provider.detectLanguage(lyrics);
+      // Try AI detection first
+      try {
+        const provider = getActiveProvider();
+        const result = await provider.detectLanguage(lyrics);
 
-      const confidence: 'high' | 'medium' | 'low' =
-        result.confidence >= 0.7 ? 'high' : result.confidence >= 0.4 ? 'medium' : 'low';
+        const confidence: 'high' | 'medium' | 'low' =
+          result.confidence >= 0.7 ? 'high' : result.confidence >= 0.4 ? 'medium' : 'low';
 
-      // Log AI call — every API call is recorded
-      await logAICall({
-        provider: provider.name,
-        model: result.model,
-        promptVersion: 'lang-detect-v1',
-        tokensInput: result.tokensInput,
-        tokensOutput: result.tokensOutput,
-        estimatedCostUsd: estimateCostUsd(result.tokensInput, result.tokensOutput),
-        songId: null,
-        userId: null,
-      });
+        await logAICall({
+          provider: provider.name,
+          model: result.model,
+          promptVersion: 'lang-detect-v1',
+          tokensInput: result.tokensInput,
+          tokensOutput: result.tokensOutput,
+          estimatedCostUsd: estimateCostUsd(result.tokensInput, result.tokensOutput),
+          songId: null,
+          userId: null,
+        });
 
-      return res.status(200).json({
-        languageCode: result.languageCode,
-        languageName: resolveLanguageName(result.languageCode),
-        confidence,
-      });
+        return res.status(200).json({
+          languageCode: result.languageCode,
+          languageName: resolveLanguageName(result.languageCode),
+          confidence,
+        });
+      } catch (aiError: any) {
+        // AI failed — fall back to heuristic detection
+        const heuristic = heuristicDetectLanguage(lyrics);
+        return res.status(200).json({
+          languageCode: heuristic.languageCode,
+          languageName: resolveLanguageName(heuristic.languageCode),
+          confidence: heuristic.confidence,
+          fallback: true,
+        });
+      }
     } catch (err) {
       return next(err);
     }
