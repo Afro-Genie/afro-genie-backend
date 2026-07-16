@@ -19,6 +19,7 @@ enum LyricSourceProvider {
   LYRICFIND
   GENIUS
   ARTIST
+  LRCLIB
 }
 
 enum LicenseStatus {
@@ -222,6 +223,8 @@ model Lyric {
   id             String              @id @default(cuid())
   songId          String
   content         String?             @db.Text
+  syncedLyrics    String?             @db.Text
+  lyricLines      Json?
   sourceProvider  LyricSourceProvider
   licenseStatus   LicenseStatus       @default(UNKNOWN)
   schemaVersion   Int                 @default(1)
@@ -229,7 +232,7 @@ model Lyric {
   updatedAt       DateTime            @updatedAt
   song            Song                @relation(fields: [songId], references: [id], onDelete: Cascade)
 
-  @@index([songId])
+  @@unique([songId])
   @@index([sourceProvider])
   @@index([licenseStatus])
 }

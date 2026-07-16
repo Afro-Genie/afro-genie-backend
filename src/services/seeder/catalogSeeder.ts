@@ -64,8 +64,9 @@ class SpotifyPlaylistSeeder implements Seeder {
             headers: { Authorization: `Bearer ${token}` },
           });
           const aData = aRes.ok ? await aRes.json() : {};
-          artist = await prisma.artist.create({
-            data: {
+          artist = await prisma.artist.upsert({
+            where: { spotifyId: artistData.id },
+            create: {
               name: artistData.name,
               spotifyId: artistData.id,
               imageUrl: aData.images?.[0]?.url || null,
@@ -74,6 +75,7 @@ class SpotifyPlaylistSeeder implements Seeder {
               followers: aData.followers?.total || 0,
               verified: false,
             },
+            update: {},
           });
           result.artistsCreated++;
         }
@@ -83,8 +85,9 @@ class SpotifyPlaylistSeeder implements Seeder {
         if (albumData) {
           let album = await prisma.album.findFirst({ where: { spotifyId: albumData.id } });
           if (!album) {
-            album = await prisma.album.create({
-              data: {
+            album = await prisma.album.upsert({
+              where: { spotifyId: albumData.id },
+              create: {
                 name: albumData.name,
                 artistId: artist.id,
                 spotifyId: albumData.id,
@@ -96,6 +99,7 @@ class SpotifyPlaylistSeeder implements Seeder {
                 popularity: 0,
                 genres: [],
               },
+              update: {},
             });
             result.albumsCreated++;
           }
@@ -176,7 +180,7 @@ class SpotifyGenreSeeder implements Seeder {
   async seed(params: { genre: string; limit?: number }): Promise<SeedResult> {
     const token = await getSpotifyToken();
     const requestedLimit = params.limit || 100;
-    const pageSize = 50;
+    const pageSize = 10;
     const dedupedTracks = new Map<string, any>();
 
     for (let offset = 0; dedupedTracks.size < requestedLimit; offset += pageSize) {
@@ -378,7 +382,7 @@ class GenreDiscoverySeeder implements Seeder {
 
   async seed(params: { genres?: string[]; limitPerGenre?: number }): Promise<SeedResult> {
     const genres = params.genres?.length ? params.genres : GenreDiscoverySeeder.TARGET_GENRES;
-    const limitPerGenre = params.limitPerGenre || 50;
+    const limitPerGenre = params.limitPerGenre || 30;
 
     const result: SeedResult = {
       songsCreated: 0,
@@ -448,7 +452,7 @@ class ManualSeeder implements Seeder {
           result.artistsCreated++;
         }
 
-        // Duplicate detection via @@unique([title, artistId])
+        // Duplicate detection via @@unique([title, artistId]) — use upsert for idempotency
         const existingSong = await prisma.song.findFirst({
           where: { title: item.title, artistId: artist.id },
         });
@@ -461,14 +465,19 @@ class ManualSeeder implements Seeder {
           data: { title: item.title, artistId: artist.id },
         });
 
-        // Auto-provision lyrics if provided
+        // Auto-provision lyrics if provided (idempotent upsert)
         if (item.lyrics) {
-          await prisma.lyric.create({
-            data: {
+          await prisma.lyric.upsert({
+            where: { songId: song.id },
+            create: {
               songId: song.id,
               content: item.lyrics,
               sourceProvider: 'MANUAL',
               licenseStatus: 'UNKNOWN',
+            },
+            update: {
+              content: item.lyrics,
+              sourceProvider: 'MANUAL',
             },
           });
         }
