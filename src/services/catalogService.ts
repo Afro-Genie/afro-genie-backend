@@ -5,6 +5,13 @@ import { searchSpotify } from './spotifyService';
 import { genreService } from './genreService';
 import { generateGradientImage } from './imageService';
 
+const AFROBEAT_GENRES = [
+  'afrobeats', 'afrobeat', 'afropop', 'afro fusion', 'afropiano',
+  'amapiano', 'nigerian', 'nigerian pop', 'african', 'nigeria',
+  'highlife', 'banku', 'bongo flava', 'kwaito', 'gqom',
+  'south african', 'kenyan', 'ghanaian', 'tanzania', 'rwanda',
+] as const;
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -63,7 +70,10 @@ class CatalogService {
           take: 20,
         }),
         prisma.artist.findMany({
-          where: { softDeleted: false },
+          where: {
+            softDeleted: false,
+            genres: { hasSome: [...AFROBEAT_GENRES] },
+          },
           select: {
             id: true,
             name: true,
@@ -173,7 +183,10 @@ class CatalogService {
       take: 20,
     });
     const dbArtists = await prisma.artist.findMany({
-      where: { softDeleted: false },
+      where: {
+        softDeleted: false,
+        genres: { hasSome: [...AFROBEAT_GENRES] },
+      },
       select: {
         id: true, name: true, imageUrl: true, genres: true,
         spotifyId: true, bio: true, popularity: true, followers: true,
@@ -373,7 +386,10 @@ class CatalogService {
     limit?: number;
     search?: string;
   }): Promise<{ artists: any[]; total: number }> {
-    const where: any = { softDeleted: false };
+    const where: any = {
+      softDeleted: false,
+      genres: { hasSome: [...AFROBEAT_GENRES] },
+    };
     if (params.search) {
       where.name = { contains: params.search, mode: 'insensitive' };
     }
