@@ -16,73 +16,93 @@ import type { SyncJobData } from './syncWorker';
 // but they are identical at runtime (same Redis protocol).
 const connection = sharedConnection as any;
 
-export const translationWorker = new Worker<TranslationJobData>(
-  'translationQueue',
-  async (job) => {
-    await processTranslationJob(job);
-  },
-  { connection, concurrency: 4 }
-);
+async function startWorkers(): Promise<void> {
+  // Wait for Redis to be ready before creating workers
+  if (sharedConnection && sharedConnection.status !== 'ready') {
+    try {
+      await sharedConnection.connect();
+      logger.info('Redis shared connection ready for workers');
+    } catch (err) {
+      logger.error({ err }, 'Failed to connect Redis for workers — retrying in 5s');
+      await new Promise((r) => setTimeout(r, 5000));
+      await sharedConnection.connect();
+    }
+  }
 
-export const notificationWorker = new Worker(
-  'notificationQueue',
-  async (job) => {
-    logger.info({ jobId: job.id, name: job.name }, 'Processing notification job');
-  },
-  { connection }
-);
+  const translationWorker = new Worker<TranslationJobData>(
+    'translationQueue',
+    async (job) => {
+      await processTranslationJob(job);
+    },
+    { connection, concurrency: 4 }
+  );
 
-export const searchIndexWorker = new Worker(
-  'searchIndexQueue',
-  async (job) => {
-    logger.info({ jobId: job.id, name: job.name }, 'Processing search index job');
-    await processSearchIndexJob(job);
-  },
-  { connection, concurrency: 8 }
-);
+  const notificationWorker = new Worker(
+    'notificationQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, name: job.name }, 'Processing notification job');
+    },
+    { connection }
+  );
 
-export const languageCategorizationWorker = new Worker(
-  'languageCategorizationQueue',
-  async (job) => {
-    logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing language categorization job');
-    await processLanguageCategorizationJob(job);
-  },
-  { connection, concurrency: 4 }
-);
+  const searchIndexWorker = new Worker(
+    'searchIndexQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, name: job.name }, 'Processing search index job');
+      await processSearchIndexJob(job);
+    },
+    { connection, concurrency: 8 }
+  );
 
-export const lyricsEnrichmentWorker = new Worker(
-  'lyricsEnrichmentQueue',
-  async (job) => {
-    logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing lyrics enrichment job');
-    await processLyricsEnrichmentJob(job);
-  },
-  { connection, concurrency: 4 }
-);
+  const languageCategorizationWorker = new Worker(
+    'languageCategorizationQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing language categorization job');
+      await processLanguageCategorizationJob(job);
+    },
+    { connection, concurrency: 4 }
+  );
 
-export const viewCountFlushWorker = new Worker(
-  'viewCountFlushQueue',
-  async () => {
-    await processViewCountFlushJob();
-  },
-  { connection, concurrency: 1 }
-);
+  const lyricsEnrichmentWorker = new Worker(
+    'lyricsEnrichmentQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing lyrics enrichment job');
+      await processLyricsEnrichmentJob(job);
+    },
+    { connection, concurrency: 4 }
+  );
 
-export const syncWorker = new Worker<SyncJobData>(
-  'syncQueue',
-  async (job) => {
-    logger.info({ jobId: job.id, type: job.data.type }, 'Processing sync job');
-    await processSyncJob(job);
-  },
-  { connection, concurrency: 2 }
-);
+  const viewCountFlushWorker = new Worker(
+    'viewCountFlushQueue',
+    async () => {
+      await processViewCountFlushJob();
+    },
+    { connection, concurrency: 1 }
+  );
 
-export const popularTracksSyncWorker = new Worker(
-  'syncPopularTracksQueue',
-  async (job) => {
-    logger.info({ jobId: job.id }, 'Processing popular tracks sync job');
-    await processPopularTracksSyncJob(job);
-  },
-  { connection, concurrency: 1 }
-);
+  const syncWorker = new Worker<SyncJobData>(
+    'syncQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, type: job.data.type }, 'Processing sync job');
+      await processSyncJob(job);
+    },
+    { connection, concurrency: 2 }
+  );
 
-void scheduleViewCountFlush();
+  const popularTracksSyncWorker = new Worker(
+    'syncPopularTracksQueue',
+    async (job) => {
+      logger.info({ jobId: job.id }, 'Processing popular tracks sync job');
+      await processPopularTracksSyncJob(job);
+    },
+    { connection, concurrency: 1 }
+  );
+
+  logger.info('All 8 workers started successfully');
+
+  await scheduleViewCountFlush();
+}
+
+startWorkers().catch((err) => {
+  logger.error({ err }, 'Worker startup failed — jobs will not be processed');
+});
