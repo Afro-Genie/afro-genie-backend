@@ -332,6 +332,44 @@ export const resetPassword = async (token: string, newPassword: string): Promise
   await redis.del(refreshKey(userId));
 };
 
+export const changePassword = async (
+  userId: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, passwordHash: true }
+  });
+
+  if (!user) {
+    throw new ApiError('User not found', 'NOT_FOUND', 404);
+  }
+
+  if (!user.passwordHash) {
+    throw new ApiError(
+      'This account does not have a password. Use your provider to sign in.',
+      'CONFLICT',
+      409
+    );
+  }
+
+  const matches = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!matches) {
+    throw new ApiError('Current password is incorrect', 'UNAUTHORIZED', 401);
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash }
+  });
+
+  // Revoke all existing refresh tokens to force re-login on other sessions
+  await redis.del(refreshKey(userId));
+};
+
 export const configureGoogleStrategy = () => {
   if (googleStrategyInitialized) {
     return;
@@ -366,7 +404,9 @@ export const configureGoogleStrategy = () => {
               email: true,
               displayName: true,
               role: true,
-              googleId: true
+              googleId: true,
+              spotifyId: true,
+              spotifyProduct: true
             }
           });
 
@@ -385,7 +425,9 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
-                googleId: true
+                googleId: true,
+                spotifyId: true,
+                spotifyProduct: true
               }
             });
           } else {
@@ -401,7 +443,9 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
-                googleId: true
+                googleId: true,
+                spotifyId: true,
+                spotifyProduct: true
               }
             });
           }
@@ -580,15 +624,17 @@ export const linkSpotifyToUser = async (
   return { spotifyProduct: updatedUser.spotifyProduct, linked: true };
 };
 
-export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): Promise<string> => {
-  const auth = await buildAuthResult({ ...user, spotifyId: null, spotifyProduct: null });
+export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'spotifyId' | 'spotifyProduct'>): Promise<string> => {
+  const auth = await buildAuthResult(user);
   const query = new URLSearchParams({
     accessToken: auth.accessToken,
     refreshToken: auth.refreshToken,
     userId: auth.user.id,
     email: auth.user.email,
     displayName: auth.user.displayName,
-    role: auth.user.role
+    role: auth.user.role,
+    spotifyId: auth.user.spotifyId ?? '',
+    spotifyProduct: auth.user.spotifyProduct ?? ''
   });
 
   return `${env.CLIENT_URL}/auth/callback?${query.toString()}`;
