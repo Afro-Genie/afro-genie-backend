@@ -26,6 +26,7 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   SMTP_FROM_EMAIL: z.string().email().optional(),
+  BREVO_API_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().min(1, 'GEMINI_API_KEY is required'),
   OPENAI_API_KEY: z.string().optional(),
   AI_PROVIDER: z.string().optional(),
