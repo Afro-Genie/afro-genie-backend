@@ -9,6 +9,7 @@ import {
   buildGoogleRedirectUrl,
   changePassword,
   configureGoogleStrategy,
+  getSmtpDebugInfo,
   isGoogleOauthConfigured,
   startForgotPassword,
   login,
@@ -324,4 +325,9 @@ authRouter.get('/auth/spotify/debug', (_req: Request, res: Response) => {
       note: 'Spotify requires EXACT match. Use http://127.0.0.1 (not http://localhost) — localhost was removed Nov 2025.',
     },
   });
+});
+
+authRouter.get('/auth/smtp/debug', async (_req: Request, res: Response) => {
+  const info = await getSmtpDebugInfo();
+  res.json(info);
 });

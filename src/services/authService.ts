@@ -145,6 +145,45 @@ const sendMailWithTimeout = (
   ]);
 };
 
+export const getSmtpDebugInfo = async (): Promise<Record<string, unknown>> => {
+  const hasAllVars = Boolean(env.SMTP_HOST && env.SMTP_PORT && env.SMTP_USER && env.SMTP_PASS);
+
+  const result: Record<string, unknown> = {
+    hostSet: !!env.SMTP_HOST,
+    portSet: !!env.SMTP_PORT,
+    userSet: !!env.SMTP_USER,
+    passSet: !!env.SMTP_PASS,
+    fromEmail: env.SMTP_FROM_EMAIL || 'NOT SET',
+    allVarsPresent: hasAllVars,
+    clientUrl: env.CLIENT_URL,
+  };
+
+  if (!hasAllVars) {
+    result.status = 'INCOMPLETE — missing SMTP env vars, email will not send';
+    return result;
+  }
+
+  const transporter = createMailTransporter();
+  if (!transporter) {
+    result.status = 'UNEXPECTED — transporter is null despite all vars present';
+    return result;
+  }
+
+  try {
+    await Promise.race([
+      transporter.verify(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SMTP verify timed out after 10s')), 10_000)
+      )
+    ]);
+    result.status = 'OK — SMTP connection and auth verified';
+  } catch (err: any) {
+    result.status = `FAILED — ${err.message}`;
+  }
+
+  return result;
+};
+
 export const registerArtist = async (
   email: string,
   password: string,
@@ -305,6 +344,7 @@ export const startForgotPassword = async (email: string): Promise<void> => {
   });
 
   if (!user) {
+    logger.warn({ email: normalizedEmail }, 'Password reset requested for non-existent email');
     return;
   }
 
@@ -317,11 +357,15 @@ export const startForgotPassword = async (email: string): Promise<void> => {
   const resetUrl = `${env.CLIENT_URL}/#/reset-password?token=${encodeURIComponent(resetToken)}`;
 
   if (!transporter || !env.SMTP_FROM_EMAIL) {
-    logger.warn({ email: user.email, resetUrl }, 'SMTP not configured; password reset email was not sent');
+    logger.warn(
+      { email: user.email, hasTransporter: !!transporter, fromEmail: env.SMTP_FROM_EMAIL || 'NOT SET' },
+      'SMTP not configured; password reset email was not sent'
+    );
     return;
   }
 
   try {
+    logger.info({ email: user.email, from: env.SMTP_FROM_EMAIL, host: env.SMTP_HOST, port: env.SMTP_PORT }, 'Attempting to send password reset email');
     await sendMailWithTimeout(transporter, {
       from: env.SMTP_FROM_EMAIL,
       to: user.email,
@@ -330,9 +374,9 @@ export const startForgotPassword = async (email: string): Promise<void> => {
       html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`
     });
 
-    logger.info({ email: user.email }, 'Password reset email sent');
+    logger.info({ email: user.email }, 'Password reset email sent successfully');
   } catch (err) {
-    logger.error({ err, email: user.email }, 'Failed to send password reset email');
+    logger.error({ err, email: user.email, host: env.SMTP_HOST, port: env.SMTP_PORT }, 'Failed to send password reset email');
   }
 };
 
