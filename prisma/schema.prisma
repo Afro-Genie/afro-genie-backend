@@ -88,6 +88,13 @@ enum ArtistApplicationStatus {
   REJECTED
 }
 
+enum RoleRequestStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
 model User {
   id                 String                @id @default(cuid())
   email              String                @unique
@@ -113,6 +120,7 @@ model User {
   badges             UserBadge[]
   tokenRewards       TokenReward[]
   artistApplications ArtistApplication[]
+  roleRequests       RoleRequest[]
   communityMemberships UserCommunityMembership[]
   topicVotes           TopicVote[]
   topicCommentVotes    TopicCommentVote[]
@@ -544,4 +552,23 @@ model ArtistApplication {
   @@index([userId])
   @@index([status])
   @@index([stageName])
+}
+
+model RoleRequest {
+  id          String              @id @default(cuid())
+  userId      String
+  role        UserRole
+  status      RoleRequestStatus   @default(PENDING)
+  fields      Json
+  notes       String?
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
 }

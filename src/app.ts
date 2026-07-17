@@ -10,6 +10,8 @@ import { adminSongsRouter } from './routes/admin/songs';
 import { adminUsersRouter } from './routes/admin/users';
 import { adminSyncRouter } from './routes/admin/sync';
 import { adminGenresRouter } from './routes/admin/genres';
+import { adminRoleRequestsRouter } from './routes/admin/roleRequests';
+import { roleRequestsRouter } from './routes/roleRequests';
 import { artistsRouter } from './routes/artists';
 import { authRouter } from './routes/auth';
 import { healthRouter } from './routes/health';
@@ -87,7 +89,9 @@ app.use('/api/admin', adminSeederRouter);
 app.use('/api/admin', adminUsersRouter);
 app.use('/api/admin', adminSyncRouter);
 app.use('/api/admin', adminGenresRouter);
+app.use('/api/admin', adminRoleRequestsRouter);
 app.use('/api', spotifyRouter);
+app.use('/api/roles', roleRequestsRouter);
 
 app.get('/api/admin/ping', authenticate, requireRole('ADMIN'), (_req, res) => {
   res.status(200).json({ ok: true, scope: 'ADMIN' });
