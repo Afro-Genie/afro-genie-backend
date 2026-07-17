@@ -112,6 +112,8 @@ const buildAuthResult = async (
   };
 };
 
+const SMTP_SEND_TIMEOUT_MS = 15_000;
+
 const createMailTransporter = () => {
   if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !env.SMTP_PASS) {
     return null;
@@ -121,11 +123,26 @@ const createMailTransporter = () => {
     host: env.SMTP_HOST,
     port: env.SMTP_PORT,
     secure: env.SMTP_PORT === 465,
+    requireTLS: env.SMTP_PORT !== 465,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
     auth: {
       user: env.SMTP_USER,
       pass: env.SMTP_PASS
     }
   });
+};
+
+const sendMailWithTimeout = (
+  transporter: nodemailer.Transporter,
+  mailOptions: nodemailer.SendMailOptions
+): Promise<unknown> => {
+  return Promise.race([
+    transporter.sendMail(mailOptions),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`SMTP send timed out after ${SMTP_SEND_TIMEOUT_MS}ms`)), SMTP_SEND_TIMEOUT_MS)
+    )
+  ]);
 };
 
 export const registerArtist = async (
@@ -297,20 +314,26 @@ export const startForgotPassword = async (email: string): Promise<void> => {
   await redis.set(resetKey(tokenHash), user.id, 'EX', RESET_PASSWORD_TTL_SECONDS);
 
   const transporter = createMailTransporter();
-  const resetUrl = `${env.CLIENT_URL}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  const resetUrl = `${env.CLIENT_URL}/#/reset-password?token=${encodeURIComponent(resetToken)}`;
 
   if (!transporter || !env.SMTP_FROM_EMAIL) {
     logger.warn({ email: user.email, resetUrl }, 'SMTP not configured; password reset email was not sent');
     return;
   }
 
-  await transporter.sendMail({
-    from: env.SMTP_FROM_EMAIL,
-    to: user.email,
-    subject: 'Reset your Afro Genie password',
-    text: `Hi ${user.displayName ?? 'there'}, use this link to reset your password: ${resetUrl}`,
-    html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`
-  });
+  try {
+    await sendMailWithTimeout(transporter, {
+      from: env.SMTP_FROM_EMAIL,
+      to: user.email,
+      subject: 'Reset your Afro Genie password',
+      text: `Hi ${user.displayName ?? 'there'}, use this link to reset your password: ${resetUrl}`,
+      html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`
+    });
+
+    logger.info({ email: user.email }, 'Password reset email sent');
+  } catch (err) {
+    logger.error({ err, email: user.email }, 'Failed to send password reset email');
+  }
 };
 
 export const resetPassword = async (token: string, newPassword: string): Promise<void> => {
