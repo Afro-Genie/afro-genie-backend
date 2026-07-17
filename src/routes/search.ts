@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { query } from 'express-validator';
 import { validateRequest } from '../middleware/validateRequest';
-import { searchCatalog, suggestCatalog, type SearchType } from '../services/searchService';
+import { searchCatalog, suggestCatalog, bulkIndex, type SearchType } from '../services/searchService';
 import { searchSpotify } from '../services/spotifyService';
 
 export const searchRouter = Router();
@@ -18,7 +18,7 @@ searchRouter.get(
     query('lang').optional().isString().trim().isLength({ min: 2, max: 10 }).withMessage('lang must be a valid language code'),
     query('genre').optional().isString().trim().isLength({ min: 1, max: 64 }).withMessage('genre must be a non-empty string'),
     query('page').optional().isInt({ min: 1 }).withMessage('page must be an integer >= 1'),
-    query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('limit must be between 1 and 50'),
+    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
     query('spotifyFallback').optional().isBoolean().withMessage('spotifyFallback must be a boolean')
   ],
   validateRequest,
@@ -206,6 +206,18 @@ searchRouter.get(
       res.status(200).json({ imageUrl });
     } catch (error) {
       res.status(200).json({ imageUrl: null });
+    }
+  }
+);
+
+searchRouter.post(
+  '/search/reindex',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      await bulkIndex();
+      res.status(200).json({ success: true, message: 'Typesense reindex completed' });
+    } catch (error) {
+      next(error);
     }
   }
 );

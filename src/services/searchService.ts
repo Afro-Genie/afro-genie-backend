@@ -361,8 +361,8 @@ const songSearchParams = (q: string, page: number, limit: number, lang?: string,
     prefix: true,
     highlight_full_fields: 'title,artistName,album,genre',
     include_fields: 'id,title,artistName,artistId,album,releaseYear,imageUrl,language,genre,views,popularity,hasLyrics,hasTranslation',
-    exhaustive_search: false,
-    search_cutoff_ms: 180
+    exhaustive_search: true,
+    search_cutoff_ms: 1000
   };
 };
 
@@ -378,8 +378,8 @@ const artistSearchParams = (q: string, page: number, limit: number) => {
     prefix: true,
     highlight_full_fields: 'name,genres,bio',
     include_fields: 'id,name,bio,imageUrl,genres,popularity,followers',
-    exhaustive_search: false,
-    search_cutoff_ms: 180
+    exhaustive_search: true,
+    search_cutoff_ms: 1000
   };
 };
 
@@ -395,8 +395,8 @@ const genreSearchParams = (q: string, page: number, limit: number) => {
     prefix: true,
     highlight_full_fields: 'name',
     include_fields: 'id,name,imageUrl,songCount',
-    exhaustive_search: false,
-    search_cutoff_ms: 180
+    exhaustive_search: true,
+    search_cutoff_ms: 1000
   };
 };
 
@@ -414,7 +414,7 @@ export const searchCatalog = async (input: SearchParams) => {
   const q = input.q?.trim() ? input.q.trim() : EMPTY_Q;
   const type = input.type ?? 'all';
   const page = Math.max(1, input.page ?? 1);
-  const limit = Math.min(Math.max(1, input.limit ?? DEFAULT_LIMIT), 50);
+  const limit = Math.min(Math.max(1, input.limit ?? DEFAULT_LIMIT), 100);
   const lang = input.lang?.trim().toLowerCase();
   const genre = input.genre?.trim();
 
@@ -602,6 +602,20 @@ export const deleteSong = async (songId: string): Promise<void> => {
 
   try {
     await client.collections(COLLECTIONS.songs).documents(songId).delete();
+  } catch (error) {
+    if (parseTypesenseErrorCode(error) === 404) {
+      return;
+    }
+
+    throw error;
+  }
+};
+
+export const deleteArtist = async (artistId: string): Promise<void> => {
+  await ensureCollections();
+
+  try {
+    await client.collections(COLLECTIONS.artists).documents(artistId).delete();
   } catch (error) {
     if (parseTypesenseErrorCode(error) === 404) {
       return;

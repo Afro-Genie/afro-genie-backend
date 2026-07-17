@@ -5,6 +5,7 @@ import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 import { syncQueue, syncPopularTracksQueue } from './lib/queue';
 import { catalogService } from './services/catalogService';
+import { bulkIndex } from './services/searchService';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -120,6 +121,13 @@ const server = app.listen(env.PORT, async () => {
     logger.info('Homepage cache warmed');
   }).catch((err) => {
     logger.warn({ err }, 'Homepage cache warmup failed — non-fatal');
+  });
+
+  // Ensure Typesense search index is in sync with database on startup
+  bulkIndex().then(() => {
+    logger.info('Typesense bulk index completed on startup');
+  }).catch((err) => {
+    logger.warn({ err }, 'Typesense bulk index failed on startup — search may be incomplete');
   });
 });
 
