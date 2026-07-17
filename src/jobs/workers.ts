@@ -32,10 +32,19 @@ async function startWorkers(): Promise<void> {
   const translationWorker = new Worker<TranslationJobData>(
     'translationQueue',
     async (job) => {
+      logger.info({ jobId: job.id, songId: job.data.songId, targetLang: job.data.targetLang }, 'Translation worker picked up job');
       await processTranslationJob(job);
     },
     { connection, concurrency: 4 }
   );
+
+  translationWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err, attempt: job?.attemptsMade }, 'Translation job failed in worker');
+  });
+
+  translationWorker.on('error', (err) => {
+    logger.error({ err }, 'Translation worker error');
+  });
 
   const notificationWorker = new Worker(
     'notificationQueue',
@@ -106,3 +115,4 @@ async function startWorkers(): Promise<void> {
 startWorkers().catch((err) => {
   logger.error({ err }, 'Worker startup failed — jobs will not be processed');
 });
+
