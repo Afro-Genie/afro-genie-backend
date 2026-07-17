@@ -7,6 +7,7 @@ import { ApiError } from '../middleware/errorHandler';
 import { validateRequest } from '../middleware/validateRequest';
 import {
   buildGoogleRedirectUrl,
+  changePassword,
   configureGoogleStrategy,
   isGoogleOauthConfigured,
   startForgotPassword,
@@ -220,13 +221,17 @@ authRouter.get(
         email: string;
         displayName: string | null;
         role: 'USER' | 'ADMIN' | 'MODERATOR' | 'ARTIST';
+        spotifyId: string | null;
+        spotifyProduct: string | null;
       };
 
       const redirectUrl = await buildGoogleRedirectUrl({
         id: authUser.id,
         email: authUser.email,
         displayName: authUser.displayName,
-        role: authUser.role
+        role: authUser.role,
+        spotifyId: authUser.spotifyId ?? null,
+        spotifyProduct: authUser.spotifyProduct ?? null
       });
 
       res.redirect(redirectUrl);
@@ -266,6 +271,26 @@ authRouter.post(
     try {
       const { token, newPassword } = req.body as { token: string; newPassword: string };
       await resetPassword(token, newPassword);
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+authRouter.post(
+  '/auth/change-password',
+  requireAuth,
+  [
+    body('currentPassword').isString().notEmpty().withMessage('currentPassword is required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('newPassword must be at least 8 characters')
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+      const { currentPassword, newPassword } = req.body as { currentPassword: string; newPassword: string };
+      await changePassword(userId, currentPassword, newPassword);
       res.status(200).json({ success: true });
     } catch (error) {
       next(error);
