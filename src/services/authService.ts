@@ -114,6 +114,58 @@ const buildAuthResult = async (
 
 const SMTP_SEND_TIMEOUT_MS = 15_000;
 
+interface BrevoMailPayload {
+  sender: { email: string; name?: string };
+  to: Array<{ email: string; name?: string }>;
+  subject: string;
+  htmlContent: string;
+  textContent: string;
+}
+
+const sendViaBrevoApi = async (options: {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<void> => {
+  const apiKey = env.BREVO_API_KEY;
+  if (!apiKey) {
+    throw new Error('BREVO_API_KEY is not set');
+  }
+
+  const payload: BrevoMailPayload = {
+    sender: { email: options.from, name: 'Afro Genie' },
+    to: [{ email: options.to }],
+    subject: options.subject,
+    htmlContent: options.html,
+    textContent: options.text,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SMTP_SEND_TIMEOUT_MS);
+
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Brevo API ${res.status}: ${body}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const createMailTransporter = () => {
   if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !env.SMTP_PASS) {
     return null;
@@ -145,21 +197,82 @@ const sendMailWithTimeout = (
   ]);
 };
 
+const sendPasswordResetEmail = async (options: {
+  from: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<void> => {
+  if (env.BREVO_API_KEY) {
+    logger.info({ method: 'brevo_api', to: options.to }, 'Sending email via Brevo HTTP API');
+    await sendViaBrevoApi(options);
+    return;
+  }
+
+  const transporter = createMailTransporter();
+  if (!transporter) {
+    throw new Error('No email transport available: set BREVO_API_KEY or SMTP_* env vars');
+  }
+
+  logger.info({ method: 'smtp', to: options.to }, 'Sending email via SMTP');
+  await sendMailWithTimeout(transporter, options);
+};
+
 export const getSmtpDebugInfo = async (): Promise<Record<string, unknown>> => {
   const hasAllVars = Boolean(env.SMTP_HOST && env.SMTP_PORT && env.SMTP_USER && env.SMTP_PASS);
+  const hasApiKey = Boolean(env.BREVO_API_KEY);
 
   const result: Record<string, unknown> = {
+    brevoApiKeySet: hasApiKey,
+    transportMethod: hasApiKey ? 'brevo_http_api' : (hasAllVars ? 'smtp' : 'none'),
     hostSet: !!env.SMTP_HOST,
     portSet: !!env.SMTP_PORT,
     userSet: !!env.SMTP_USER,
     passSet: !!env.SMTP_PASS,
     fromEmail: env.SMTP_FROM_EMAIL || 'NOT SET',
-    allVarsPresent: hasAllVars,
     clientUrl: env.CLIENT_URL,
   };
 
+  if (hasApiKey) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': env.BREVO_API_KEY!,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          sender: { email: env.SMTP_FROM_EMAIL || 'test@test.com' },
+          to: [{ email: env.SMTP_FROM_EMAIL || 'test@test.com' }],
+          subject: 'SMTP Debug Test',
+          textContent: 'test',
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (res.status === 401) {
+        result.status = 'FAILED — Brevo API key is invalid (401 Unauthorized)';
+      } else if (res.status === 400) {
+        result.status = 'OK — Brevo API reachable, key is valid (400 = test payload rejected, expected)';
+      } else if (res.ok) {
+        result.status = 'OK — Brevo HTTP API connected and working';
+      } else {
+        const body = await res.text();
+        result.status = `BREVO API ${res.status}: ${body}`;
+      }
+    } catch (err: any) {
+      result.status = `FAILED — ${err.message}`;
+    }
+    return result;
+  }
+
   if (!hasAllVars) {
-    result.status = 'INCOMPLETE — missing SMTP env vars, email will not send';
+    result.status = 'INCOMPLETE — set BREVO_API_KEY (preferred) or all SMTP_* vars';
     return result;
   }
 
@@ -353,30 +466,25 @@ export const startForgotPassword = async (email: string): Promise<void> => {
 
   await redis.set(resetKey(tokenHash), user.id, 'EX', RESET_PASSWORD_TTL_SECONDS);
 
-  const transporter = createMailTransporter();
-  const resetUrl = `${env.CLIENT_URL}/#/reset-password?token=${encodeURIComponent(resetToken)}`;
-
-  if (!transporter || !env.SMTP_FROM_EMAIL) {
-    logger.warn(
-      { email: user.email, hasTransporter: !!transporter, fromEmail: env.SMTP_FROM_EMAIL || 'NOT SET' },
-      'SMTP not configured; password reset email was not sent'
-    );
+  if (!env.SMTP_FROM_EMAIL) {
+    logger.warn({ email: user.email }, 'SMTP_FROM_EMAIL not set; password reset email was not sent');
     return;
   }
 
+  const resetUrl = `${env.CLIENT_URL}/#/reset-password?token=${encodeURIComponent(resetToken)}`;
+
   try {
-    logger.info({ email: user.email, from: env.SMTP_FROM_EMAIL, host: env.SMTP_HOST, port: env.SMTP_PORT }, 'Attempting to send password reset email');
-    await sendMailWithTimeout(transporter, {
+    await sendPasswordResetEmail({
       from: env.SMTP_FROM_EMAIL,
       to: user.email,
       subject: 'Reset your Afro Genie password',
       text: `Hi ${user.displayName ?? 'there'}, use this link to reset your password: ${resetUrl}`,
-      html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`
+      html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Use this link to reset your password:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>This link expires in 1 hour.</p>`,
     });
 
     logger.info({ email: user.email }, 'Password reset email sent successfully');
   } catch (err) {
-    logger.error({ err, email: user.email, host: env.SMTP_HOST, port: env.SMTP_PORT }, 'Failed to send password reset email');
+    logger.error({ err, email: user.email }, 'Failed to send password reset email');
   }
 };
 
