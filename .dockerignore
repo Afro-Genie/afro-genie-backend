@@ -10,7 +10,3 @@ dist
 .vscode
 .idea
 .DS_Store
-src
-tsconfig.json
-railway.toml
-README.md
