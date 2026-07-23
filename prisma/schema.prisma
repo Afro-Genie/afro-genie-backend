@@ -95,63 +95,91 @@ enum RoleRequestStatus {
   REJECTED
 }
 
+enum ReleaseType {
+  SINGLE
+  EP
+  ALBUM
+}
+
+enum ReleaseStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+}
+
 model User {
-  id                 String                @id @default(cuid())
-  email              String                @unique
-  passwordHash       String?
-  googleId           String?               @unique
-  spotifyId          String?               @unique
-  spotifyProduct     String?
-  displayName        String?
-  photoUrl           String?
-  role               UserRole              @default(USER)
-  schemaVersion      Int                   @default(1)
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-  lastLoginAt        DateTime?
-  translations       Translation[]
-  translationVotes   TranslationVote[]
-  corrections        TranslationCorrection[]
-  translationRequests TranslationRequest[]
-  songRequests       SongRequest[]
-  topics             Topic[]
-  topicComments      TopicComment[]        @relation("TopicCommentAuthor")
-  notifications      Notification[]
-  badges             UserBadge[]
-  tokenRewards       TokenReward[]
-  artistApplications ArtistApplication[]
-  roleRequests       RoleRequest[]
-  communityMemberships UserCommunityMembership[]
-  topicVotes           TopicVote[]
-  topicCommentVotes    TopicCommentVote[]
+  id                         String                    @id @default(cuid())
+  email                      String                    @unique
+  passwordHash               String?
+  googleId                   String?                   @unique
+  spotifyId                  String?                   @unique
+  spotifyProduct             String?
+  displayName                String?
+  photoUrl                   String?
+  role                       UserRole                  @default(USER)
+  schemaVersion              Int                       @default(1)
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  lastLoginAt                DateTime?
+  translations               Translation[]
+  translationVotes           TranslationVote[]
+  corrections                TranslationCorrection[]
+  translationRequests        TranslationRequest[]
+  songRequests               SongRequest[]
+  topics                     Topic[]
+  topicComments              TopicComment[]            @relation("TopicCommentAuthor")
+  notifications              Notification[]
+  badges                     UserBadge[]
+  tokenRewards               TokenReward[]
+  artistApplications         ArtistApplication[]
+  reviewedArtistApplications ArtistApplication[]       @relation("ReviewedByUser")
+  roleRequests               RoleRequest[]
+  communityMemberships       UserCommunityMembership[]
+  topicVotes                 TopicVote[]
+  topicCommentVotes          TopicCommentVote[]
+  artist                     Artist?
 
   @@index([role])
   @@index([lastLoginAt])
 }
 
 model Artist {
-  id               String    @id @default(cuid())
-  name             String    @unique
-  bio              String?
-  imageUrl         String?
-  spotifyId        String?   @unique
-  genres           String[]
-  popularity       Int       @default(0)
-  followers        Int       @default(0)
-  externalUrl      String?
-  verified         Boolean   @default(false)
-  softDeleted      Boolean   @default(false)
-  schemaVersion    Int       @default(1)
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  albums           Album[]
-  songs            Song[]
-  topics           Topic[]
+  id              String                 @id @default(cuid())
+  userId          String?                @unique
+  user            User?                  @relation(fields: [userId], references: [id])
+  name            String                 @unique
+  bio             String?
+  imageUrl        String?
+  profileImageUrl String?
+  bannerImageUrl  String?
+  socialLinks     Json?
+  spotifyId       String?                @unique
+  spotifyArtistId String?
+  genres          String[]
+  popularity      Int                    @default(0)
+  followers       Int                    @default(0)
+  externalUrl     String?
+  verified        Boolean                @default(false)
+  suspended       Boolean                @default(false)
+  isFeatured      Boolean                @default(false)
+  softDeleted     Boolean                @default(false)
+  schemaVersion   Int                    @default(1)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  albums          Album[]
+  songs           Song[]
+  topics          Topic[]
+  releases        Release[]
+  analytics       ArtistAnalyticsDaily[]
+  notifications   ArtistNotification[]
 
   @@index([verified])
   @@index([softDeleted])
+  @@index([suspended])
+  @@index([isFeatured])
   @@index([popularity])
   @@index([followers])
+  @@index([userId])
 }
 
 model Album {
@@ -175,35 +203,38 @@ model Album {
 }
 
 model Song {
-  id                String            @id @default(cuid())
-  title             String
-  artistId          String
-  albumName         String?
-  albumId           String?
-  releaseYear       Int?
-  imageUrl          String?
-  spotifyId         String?           @unique
-  spotifyPreviewUrl String?
-  previewAvailable  Boolean?
-  durationMs        Int?
-  trackNumber       Int?
-  views             Int               @default(0)
-  requestCount      Int               @default(0)
-  softDeleted       Boolean           @default(false)
-  schemaVersion     Int               @default(1)
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  artist            Artist            @relation(fields: [artistId], references: [id], onDelete: Restrict)
-  album             Album?            @relation(fields: [albumId], references: [id], onDelete: SetNull)
-  songLanguages     SongLanguage[]
-  lyrics            Lyric[]
-  translations      Translation[]
+  id                  String               @id @default(cuid())
+  title               String
+  artistId            String
+  albumName           String?
+  albumId             String?
+  releaseId           String?
+  releaseYear         Int?
+  imageUrl            String?
+  spotifyId           String?              @unique
+  spotifyPreviewUrl   String?
+  previewAvailable    Boolean?
+  durationMs          Int?
+  trackNumber         Int?
+  views               Int                  @default(0)
+  requestCount        Int                  @default(0)
+  softDeleted         Boolean              @default(false)
+  schemaVersion       Int                  @default(1)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  artist              Artist               @relation(fields: [artistId], references: [id], onDelete: Restrict)
+  album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  release             Release?             @relation(fields: [releaseId], references: [id], onDelete: SetNull)
+  songLanguages       SongLanguage[]
+  lyrics              Lyric[]
+  translations        Translation[]
   translationRequests TranslationRequest[]
-  genres            SongGenre[]
-  topics            Topic[]
+  genres              SongGenre[]
+  topics              Topic[]
 
   @@unique([title, artistId])
   @@index([artistId])
+  @@index([releaseId])
   @@index([title])
   @@index([releaseYear])
   @@index([views])
@@ -229,16 +260,16 @@ model SongLanguage {
 
 model Lyric {
   id             String              @id @default(cuid())
-  songId          String
-  content         String?             @db.Text
-  syncedLyrics    String?             @db.Text
-  lyricLines      Json?
-  sourceProvider  LyricSourceProvider
-  licenseStatus   LicenseStatus       @default(UNKNOWN)
-  schemaVersion   Int                 @default(1)
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  song            Song                @relation(fields: [songId], references: [id], onDelete: Cascade)
+  songId         String
+  content        String?             @db.Text
+  syncedLyrics   String?             @db.Text
+  lyricLines     Json?
+  sourceProvider LyricSourceProvider
+  licenseStatus  LicenseStatus       @default(UNKNOWN)
+  schemaVersion  Int                 @default(1)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  song           Song                @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@unique([songId])
   @@index([sourceProvider])
@@ -256,26 +287,26 @@ model Language {
 }
 
 model Translation {
-  id                    String                  @id @default(cuid())
-  songId                String
-  userId                String
-  originalLyrics        String                  @db.Text
-  translatedLyrics      String                  @db.Text
-  culturalContext       String?                 @db.Text
-  sourceLang            String
-  targetLang            String
-  status                TranslationStatus       @default(PENDING)
-  upvotes               Int                     @default(0)
-  downvotes             Int                     @default(0)
-  aiModel               String?
-  promptVersion         String?
-  schemaVersion         Int                     @default(1)
-  createdAt             DateTime                @default(now())
-  updatedAt             DateTime                @updatedAt
-  song                  Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
-  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  votes                 TranslationVote[]
-  corrections           TranslationCorrection[]
+  id               String                  @id @default(cuid())
+  songId           String
+  userId           String
+  originalLyrics   String                  @db.Text
+  translatedLyrics String                  @db.Text
+  culturalContext  String?                 @db.Text
+  sourceLang       String
+  targetLang       String
+  status           TranslationStatus       @default(PENDING)
+  upvotes          Int                     @default(0)
+  downvotes        Int                     @default(0)
+  aiModel          String?
+  promptVersion    String?
+  schemaVersion    Int                     @default(1)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  song             Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes            TranslationVote[]
+  corrections      TranslationCorrection[]
 
   @@unique([songId, userId, sourceLang, targetLang])
   @@index([songId])
@@ -371,17 +402,17 @@ model AICallLog {
 }
 
 model Genre {
-  id       String     @id @default(cuid())
-  name     String     @unique
+  id       String      @id @default(cuid())
+  name     String      @unique
   imageUrl String?
   songs    SongGenre[]
 }
 
 model SongGenre {
-  songId   String
-  genreId  String
-  song     Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
-  genre    Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  songId  String
+  genreId String
+  song    Song   @relation(fields: [songId], references: [id], onDelete: Cascade)
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
 
   @@id([songId, genreId])
   @@index([songId])
@@ -389,12 +420,12 @@ model SongGenre {
 }
 
 model ForumCategory {
-  id          String   @id @default(cuid())
-  name        String   @unique
+  id          String                    @id @default(cuid())
+  name        String                    @unique
   description String?
   icon        String?
-  order       Int      @default(0)
-  topicCount  Int      @default(0)
+  order       Int                       @default(0)
+  topicCount  Int                       @default(0)
   topics      Topic[]
   memberships UserCommunityMembership[]
 
@@ -403,28 +434,28 @@ model ForumCategory {
 }
 
 model Topic {
-  id           String         @id @default(cuid())
-  title        String
-  content      String         @db.Text
-  authorId     String
-  category     TopicCategory
+  id              String         @id @default(cuid())
+  title           String
+  content         String         @db.Text
+  authorId        String
+  category        TopicCategory
   forumCategoryId String?
-  songId       String?
-  artistId     String?
-  imageUrl     String?
-  likes        Int            @default(0)
-  shares       Int            @default(0)
-  commentCount Int            @default(0)
-  isPinned     Boolean        @default(false)
-  isLocked     Boolean        @default(false)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  author       User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
-  song         Song?          @relation(fields: [songId], references: [id], onDelete: SetNull)
-  artist       Artist?        @relation(fields: [artistId], references: [id], onDelete: SetNull)
-  forumCategory ForumCategory? @relation(fields: [forumCategoryId], references: [id], onDelete: SetNull)
-  comments     TopicComment[] @relation("TopicComments")
-  votes        TopicVote[]
+  songId          String?
+  artistId        String?
+  imageUrl        String?
+  likes           Int            @default(0)
+  shares          Int            @default(0)
+  commentCount    Int            @default(0)
+  isPinned        Boolean        @default(false)
+  isLocked        Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  author          User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  song            Song?          @relation(fields: [songId], references: [id], onDelete: SetNull)
+  artist          Artist?        @relation(fields: [artistId], references: [id], onDelete: SetNull)
+  forumCategory   ForumCategory? @relation(fields: [forumCategoryId], references: [id], onDelete: SetNull)
+  comments        TopicComment[] @relation("TopicComments")
+  votes           TopicVote[]
 
   @@index([authorId])
   @@index([songId])
@@ -437,18 +468,18 @@ model Topic {
 }
 
 model TopicComment {
-  id              String              @id @default(cuid())
+  id              String             @id @default(cuid())
   topicId         String
   userId          String
-  content         String              @db.Text
-  likes           Int                 @default(0)
+  content         String             @db.Text
+  likes           Int                @default(0)
   parentCommentId String?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  topic           Topic               @relation("TopicComments", fields: [topicId], references: [id], onDelete: Cascade)
-  user            User                @relation("TopicCommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
-  parentComment   TopicComment?       @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: SetNull)
-  replies         TopicComment[]      @relation("CommentThread")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  topic           Topic              @relation("TopicComments", fields: [topicId], references: [id], onDelete: Cascade)
+  user            User               @relation("TopicCommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  parentComment   TopicComment?      @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies         TopicComment[]     @relation("CommentThread")
   votes           TopicCommentVote[]
 
   @@index([topicId])
@@ -472,12 +503,12 @@ model TopicVote {
 }
 
 model TopicCommentVote {
-  id        String   @id @default(cuid())
+  id        String       @id @default(cuid())
   userId    String
   commentId String
   voteType  VoteType
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   comment   TopicComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
   @@unique([userId, commentId])
@@ -538,37 +569,89 @@ model TokenReward {
 }
 
 model ArtistApplication {
-  id          String                  @id @default(cuid())
-  userId      String
-  stageName   String
-  genre       String
-  bio         String
-  socialLinks Json
-  status      ArtistApplicationStatus @default(PENDING)
-  createdAt   DateTime                @default(now())
-  updatedAt   DateTime                @updatedAt
-  user        User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String                  @id @default(cuid())
+  userId           String
+  stageName        String
+  genre            String
+  bio              String
+  socialLinks      Json
+  status           ArtistApplicationStatus @default(PENDING)
+  rejectionReason  String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy       User?                   @relation("ReviewedByUser", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([status])
   @@index([stageName])
+  @@index([reviewedByUserId])
 }
 
 model RoleRequest {
-  id          String              @id @default(cuid())
-  userId      String
-  role        UserRole
-  status      RoleRequestStatus   @default(PENDING)
-  fields      Json
-  notes       String?
-  reviewedBy  String?
-  reviewedAt  DateTime?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String            @id @default(cuid())
+  userId     String
+  role       UserRole
+  status     RoleRequestStatus @default(PENDING)
+  fields     Json
+  notes      String?
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([role])
   @@index([status])
+  @@index([createdAt])
+}
+
+model Release {
+  id            String        @id @default(cuid())
+  artistId      String
+  title         String
+  type          ReleaseType
+  coverImageUrl String?
+  releaseDate   DateTime
+  status        ReleaseStatus @default(DRAFT)
+  createdAt     DateTime      @default(now())
+  artist        Artist        @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  songs         Song[]
+
+  @@index([artistId])
+  @@index([status])
+  @@index([releaseDate])
+}
+
+model ArtistAnalyticsDaily {
+  id               String   @id @default(cuid())
+  artistId         String
+  date             DateTime
+  plays            Int      @default(0)
+  translationViews Int      @default(0)
+  uniqueListeners  Int      @default(0)
+  createdAt        DateTime @default(now())
+  artist           Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  @@unique([artistId, date])
+  @@index([artistId])
+  @@index([date])
+}
+
+model ArtistNotification {
+  id        String   @id @default(cuid())
+  artistId  String
+  type      String
+  message   String
+  metadata  Json?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  artist    Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  @@index([artistId])
+  @@index([isRead])
   @@index([createdAt])
 }

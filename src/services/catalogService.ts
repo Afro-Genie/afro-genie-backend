@@ -65,13 +65,14 @@ class CatalogService {
       const results = await withTimeout(Promise.all([
         prisma.song.findMany({
           where: { softDeleted: false },
-          include: { artist: { select: { name: true, imageUrl: true } } },
+          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
           orderBy: { views: 'desc' },
           take: 20,
         }),
         prisma.artist.findMany({
           where: {
             softDeleted: false,
+            suspended: false,
             genres: { hasSome: [...AFROBEAT_GENRES] },
           },
           select: {
@@ -101,7 +102,9 @@ class CatalogService {
       logger.warn({ err }, 'Catalog: DB queries failed (Neon cold start?) — falling through to Spotify');
     }
 
-    let songs: UnifiedSong[] = dbSongs.map((s) => ({
+    let songs: UnifiedSong[] = dbSongs
+      .filter((s) => !(s as any).artist?.suspended)
+      .map((s) => ({
       id: s.id,
       title: s.title,
       artistName: (s as any).artist.name,
@@ -178,13 +181,14 @@ class CatalogService {
   private async enrichHomepageCache(cacheKey: string): Promise<void> {
     const dbSongs = await prisma.song.findMany({
       where: { softDeleted: false },
-      include: { artist: { select: { name: true, imageUrl: true } } },
+      include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
       orderBy: { views: 'desc' },
       take: 20,
     });
     const dbArtists = await prisma.artist.findMany({
       where: {
         softDeleted: false,
+        suspended: false,
         genres: { hasSome: [...AFROBEAT_GENRES] },
       },
       select: {
@@ -281,7 +285,9 @@ class CatalogService {
     }
 
     const enrichedResult = {
-      songs: dbSongs.map((s) => ({
+      songs: dbSongs
+        .filter((s) => !(s as any).artist?.suspended)
+        .map((s) => ({
         id: s.id,
         title: s.title,
         artistName: (s as any).artist.name,
@@ -318,7 +324,7 @@ class CatalogService {
     sortBy?: string;
     sortOrder?: string;
   }): Promise<{ songs: any[]; total: number }> {
-    const where: any = { softDeleted: false };
+    const where: any = { softDeleted: false, artist: { suspended: false } };
 
     if (params.language && params.language !== 'all') {
       where.songLanguages = { some: { language: { code: params.language } } };
@@ -388,6 +394,7 @@ class CatalogService {
   }): Promise<{ artists: any[]; total: number }> {
     const where: any = {
       softDeleted: false,
+      suspended: false,
       genres: { hasSome: [...AFROBEAT_GENRES] },
     };
     if (params.search) {

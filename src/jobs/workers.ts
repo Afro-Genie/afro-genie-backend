@@ -8,6 +8,8 @@ import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
 import { processSyncJob } from './syncWorker';
 import { processPopularTracksSyncJob } from './popularTracksSyncJob';
+import { processAnalyticsRollupJob, scheduleAnalyticsRollup } from './rollupArtistAnalytics';
+import { processReleasePublishJob, scheduleReleasePublish } from './publishScheduledReleases';
 import type { TranslationJobData } from '../types/translation';
 import type { SyncJobData } from './syncWorker';
 
@@ -107,9 +109,37 @@ async function startWorkers(): Promise<void> {
     { connection, concurrency: 1 }
   );
 
-  logger.info('All 8 workers started successfully');
+  const analyticsRollupWorker = new Worker(
+    'analyticsRollupQueue',
+    async () => {
+      logger.info('Processing analytics rollup job');
+      await processAnalyticsRollupJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  analyticsRollupWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err }, 'Analytics rollup job failed');
+  });
+
+  const releasePublishWorker = new Worker(
+    'releasePublishQueue',
+    async () => {
+      logger.info('Processing scheduled release publish job');
+      await processReleasePublishJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  releasePublishWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err }, 'Release publish job failed');
+  });
+
+  logger.info('All 10 workers started successfully');
 
   await scheduleViewCountFlush();
+  await scheduleAnalyticsRollup();
+  await scheduleReleasePublish();
 }
 
 startWorkers().catch((err) => {

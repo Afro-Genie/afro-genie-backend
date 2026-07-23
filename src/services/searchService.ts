@@ -216,7 +216,8 @@ const buildSongDocument = async (songId: string): Promise<SongDocument | null> =
         select: {
           id: true,
           name: true,
-          popularity: true
+          popularity: true,
+          suspended: true
         }
       },
       songLanguages: {
@@ -248,13 +249,17 @@ const buildSongDocument = async (songId: string): Promise<SongDocument | null> =
     imageUrl: string | null;
     views: number;
     requestCount: number;
-    artist: { id: string; name: string; popularity: number };
+    artist: { id: string; name: string; popularity: number; suspended: boolean };
     songLanguages: Array<{ languageCode: string }>;
     genres: Array<{ genre: { name: string } }>;
     _count: { lyrics: number; translations: number };
   } | null;
 
   if (!song) {
+    return null;
+  }
+
+  if (song.artist.suspended) {
     return null;
   }
 
@@ -279,7 +284,7 @@ const buildSongDocument = async (songId: string): Promise<SongDocument | null> =
 
 const buildArtistDocument = async (artistId: string): Promise<ArtistDocument | null> => {
   const artist = await prisma.artist.findFirst({
-    where: { id: artistId, ...notDeletedFilter } as Prisma.ArtistWhereInput,
+    where: { id: artistId, ...notDeletedFilter, suspended: false } as Prisma.ArtistWhereInput,
     select: {
       id: true,
       name: true,
@@ -639,7 +644,7 @@ export const bulkIndex = async (): Promise<void> => {
       }
     }),
     prisma.artist.findMany({
-      where: { ...notDeletedFilter } as Prisma.ArtistWhereInput,
+      where: { ...notDeletedFilter, suspended: false } as Prisma.ArtistWhereInput,
       select: {
         id: true,
         name: true,

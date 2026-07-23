@@ -43,7 +43,8 @@
     "backfill:artists:dry": "tsx scripts/backfill-artists.ts --dry-run",
     "backfill:artists:priority": "tsx scripts/backfill-artists.ts --priority",
     "backfill:artists:priority:dry": "tsx scripts/backfill-artists.ts --priority --dry-run",
-    "seed:full": "tsx scripts/scheduled-seed.ts"
+    "seed:full": "tsx scripts/scheduled-seed.ts",
+    "seed:artist-portal": "tsx scripts/seed-artist-portal.ts"
   },
   "dependencies": {
     "@google/genai": "^2.12.0",

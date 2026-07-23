@@ -43,6 +43,7 @@ const normalizeLimit = (limit?: number): number => {
 
 const buildArtistWhere = (params: ArtistListParams): Prisma.ArtistWhereInput => {
   return {
+    suspended: false,
     ...(params.genre
       ? {
           genres: {
@@ -198,6 +199,10 @@ export const getArtistById = async (artistId: string) => {
   });
 
   if (!artist) {
+    throw new ApiError('Artist not found', 'NOT_FOUND', 404);
+  }
+
+  if (artist.suspended) {
     throw new ApiError('Artist not found', 'NOT_FOUND', 404);
   }
 
