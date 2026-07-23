@@ -5,7 +5,6 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { translationQueue } from '../lib/queue';
 import { CURRENT_PROMPT_VERSION, GeminiProvider } from './providers/geminiProvider';
-import { OpenAIProvider, estimateOpenAICostUsd } from './providers/openaiProvider';
 import type { TranslationJobData, TranslationProvider } from '../types/translation';
 
 // ---------------------------------------------------------------------------
@@ -15,11 +14,6 @@ import type { TranslationJobData, TranslationProvider } from '../types/translati
 const PROVIDER_REGISTRY: Record<string, () => TranslationProvider> = {
   gemini: () => new GeminiProvider(),
 };
-
-// Register OpenAI only if the API key is present
-if (env.OPENAI_API_KEY) {
-  PROVIDER_REGISTRY.openai = () => new OpenAIProvider();
-}
 
 let _activeProvider: TranslationProvider | null = null;
 
@@ -52,24 +46,10 @@ export function getActiveProvider(): TranslationProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Provider fallback — try the primary, fall back to secondary if available
+// Provider list — Gemini only (no fallback providers configured)
 // ---------------------------------------------------------------------------
 function getProvidersWithFallback(): TranslationProvider[] {
-  const primary = getActiveProvider();
-  const fallbackName = primary.name === 'gemini' ? 'openai' : 'gemini';
-  const fallbackFactory = PROVIDER_REGISTRY[fallbackName];
-
-  if (!fallbackFactory) {
-    return [primary];
-  }
-
-  try {
-    const fallback = fallbackFactory();
-    return [primary, fallback];
-  } catch {
-    // Fallback provider may fail to initialize (e.g. missing API key)
-    return [primary];
-  }
+  return [getActiveProvider()];
 }
 
 // ---------------------------------------------------------------------------
