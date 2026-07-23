@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { env } from '../../lib/env';
 import { logger } from '../../lib/logger';
 import type {
@@ -8,12 +7,15 @@ import type {
   TranslationResult,
 } from '../../types/translation';
 
-const MODEL_NAME = 'gemini-2.5-flash';
-export const CURRENT_PROMPT_VERSION = 'v1.1';
+// Model fallback chain: try primary first, then fallbacks if 503/unavailable
+const MODEL_CHAIN = ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+const PRIMARY_MODEL = MODEL_CHAIN[0];
 
-// Gemini 2.5 Flash approximate pricing (USD per token, 2025)
-const INPUT_COST_PER_TOKEN = 0.075 / 1_000_000;
-const OUTPUT_COST_PER_TOKEN = 0.30 / 1_000_000;
+export const CURRENT_PROMPT_VERSION = 'v1.2';
+
+// Gemini 3.5 Flash pricing (USD per token, 2026)
+const INPUT_COST_PER_TOKEN = 1.5 / 1_000_000;
+const OUTPUT_COST_PER_TOKEN = 9.0 / 1_000_000;
 
 // Chunking threshold: lyrics longer than this get split into verse segments
 const CHUNK_CHAR_THRESHOLD = 8000;
@@ -38,6 +40,45 @@ async function withExponentialBackoff<T>(fn: () => Promise<T>, maxAttempts = 3):
     }
   }
   throw lastError;
+}
+
+// Check if an error should trigger model fallback (503 unavailable, 404 not found, etc.)
+function isUnavailableError(err: unknown): boolean {
+  const msg = String((err as any)?.message || (err as any)?.error?.message || '').toLowerCase();
+  const status = (err as any)?.status || (err as any)?.httpStatusCode || 0;
+  return (
+    status === 404 ||
+    status === 503 ||
+    msg.includes('404') ||
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('not found') ||
+    msg.includes('no longer') ||
+    msg.includes('high demand')
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Defensive JSON extraction — strip markdown fences if present
+// ---------------------------------------------------------------------------
+function extractJson(text: string): string {
+  const trimmed = text.trim();
+  // If it looks like it's wrapped in markdown code fences, extract the content
+  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    return fenceMatch[1].trim();
+  }
+  // If it starts with { or [, assume it's raw JSON
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return trimmed;
+  }
+  // Try to find JSON object boundaries
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+  return trimmed;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,13 +208,109 @@ ${numbered}
 Respond with valid JSON: {"translatedLyrics": "...", "culturalContext": "..."}`;
 }
 
+// JSON schema used for all translation/detection calls (new SDK format)
+const TRANSLATION_SCHEMA = {
+  type: 'OBJECT' as const,
+  properties: {
+    translatedLyrics: {
+      type: 'STRING' as const,
+      description: 'Complete translated lyrics — every line must be included',
+    },
+    culturalContext: {
+      type: 'STRING' as const,
+      description: 'Cultural notes explaining idioms, code-switching, proverbs, and references',
+    },
+  },
+  required: ['translatedLyrics'],
+};
+
+const MERGE_SCHEMA = {
+  type: 'OBJECT' as const,
+  properties: {
+    translatedLyrics: { type: 'STRING' as const },
+    culturalContext: { type: 'STRING' as const },
+  },
+  required: ['translatedLyrics', 'culturalContext'],
+};
+
+const LANGUAGE_DETECT_SCHEMA = {
+  type: 'OBJECT' as const,
+  properties: {
+    languageCode: {
+      type: 'STRING' as const,
+      description: 'ISO language code from the recognized list',
+    },
+    confidence: {
+      type: 'NUMBER' as const,
+      description: 'Confidence score between 0.0 and 1.0',
+    },
+  },
+  required: ['languageCode', 'confidence'],
+};
+
+const LANGUAGE_DETECT_PROMPT_SCHEMA = {
+  type: 'OBJECT' as const,
+  properties: {
+    languageCode: {
+      type: 'STRING' as const,
+      description: 'Primary language code',
+    },
+    languageName: {
+      type: 'STRING' as const,
+      description: 'Human readable language name',
+    },
+    confidence: {
+      type: 'STRING' as const,
+      description: 'Confidence value: high, medium, or low',
+    },
+  },
+  required: ['languageCode', 'languageName', 'confidence'],
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GoogleGenAI = any;
+
 export class GeminiProvider implements TranslationProvider {
   public readonly name = 'gemini';
 
-  private readonly genAI: GoogleGenerativeAI;
+  private ai: GoogleGenAI | null = null;
 
-  constructor() {
-    this.genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+  private async getAi(): Promise<GoogleGenAI> {
+    if (!this.ai) {
+      const { GoogleGenAI } = await import('@google/genai');
+      this.ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
+    }
+    return this.ai;
+  }
+
+  // Try models in fallback chain: primary → fallback1 → fallback2
+  // Each model gets up to 2 retry attempts before moving to the next
+  private async generateWithFallback(
+    contents: string,
+    config: Record<string, unknown>,
+  ): Promise<{ text: string; usageMetadata?: any; model: string }> {
+    const ai = await this.getAi();
+
+    for (const model of MODEL_CHAIN) {
+      try {
+        const result = await withExponentialBackoff(async () =>
+          ai.models.generateContent({ model, contents, config }),
+        );
+        return {
+          text: result.text ?? '',
+          usageMetadata: result.usageMetadata,
+          model,
+        };
+      } catch (err) {
+        if (isUnavailableError(err) && model !== MODEL_CHAIN[MODEL_CHAIN.length - 1]) {
+          logger.warn({ failedModel: model, nextModel: MODEL_CHAIN[MODEL_CHAIN.indexOf(model) + 1] }, 'Model unavailable, falling back');
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw new Error('All Gemini models are currently unavailable (503). Please try again later.');
   }
 
   async translate(params: TranslateParams): Promise<TranslationResult> {
@@ -203,44 +340,26 @@ export class GeminiProvider implements TranslationProvider {
     targetLang: string,
     promptVersion: string,
   ): Promise<TranslationResult> {
-    const model = this.genAI.getGenerativeModel({
-      model: MODEL_NAME,
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            translatedLyrics: {
-              type: SchemaType.STRING,
-              description: 'Complete translated lyrics — every line must be included',
-            },
-            culturalContext: {
-              type: SchemaType.STRING,
-              description:
-                'Cultural notes explaining idioms, code-switching, proverbs, and references',
-            },
-          },
-          required: ['translatedLyrics'],
-        },
-        maxOutputTokens: 16384,
-      },
-    });
-
     const prompt = buildTranslationPrompt(artist, title, lyrics, sourceLang, targetLang);
 
-    const geminiResult = await withExponentialBackoff(() => model.generateContent(prompt));
-    const response = geminiResult.response;
-    const rawText = response.text();
+    const geminiResult = await this.generateWithFallback(prompt, {
+      responseMimeType: 'application/json',
+      responseSchema: TRANSLATION_SCHEMA,
+      maxOutputTokens: 16384,
+      thinkingConfig: { thinkingBudget: 0 },
+    });
+
+    const rawText = geminiResult.text;
 
     let parsed: { translatedLyrics: string; culturalContext?: string };
     try {
-      parsed = JSON.parse(rawText) as typeof parsed;
+      parsed = JSON.parse(extractJson(rawText)) as typeof parsed;
     } catch {
       throw new Error(`Gemini returned invalid JSON for translation: ${rawText.slice(0, 300)}`);
     }
 
-    const tokensInput = response.usageMetadata?.promptTokenCount ?? 0;
-    const tokensOutput = response.usageMetadata?.candidatesTokenCount ?? 0;
+    const tokensInput = geminiResult.usageMetadata?.promptTokenCount ?? 0;
+    const tokensOutput = geminiResult.usageMetadata?.candidatesTokenCount ?? 0;
 
     return {
       translatedLyrics: parsed.translatedLyrics,
@@ -248,7 +367,7 @@ export class GeminiProvider implements TranslationProvider {
       tokensInput,
       tokensOutput,
       tokensUsed: tokensInput + tokensOutput,
-      model: MODEL_NAME,
+      model: geminiResult.model,
       promptVersion,
     };
   }
@@ -288,29 +407,19 @@ export class GeminiProvider implements TranslationProvider {
     // For cultural context, try to merge via a lightweight API call
     let culturalContext: string | undefined;
     try {
-      const mergeModel = this.genAI.getGenerativeModel({
-        model: MODEL_NAME,
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: SchemaType.OBJECT,
-            properties: {
-              translatedLyrics: { type: SchemaType.STRING },
-              culturalContext: { type: SchemaType.STRING },
-            },
-            required: ['translatedLyrics', 'culturalContext'],
-          },
-          maxOutputTokens: 16384,
-        },
+      const mergePrompt = buildChunkMergePrompt(translatedChunks, sourceLang, targetLang);
+      const mergeResult = await this.generateWithFallback(mergePrompt, {
+        responseMimeType: 'application/json',
+        responseSchema: MERGE_SCHEMA,
+        maxOutputTokens: 16384,
+        thinkingConfig: { thinkingBudget: 0 },
       });
 
-      const mergePrompt = buildChunkMergePrompt(translatedChunks, sourceLang, targetLang);
-      const mergeResult = await withExponentialBackoff(() => mergeModel.generateContent(mergePrompt));
-      const mergeRaw = mergeResult.response.text();
-      const mergeParsed = JSON.parse(mergeRaw) as { translatedLyrics: string; culturalContext: string };
+      const mergeRaw = mergeResult.text;
+      const mergeParsed = JSON.parse(extractJson(mergeRaw)) as { translatedLyrics: string; culturalContext: string };
 
-      totalTokensInput += mergeResult.response.usageMetadata?.promptTokenCount ?? 0;
-      totalTokensOutput += mergeResult.response.usageMetadata?.candidatesTokenCount ?? 0;
+      totalTokensInput += mergeResult.usageMetadata?.promptTokenCount ?? 0;
+      totalTokensOutput += mergeResult.usageMetadata?.candidatesTokenCount ?? 0;
 
       return {
         translatedLyrics: mergeParsed.translatedLyrics,
@@ -318,7 +427,7 @@ export class GeminiProvider implements TranslationProvider {
         tokensInput: totalTokensInput,
         tokensOutput: totalTokensOutput,
         tokensUsed: totalTokensInput + totalTokensOutput,
-        model: MODEL_NAME,
+        model: mergeResult.model,
         promptVersion,
       };
     } catch (mergeErr) {
@@ -330,58 +439,42 @@ export class GeminiProvider implements TranslationProvider {
         tokensInput: totalTokensInput,
         tokensOutput: totalTokensOutput,
         tokensUsed: totalTokensInput + totalTokensOutput,
-        model: MODEL_NAME,
+        model: PRIMARY_MODEL,
         promptVersion,
       };
     }
   }
 
   async detectLanguage(lyrics: string): Promise<LanguageDetectionResult> {
-    const model = this.genAI.getGenerativeModel({
-      model: MODEL_NAME,
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            languageCode: {
-              type: SchemaType.STRING,
-              description: 'ISO language code from the recognized list',
-            },
-            confidence: {
-              type: SchemaType.NUMBER,
-              description: 'Confidence score between 0.0 and 1.0',
-            },
-          },
-          required: ['languageCode', 'confidence'],
-        },
-        maxOutputTokens: 256,
-      },
+    const prompt = buildDetectLanguagePrompt(lyrics);
+
+    const geminiResult = await this.generateWithFallback(prompt, {
+      responseMimeType: 'application/json',
+      responseSchema: LANGUAGE_DETECT_SCHEMA,
+      maxOutputTokens: 256,
+      thinkingConfig: { thinkingBudget: 0 },
     });
 
-    const prompt = buildDetectLanguagePrompt(lyrics);
-    const geminiResult = await withExponentialBackoff(() => model.generateContent(prompt));
-    const response = geminiResult.response;
-    const rawText = response.text();
+    const rawText = geminiResult.text;
 
     let parsed: { languageCode: string; confidence: number };
     try {
-      parsed = JSON.parse(rawText) as typeof parsed;
+      parsed = JSON.parse(extractJson(rawText)) as typeof parsed;
     } catch {
       throw new Error(
         `Gemini returned invalid JSON for language detection: ${rawText.slice(0, 300)}`,
       );
     }
 
-    const tokensInput = response.usageMetadata?.promptTokenCount ?? 0;
-    const tokensOutput = response.usageMetadata?.candidatesTokenCount ?? 0;
+    const tokensInput = geminiResult.usageMetadata?.promptTokenCount ?? 0;
+    const tokensOutput = geminiResult.usageMetadata?.candidatesTokenCount ?? 0;
 
     return {
       languageCode: parsed.languageCode,
       confidence: Math.min(1, Math.max(0, parsed.confidence)),
       tokensInput,
       tokensOutput,
-      model: MODEL_NAME,
+      model: geminiResult.model,
     };
   }
 
@@ -393,39 +486,18 @@ export class GeminiProvider implements TranslationProvider {
     tokensOutput: number;
     model: string;
   }> {
-    const model = this.genAI.getGenerativeModel({
-      model: MODEL_NAME,
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: SchemaType.OBJECT,
-          properties: {
-            languageCode: {
-              type: SchemaType.STRING,
-              description: 'Primary language code',
-            },
-            languageName: {
-              type: SchemaType.STRING,
-              description: 'Human readable language name',
-            },
-            confidence: {
-              type: SchemaType.STRING,
-              description: "Confidence value: high, medium, or low",
-            },
-          },
-          required: ['languageCode', 'languageName', 'confidence'],
-        },
-        maxOutputTokens: 256,
-      },
+    const geminiResult = await this.generateWithFallback(prompt, {
+      responseMimeType: 'application/json',
+      responseSchema: LANGUAGE_DETECT_PROMPT_SCHEMA,
+      maxOutputTokens: 256,
+      thinkingConfig: { thinkingBudget: 0 },
     });
 
-    const geminiResult = await withExponentialBackoff(() => model.generateContent(prompt));
-    const response = geminiResult.response;
-    const rawText = response.text();
+    const rawText = geminiResult.text;
 
     let parsed: { languageCode: string; languageName: string; confidence: string };
     try {
-      parsed = JSON.parse(rawText) as typeof parsed;
+      parsed = JSON.parse(extractJson(rawText)) as typeof parsed;
     } catch {
       throw new Error(
         `Gemini returned invalid JSON for language detection prompt: ${rawText.slice(0, 300)}`,
@@ -438,8 +510,8 @@ export class GeminiProvider implements TranslationProvider {
         ? normalizedConfidence
         : 'low';
 
-    const tokensInput = response.usageMetadata?.promptTokenCount ?? 0;
-    const tokensOutput = response.usageMetadata?.candidatesTokenCount ?? 0;
+    const tokensInput = geminiResult.usageMetadata?.promptTokenCount ?? 0;
+    const tokensOutput = geminiResult.usageMetadata?.candidatesTokenCount ?? 0;
 
     return {
       languageCode: String(parsed.languageCode).trim(),
@@ -447,7 +519,7 @@ export class GeminiProvider implements TranslationProvider {
       confidence,
       tokensInput,
       tokensOutput,
-      model: MODEL_NAME,
+      model: geminiResult.model,
     };
   }
 }

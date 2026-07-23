@@ -6,7 +6,8 @@ import { prisma } from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
 import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
-import { estimateCostUsd } from '../services/providers/geminiProvider';
+import { estimateCostUsd, CURRENT_PROMPT_VERSION } from '../services/providers/geminiProvider';
+import { logger } from '../lib/logger';
 import {
   checkDailyBudget,
   checkUserRateLimit,
@@ -145,7 +146,8 @@ const validate = (req: Request, res: Response, next: NextFunction) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/translations/request
-// Authenticated. Returns existing approved translation or enqueues a new job.
+// Authenticated. Returns existing approved translation, enqueues a new job,
+// or processes inline if workers appear unavailable.
 // ---------------------------------------------------------------------------
 translationsRouter.post(
   '/translations/request',
@@ -189,17 +191,89 @@ translationsRouter.post(
         );
       }
 
-      const outcome = await requestTranslation({ songId, userId, sourceLang, targetLang });
-
-      if (outcome.status === 'existing') {
-        return res.status(200).json({ status: 'existing', translation: outcome.translation });
+      // Check for any existing translation (not just APPROVED — also reuse PENDING)
+      const existingApproved = await prisma.translation.findFirst({
+        where: { songId, sourceLang, targetLang, status: 'APPROVED' },
+      });
+      if (existingApproved) {
+        return res.status(200).json({ status: 'existing', translation: existingApproved });
       }
 
-      return res.status(202).json({
-        status: 'queued',
-        jobId: outcome.jobId,
-        rateLimit: { remaining: rateLimit.remaining, resetAt: rateLimit.resetAt },
+      // Check for a recent PENDING translation (user already requested, still processing)
+      const recentPending = await prisma.translation.findFirst({
+        where: { songId, sourceLang, targetLang, status: 'PENDING' },
+        orderBy: { updatedAt: 'desc' },
       });
+      if (recentPending) {
+        // If it has translatedLyrics, it's done — just needs approval
+        if (recentPending.translatedLyrics) {
+          const approved = await prisma.translation.update({
+            where: { id: recentPending.id },
+            data: { status: 'APPROVED' },
+          });
+          return res.status(200).json({ status: 'existing', translation: approved });
+        }
+        // Still processing — return the pending ID so frontend can poll
+        return res.status(202).json({
+          status: 'queued',
+          jobId: `pending:${recentPending.id}`,
+          rateLimit: { remaining: rateLimit.remaining, resetAt: rateLimit.resetAt },
+        });
+      }
+
+      // INLINE PROCESSING: Queue is unreliable (Redis ENOTFOUND), always process directly
+      logger.info({ songId, userId, targetLang }, 'Processing translation inline');
+
+      try {
+        const { processTranslationJob } = await import('../jobs/translationJob.js');
+        const song = await prisma.song.findUnique({
+          where: { id: songId },
+          include: {
+            artist: { select: { name: true } },
+            lyrics: { orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+        });
+
+        if (!song || !song.lyrics[0]?.content) {
+          return next(new ApiError('Song not found or has no lyrics', 'NOT_FOUND', 404));
+        }
+
+        const inlineJob = {
+          id: `inline-${Date.now()}`,
+          data: { songId, userId, sourceLang, targetLang, promptVersion: CURRENT_PROMPT_VERSION },
+          attemptsMade: 0,
+          updateProgress: async () => {},
+        };
+
+        await processTranslationJob(inlineJob as any);
+
+        // Fetch the saved translation
+        const translation = await prisma.translation.findFirst({
+          where: { songId, userId, sourceLang, targetLang },
+          orderBy: { updatedAt: 'desc' },
+        });
+
+        if (translation) {
+          // Auto-approve inline translations
+          const approved = await prisma.translation.update({
+            where: { id: translation.id },
+            data: { status: 'APPROVED' },
+          });
+          return res.status(200).json({ status: 'completed', translation: approved });
+        }
+      } catch (inlineErr: any) {
+        logger.error({ err: inlineErr, songId }, 'Inline translation failed');
+        return next(
+          new ApiError(
+            `Translation failed: ${inlineErr.message || 'Unknown error'}. Please try again.`,
+            'TRANSLATION_FAILED',
+            500,
+          ),
+        );
+      }
+
+      // Should not reach here, but just in case
+      return next(new ApiError('Translation completed but no result found', 'TRANSLATION_FAILED', 500));
     } catch (err) {
       const e = err as Error & { code?: string; httpStatus?: number };
       if (e.code === 'NOT_FOUND') {
@@ -247,6 +321,154 @@ translationsRouter.get(
       });
     } catch (err) {
       return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/translations/health
+// Public. Checks if Gemini API is reachable and workers are responsive.
+// MUST be before /translations/:songId to avoid "health" being matched as songId.
+// ---------------------------------------------------------------------------
+translationsRouter.get(
+  '/translations/health',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const startTime = Date.now();
+      const results: Record<string, any> = {};
+
+      // 1. Test Gemini API connectivity
+      try {
+        const provider = getActiveProvider();
+        const testResult = await provider.detectLanguage('Hello world');
+        results.gemini = {
+          status: 'ok',
+          model: testResult.model,
+          latencyMs: Date.now() - startTime,
+          tokensUsed: testResult.tokensInput + testResult.tokensOutput,
+        };
+      } catch (err: any) {
+        results.gemini = {
+          status: 'error',
+          error: err.message?.substring(0, 200),
+          latencyMs: Date.now() - startTime,
+        };
+      }
+
+      // 2. Check queue health
+      try {
+        const counts = await translationQueue.getJobCounts(
+          'waiting', 'active', 'completed', 'failed',
+        );
+        results.queue = {
+          status: 'ok',
+          waiting: counts.waiting,
+          active: counts.active,
+          completed: counts.completed,
+          failed: counts.failed,
+        };
+      } catch (err: any) {
+        results.queue = {
+          status: 'error',
+          error: err.message?.substring(0, 200),
+        };
+      }
+
+      // 3. Check recent translations
+      try {
+        const recentCount = await prisma.translation.count({
+          where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+        });
+        const pendingCount = await prisma.translation.count({
+          where: { status: 'PENDING' },
+        });
+        results.translations = {
+          status: 'ok',
+          last24h: recentCount,
+          pending: pendingCount,
+        };
+      } catch (err: any) {
+        results.translations = { status: 'error', error: err.message?.substring(0, 200) };
+      }
+
+      const allHealthy = Object.values(results).every((r: any) => r.status === 'ok');
+
+      return res.status(allHealthy ? 200 : 207).json({
+        healthy: allHealthy,
+        results,
+        totalLatencyMs: Date.now() - startTime,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/translations/test
+// Authenticated. Quick test: translates a short sample and returns result.
+// MUST be before /translations/:songId to avoid "test" being matched as songId.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/test',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const startTime = Date.now();
+    try {
+      const provider = getActiveProvider();
+
+      // Quick language detection test
+      const detectResult = await provider.detectLanguage(
+        'Wahala no dey finish my guy e don tire',
+      );
+
+      const detectLatency = Date.now() - startTime;
+
+      // Quick translation test (short text)
+      const translateStart = Date.now();
+      // Direct provider call for quick test
+      const translateResult = await provider.translate({
+        artist: 'Test',
+        title: 'SDK Test',
+        lyrics: 'Wahala no dey finish\nMy guy e don tire\nE say e wan japa',
+        sourceLang: 'pcm',
+        targetLang: 'en',
+        promptVersion: CURRENT_PROMPT_VERSION,
+      });
+
+      const translateLatency = Date.now() - translateStart;
+
+      return res.status(200).json({
+        success: true,
+        latencyMs: Date.now() - startTime,
+        detection: {
+          language: detectResult.languageCode,
+          confidence: detectResult.confidence,
+          latencyMs: detectLatency,
+          model: detectResult.model,
+        },
+        translation: {
+          text: translateResult.translatedLyrics,
+          culturalContext: translateResult.culturalContext,
+          latencyMs: translateLatency,
+          tokensUsed: translateResult.tokensUsed,
+          model: translateResult.model,
+        },
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err.message?.substring(0, 300),
+        provider: getActiveProvider().name,
+        hint: err.message?.includes('quota')
+          ? 'Gemini quota/billing issue. Check credits at aistudio.google.com'
+          : err.message?.includes('404')
+            ? 'Gemini model not found. Check API key at aistudio.google.com/apikey'
+            : err.message?.includes('503')
+              ? 'Gemini temporarily unavailable. Try again in a moment.'
+              : undefined,
+        latencyMs: Date.now() - startTime,
+      });
     }
   },
 );

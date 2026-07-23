@@ -45,7 +45,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
         targetLang,
         aiModel: null,
         promptVersion,
-        status: 'PENDING',
+        status: 'APPROVED',
       },
       update: {
         originalLyrics: lyric?.content ?? '',
@@ -53,6 +53,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
         culturalContext: fallbackMessage,
         aiModel: null,
         promptVersion,
+        status: 'APPROVED',
         updatedAt: new Date(),
       },
     });
@@ -102,6 +103,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   await job.updateProgress({ stage: 'saving', percent: 80 });
 
   // Upsert so retried jobs overwrite rather than violate the unique constraint
+  // Auto-approve: translations are immediately available to all users
   await prisma.translation.upsert({
     where: {
       songId_userId_sourceLang_targetLang: { songId, userId, sourceLang, targetLang },
@@ -116,13 +118,14 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
       targetLang,
       aiModel: result.model,
       promptVersion: result.promptVersion,
-      status: 'PENDING',
+      status: 'APPROVED',
     },
     update: {
       translatedLyrics: result.translatedLyrics,
       culturalContext: result.culturalContext,
       aiModel: result.model,
       promptVersion: result.promptVersion,
+      status: 'APPROVED',
       updatedAt: new Date(),
     },
   });
