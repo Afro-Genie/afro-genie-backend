@@ -1,5 +1,9 @@
 import 'dotenv/config';
-import { defineConfig, env } from 'prisma/config';
+import { defineConfig } from 'prisma/config';
+
+const rawUrl = process.env.DATABASE_URL || '';
+const parsedUrl = new URL(rawUrl);
+parsedUrl.searchParams.delete('channel_binding');
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',
@@ -8,6 +12,6 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts'
   },
   datasource: {
-    url: env('DATABASE_URL')
+    url: parsedUrl.toString()
   }
 });
