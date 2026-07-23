@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "prisma migrate deploy && prisma generate && node dist/index.js"
+startCommand = "set -e && prisma migrate deploy 2>&1 && prisma generate 2>&1 && node dist/index.js 2>&1"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"

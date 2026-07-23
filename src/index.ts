@@ -109,11 +109,25 @@ async function checkDatabasePopulation(): Promise<void> {
 
 const server = app.listen(env.PORT, async () => {
   logger.info({ port: env.PORT }, 'Server started');
-  await invalidateStaleCaches();
-  await checkDatabasePopulation();
+
+  try {
+    await invalidateStaleCaches();
+  } catch (err) {
+    logger.warn({ err }, 'Cache invalidation failed on startup — non-fatal');
+  }
+
+  try {
+    await checkDatabasePopulation();
+  } catch (err) {
+    logger.error({ err }, 'Database population check failed on startup');
+  }
 
   if (env.ENABLE_WORKERS) {
-    await scheduleSyncJobs();
+    try {
+      await scheduleSyncJobs();
+    } catch (err) {
+      logger.error({ err }, 'Failed to schedule sync jobs');
+    }
   }
 
   // Pre-warm homepage cache in background so first user request hits Redis
@@ -149,3 +163,12 @@ const gracefulShutdown = async (signal: string) => {
 
 process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error({ reason }, 'Unhandled Promise Rejection');
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error({ err: error }, 'Uncaught Exception');
+  process.exit(1);
+});

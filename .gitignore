@@ -16,6 +16,10 @@ dist
 !.env.example
 !.env*.example
 
+# Also ignore env files in subdirectories
+**/.env
+**/.env.*
+
 # Editor/OS artifacts
 .vscode/
 .idea/
