@@ -174,6 +174,23 @@ usersRouter.post(
   },
 );
 
+// DELETE /api/users/me — self-service account deletion
+usersRouter.delete(
+  '/users/me',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req.user as any).id;
+
+      await prisma.user.delete({ where: { id: userId } });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 // DELETE /api/users/favorites/:id
 usersRouter.delete(
   '/users/favorites/:id',
@@ -190,6 +207,40 @@ usersRouter.delete(
       });
 
       res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// PUT /api/users/me — update own profile
+usersRouter.put(
+  '/users/me',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req.user as any).id;
+      const { displayName, photoUrl } = req.body;
+
+      const data: Record<string, any> = {};
+      if (displayName !== undefined) data.displayName = displayName;
+      if (photoUrl !== undefined) data.photoUrl = photoUrl;
+
+      const user = await prisma.user.update({
+        where: { id: userId },
+        data,
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          photoUrl: true,
+          role: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      res.status(200).json(user);
     } catch (error) {
       next(error);
     }

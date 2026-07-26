@@ -1,3 +1,4 @@
+import path from 'path';
 import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
@@ -26,6 +27,7 @@ import { songsRouter } from './routes/songs';
 import { spotifyRouter } from './routes/spotify';
 import { translationsRouter } from './routes/translations';
 import { usersRouter } from './routes/users';
+import { uploadRouter } from './routes/upload';
 import { lyricsRouter } from './routes/lyrics';
 import { env } from './lib/env';
 import { logger } from './lib/logger';
@@ -73,6 +75,7 @@ app.use(
 app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
 app.use(passport.initialize());
 app.use('/api', apiLimiter);
 
@@ -87,6 +90,7 @@ app.use('/api', songsRouter);
 app.use('/api', artistPortalRouter);
 app.use('/api', artistsRouter);
 app.use('/api', usersRouter);
+app.use('/api', uploadRouter);
 app.use('/api', lyricsRouter);
 app.use('/api/admin', adminSongsRouter);
 app.use('/api/admin', adminSeederRouter);
