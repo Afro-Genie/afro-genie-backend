@@ -43,7 +43,12 @@
     "backfill:artists:dry": "tsx scripts/backfill-artists.ts --dry-run",
     "backfill:artists:priority": "tsx scripts/backfill-artists.ts --priority",
     "backfill:artists:priority:dry": "tsx scripts/backfill-artists.ts --priority --dry-run",
-    "seed:full": "tsx scripts/scheduled-seed.ts"
+    "seed:full": "tsx scripts/scheduled-seed.ts",
+    "seed:artist-portal": "tsx scripts/seed-artist-portal.ts",
+    "test:integration": "tsx src/__tests__/integration/artist-management-checklist.test.ts",
+    "test:regression": "tsx src/__tests__/integration/regression-checklist.test.ts",
+    "test:code-verify": "tsx src/__tests__/integration/code-verification.test.ts",
+    "test:phase7": "tsx src/__tests__/integration/artist-management-checklist.test.ts && tsx src/__tests__/integration/regression-checklist.test.ts && tsx src/__tests__/integration/code-verification.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.12.0",

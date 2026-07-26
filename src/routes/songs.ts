@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import { requireRole, authenticate } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
+import { prisma } from '../lib/prisma';
 import {
   createSong,
   getSongById,
@@ -82,6 +83,16 @@ songsRouter.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const song = await getSongById(req.params.id);
+
+      // Record a SongPlay event (non-blocking, non-fatal)
+      const songId = (song as any).id ?? req.params.id;
+      const userId = (req as any).user?.id ?? null;
+      prisma.songPlay.create({
+        data: { songId, userId },
+      }).catch(() => {
+        // Non-fatal: don't fail the song detail request if play tracking fails
+      });
+
       res.status(200).json(song);
     } catch (error) {
       next(error);

@@ -29,7 +29,7 @@ if (sharedConnection) {
   });
 }
 
-const createQueue = (name: string) => {
+export const createQueue = (name: string) => {
   if (redisDisabled) {
     return {
       add: async () => ({ id: undefined }),

@@ -93,6 +93,7 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
   const languageCode = (filters.language ?? filters.lang)?.trim().toLowerCase();
 
   return {
+    artist: { suspended: false },
     ...(filters.artistId ? { artistId: filters.artistId } : {}),
     ...(filters.search
       ? {
@@ -178,7 +179,7 @@ const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
 
   try {
     const rows = await prisma.song.findMany({
-      where: { id: { in: songIds }, softDeleted: false },
+      where: { id: { in: songIds }, softDeleted: false, artist: { suspended: false } },
       select: { id: true },
     });
     return new Set(rows.map((row) => row.id));
