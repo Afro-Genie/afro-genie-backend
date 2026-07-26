@@ -3,13 +3,14 @@ import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { searchSpotify } from './spotifyService';
 import { genreService } from './genreService';
+import type { Prisma } from '@prisma/client';
 import { generateGradientImage } from './imageService';
 
 const AFROBEAT_GENRES = [
   'afrobeats', 'afrobeat', 'afropop', 'afro fusion', 'afropiano',
-  'amapiano', 'nigerian', 'nigerian pop', 'african', 'nigeria',
-  'highlife', 'banku', 'bongo flava', 'kwaito', 'gqom',
-  'south african', 'kenyan', 'ghanaian', 'tanzania', 'rwanda',
+  'amapiano', 'highlife', 'banku', 'bongo flava', 'kwaito', 'gqom',
+  'makossa', 'gengetone', 'naija', 'afro pop', 'afro r&b',
+  'afro soul', 'afrohiphop', 'afro hip hop', 'hiplife',
 ] as const;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -42,7 +43,7 @@ const MEM_CACHE_TTL_MS = 3600 * 1000;
 class CatalogService {
   async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[]; featuredArtists: any[] }> {
     const enableSpotifyEnrichment = options?.spotifyFallback !== false;
-    const cacheKey = 'catalog:homepage:v18';
+    const cacheKey = 'catalog:homepage:v19';
 
     // 1. Try Redis (fast path)
     try {
@@ -62,21 +63,18 @@ class CatalogService {
     let genres: any[] = [];
     let featuredArtists: any[] = [];
 
+    const songWhere: Prisma.SongWhereInput = {
+      softDeleted: false,
+      artist: { suspended: false },
+      OR: [
+        { release: null },
+        { release: { status: { not: 'SCHEDULED' as const } } },
+      ],
+    };
+
     try {
       const results = await withTimeout(Promise.all([
-        prisma.song.findMany({
-          where: {
-            softDeleted: false,
-            artist: { suspended: false },
-            OR: [
-              { release: null },
-              { release: { status: { not: 'SCHEDULED' } } },
-            ],
-          },
-          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-          orderBy: { views: 'desc' },
-          take: 20,
-        }),
+        // 1. Top artists first
         prisma.artist.findMany({
           where: {
             softDeleted: false,
@@ -115,10 +113,32 @@ class CatalogService {
         }),
       ]), 6000, 'db:homepage');
 
-      dbSongs = results[0];
-      dbArtists = results[1];
-      genres = results[2];
-      featuredArtists = results[3];
+      dbArtists = results[0];
+      genres = results[1];
+      featuredArtists = results[2];
+
+      // 2. Fetch songs from top artists first, then fill with remaining
+      const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
+      const [topArtistSongs, allSongs] = await Promise.all([
+        prisma.song.findMany({
+          where: { ...songWhere, artistId: { in: topArtistIds } },
+          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
+          orderBy: { views: 'desc' },
+          take: 20,
+        }),
+        prisma.song.findMany({
+          where: { ...songWhere, artistId: { notIn: topArtistIds } },
+          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
+          orderBy: { views: 'desc' },
+          take: 20,
+        }),
+      ]);
+
+      // Merge: top artists' songs first, then fill remaining slots
+      dbSongs = topArtistSongs;
+      if (dbSongs.length < 20) {
+        dbSongs = [...dbSongs, ...allSongs].slice(0, 20);
+      }
 
       if (dbSongs.length === 0 || dbArtists.length === 0) {
         logger.warn({ dbSongs: dbSongs.length, dbArtists: dbArtists.length, genres: genres.length }, 'Catalog: DB returned empty results — possible Neon cold start');
@@ -152,11 +172,11 @@ class CatalogService {
       followers: a.followers,
     }));
 
-    // Genre images — use gradient fallbacks immediately (no I/O)
+    // Genre images — use DB imageUrl first, gradient as fallback (no I/O)
     const genreImageObj: Record<string, string> = {};
     const genreNames = genres.slice(0, 10).map((g: any) => g.name);
-    for (const name of genreNames) {
-      genreImageObj[name] = generateGradientImage(name);
+    for (const g of genres.slice(0, 10)) {
+      genreImageObj[g.name] = g.imageUrl || generateGradientImage(g.name);
     }
 
     // Assemble and return result immediately (DB data only)
@@ -211,19 +231,6 @@ class CatalogService {
   }
 
   private async enrichHomepageCache(cacheKey: string): Promise<void> {
-    const dbSongs = await prisma.song.findMany({
-      where: {
-        softDeleted: false,
-        artist: { suspended: false },
-        OR: [
-          { release: null },
-          { release: { status: { not: 'SCHEDULED' } } },
-        ],
-      },
-      include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-      orderBy: { views: 'desc' },
-      take: 20,
-    });
     const dbArtists = await prisma.artist.findMany({
       where: {
         softDeleted: false,
@@ -250,6 +257,34 @@ class CatalogService {
       take: 8,
       orderBy: { popularity: 'desc' },
     });
+
+    // Songs from top artists first, then fill with remaining
+    const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
+    const enrichSongWhere: Prisma.SongWhereInput = {
+      softDeleted: false,
+      artist: { suspended: false },
+      OR: [
+        { release: null },
+        { release: { status: { not: 'SCHEDULED' as const } } },
+      ],
+    };
+    const [topArtistSongs, allSongs] = await Promise.all([
+      prisma.song.findMany({
+        where: { ...enrichSongWhere, artistId: { in: topArtistIds } },
+        include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
+        orderBy: { views: 'desc' },
+        take: 20,
+      }),
+      prisma.song.findMany({
+        where: { ...enrichSongWhere, artistId: { notIn: topArtistIds } },
+        include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
+        orderBy: { views: 'desc' },
+        take: 20,
+      }),
+    ]);
+    const dbSongs = topArtistSongs.length < 20
+      ? [...topArtistSongs, ...allSongs].slice(0, 20)
+      : topArtistSongs;
 
     const artists = dbArtists.map((a) => ({
       id: a.id,
@@ -318,21 +353,39 @@ class CatalogService {
       }
     }
 
-    // Genre images — parallel from Spotify playlists
+    // Genre images — use DB imageUrl first, then Spotify playlist, then gradient
     const genreNames = genres.slice(0, 10).map((g: any) => g.name);
-    const genreImageMap = new Map<string, string>();
-    const genreResults = await Promise.allSettled(
-      genreNames.map(name => genreService.getGenreImage(name))
-    );
-    for (let i = 0; i < genreNames.length; i++) {
-      if (genreResults[i].status === 'fulfilled') {
-        genreImageMap.set(genreNames[i], (genreResults[i] as PromiseFulfilledResult<string>).value);
+    const genreImageObj: Record<string, string> = {};
+
+    // Step 1: Use DB imageUrl where available
+    for (const g of genres.slice(0, 10)) {
+      const dbImage = (g as any).imageUrl;
+      if (dbImage && !dbImage.startsWith('data:')) {
+        genreImageObj[g.name] = dbImage;
       }
     }
 
-    const genreImageObj: Record<string, string> = {};
-    for (const [name, image] of genreImageMap.entries()) {
-      genreImageObj[name] = image;
+    // Step 2: For genres still without an image, try Spotify playlist search
+    const missingGenres = genreNames.filter(name => !genreImageObj[name]);
+    if (missingGenres.length > 0) {
+      const genreResults = await Promise.allSettled(
+        missingGenres.map(name => genreService.getGenreImage(name))
+      );
+      for (let i = 0; i < missingGenres.length; i++) {
+        if (genreResults[i].status === 'fulfilled') {
+          const img = (genreResults[i] as PromiseFulfilledResult<string>).value;
+          if (!img.startsWith('data:')) {
+            genreImageObj[missingGenres[i]] = img;
+          }
+        }
+      }
+    }
+
+    // Step 3: Gradient fallback for any remaining
+    for (const name of genreNames) {
+      if (!genreImageObj[name]) {
+        genreImageObj[name] = generateGradientImage(name);
+      }
     }
 
     const enrichedResult = {
@@ -348,7 +401,7 @@ class CatalogService {
         previewUrl: s.spotifyPreviewUrl || null,
         spotifyId: s.spotifyId || null,
         source: 'DB' as const,
-      })).sort((a, b) => 0).slice(0, 20),
+      })).slice(0, 20),
       artists,
       genres: genres.slice(0, 10).map((g: any) => ({
         id: g.id,

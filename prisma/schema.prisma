@@ -139,6 +139,8 @@ model User {
   topicCommentVotes          TopicCommentVote[]
   artist                     Artist?
   songPlays                  SongPlay[]
+  favorites                  Favorite[]
+  historyEntries             UserHistory[]
 
   @@index([role])
   @@index([lastLoginAt])
@@ -234,6 +236,8 @@ model Song {
   genres              SongGenre[]
   topics              Topic[]
   songPlays           SongPlay[]
+  favoritedBy         Favorite[]
+  viewedBy            UserHistory[]
 
   @@unique([title, artistId])
   @@index([artistId])
@@ -678,18 +682,43 @@ model SongPlay {
 }
 
 model ArtistListenerRegion {
-  id          String   @id @default(cuid())
-  artistId    String
-  date        DateTime
-  country     String
-  city        String
-  listeners   Int      @default(0)
-  plays       Int      @default(0)
-  createdAt   DateTime @default(now())
-  artist      Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  artistId  String
+  date      DateTime
+  country   String
+  city      String
+  listeners Int      @default(0)
+  plays     Int      @default(0)
+  createdAt DateTime @default(now())
+  artist    Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
 
   @@unique([artistId, date, country, city])
   @@index([artistId])
   @@index([date])
   @@index([country])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  songId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, songId])
+  @@index([userId])
+  @@index([songId])
+}
+
+model UserHistory {
+  id       String   @id @default(cuid())
+  userId   String
+  songId   String
+  viewedAt DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([userId, viewedAt(sort: Desc)])
+  @@index([songId])
 }

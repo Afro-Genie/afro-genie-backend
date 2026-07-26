@@ -12,6 +12,7 @@ const COLLECTIONS = {
 } as const;
 
 export type SearchType = 'song' | 'artist' | 'genre' | 'all';
+export type SearchIntent = 'song' | 'artist' | 'genre' | 'mixed';
 
 interface SearchParams {
   q?: string;
@@ -426,6 +427,7 @@ export const searchCatalog = async (input: SearchParams) => {
   const response: {
     query: string;
     type: SearchType;
+    intent: SearchIntent;
     page: number;
     limit: number;
     tookMs: number;
@@ -435,6 +437,7 @@ export const searchCatalog = async (input: SearchParams) => {
   } = {
     query: q === EMPTY_Q ? '' : q,
     type,
+    intent: 'mixed',
     page,
     limit,
     tookMs: 0
@@ -447,6 +450,7 @@ export const searchCatalog = async (input: SearchParams) => {
       page: songs.page,
       hits: songs.hits?.map(mapHit) ?? []
     };
+    response.intent = 'song';
   } else if (type === 'artist') {
     const artists = await runCollectionSearch(COLLECTIONS.artists, artistSearchParams(q, page, limit));
     response.artists = {
@@ -454,6 +458,7 @@ export const searchCatalog = async (input: SearchParams) => {
       page: artists.page,
       hits: artists.hits?.map(mapHit) ?? []
     };
+    response.intent = 'artist';
   } else if (type === 'genre') {
     const genres = await runCollectionSearch(COLLECTIONS.genres, genreSearchParams(q, page, limit));
     response.genres = {
@@ -461,6 +466,7 @@ export const searchCatalog = async (input: SearchParams) => {
       page: genres.page,
       hits: genres.hits?.map(mapHit) ?? []
     };
+    response.intent = 'genre';
   } else {
     const [songs, artists, genres] = await Promise.all([
       runCollectionSearch(COLLECTIONS.songs, songSearchParams(q, page, limit, lang, genre)),
@@ -483,6 +489,21 @@ export const searchCatalog = async (input: SearchParams) => {
       page: genres.page,
       hits: genres.hits?.map(mapHit) ?? []
     };
+
+    // Detect search intent from text match scores
+    const topSongMatch = songs.hits?.[0]?.text_match ?? 0;
+    const topArtistMatch = artists.hits?.[0]?.text_match ?? 0;
+    const topGenreMatch = genres.hits?.[0]?.text_match ?? 0;
+
+    if (topGenreMatch > 0 && topGenreMatch >= topSongMatch && topGenreMatch >= topArtistMatch) {
+      response.intent = 'genre';
+    } else if (topArtistMatch > 0 && topArtistMatch > topSongMatch * 1.5) {
+      response.intent = 'artist';
+    } else if (topSongMatch > 0 && topSongMatch > topArtistMatch * 1.5) {
+      response.intent = 'song';
+    } else {
+      response.intent = 'mixed';
+    }
   }
 
   response.tookMs = Date.now() - start;

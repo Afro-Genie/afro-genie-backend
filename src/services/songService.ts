@@ -457,6 +457,35 @@ const syncGenres = async (songId: string, genres: string[] | undefined) => {
   }
 };
 
+/**
+ * When a song is created without explicit genres, auto-link it to genres
+ * based on the artist's genre tags (Artist.genres String[]).
+ */
+const autoLinkSongToArtistGenres = async (songId: string, artistId: string): Promise<void> => {
+  const existingLinks = await prisma.songGenre.findMany({
+    where: { songId },
+    select: { genreId: true },
+  });
+  if (existingLinks.length > 0) return;
+
+  const artist = await prisma.artist.findUnique({
+    where: { id: artistId },
+    select: { genres: true },
+  });
+  if (!artist || !artist.genres || artist.genres.length === 0) return;
+
+  for (const tag of artist.genres) {
+    const genre = await prisma.genre.findFirst({
+      where: { name: { equals: tag, mode: 'insensitive' } },
+    });
+    if (genre) {
+      await prisma.songGenre.create({
+        data: { songId, genreId: genre.id },
+      });
+    }
+  }
+};
+
 const syncLanguages = async (songId: string, languages: string[] | undefined, primaryLanguage?: string | null) => {
   if (!languages && !primaryLanguage) {
     return;
@@ -517,6 +546,10 @@ export const createSong = async (payload: SongMutationInput) => {
     syncLanguages(created.id, payload.languages, payload.primaryLanguage),
     payload.lyrics ? upsertLyrics(created.id, payload.lyrics) : Promise.resolve(),
   ]);
+
+  if (!payload.genres || payload.genres.length === 0) {
+    await autoLinkSongToArtistGenres(created.id, payload.artistId);
+  }
 
   await lyricsEnrichmentQueue.add(
     'enrichLyrics',
