@@ -36,15 +36,6 @@ export const processAnalyticsRollupJob = async (): Promise<void> => {
   let processed = 0;
 
   for (const artist of artists) {
-    // Sum yesterday's views from Song.viewCount for this artist's songs
-    const viewsAgg = await prisma.song.aggregate({
-      where: {
-        artistId: artist.id,
-        softDeleted: false,
-      },
-      _sum: { views: true },
-    });
-
     // Count TranslationRequest rows created yesterday for this artist's songs
     const translationRequestCount = await prisma.translationRequest.count({
       where: {
@@ -53,40 +44,46 @@ export const processAnalyticsRollupJob = async (): Promise<void> => {
       },
     });
 
-    // Use a portion of total views as "yesterday plays" — in production
-    // you'd diff against stored snapshots. Here we derive a reasonable daily
-    // figure from total views if no daily snapshot exists yet.
     const existingRow = await prisma.artistAnalyticsDaily.findUnique({
       where: { artistId_date: { artistId: artist.id, date: dayStart } },
     });
 
-    // If a row already exists for yesterday (seeded or previously rolled), skip
     if (existingRow) {
       continue;
     }
 
-    // Estimate plays for yesterday: use song count + request count as a proxy
-    const songCount = await prisma.song.count({
-      where: { artistId: artist.id, softDeleted: false },
+    // Real play count for yesterday from SongPlay events
+    const playCount = await prisma.songPlay.count({
+      where: {
+        song: { artistId: artist.id },
+        playedAt: { gte: dayStart, lt: dayEnd },
+      },
     });
 
-    // Simple heuristic: songs * 10-50 random daily plays
-    const estimatedPlays = songCount * (10 + Math.floor(Math.random() * 40));
-    const estimatedUniqueListeners = Math.floor(estimatedPlays * 0.6);
+    // Real unique listeners (distinct userId values, excluding null)
+    const uniqueListenerRows = await prisma.songPlay.groupBy({
+      by: ['userId'],
+      where: {
+        song: { artistId: artist.id },
+        playedAt: { gte: dayStart, lt: dayEnd },
+        userId: { not: null },
+      },
+    });
+    const uniqueListeners = uniqueListenerRows.length;
 
     await prisma.artistAnalyticsDaily.upsert({
       where: { artistId_date: { artistId: artist.id, date: dayStart } },
       create: {
         artistId: artist.id,
         date: dayStart,
-        plays: estimatedPlays,
+        plays: playCount,
         translationViews: translationRequestCount,
-        uniqueListeners: estimatedUniqueListeners,
+        uniqueListeners,
       },
       update: {
-        plays: estimatedPlays,
+        plays: playCount,
         translationViews: translationRequestCount,
-        uniqueListeners: estimatedUniqueListeners,
+        uniqueListeners,
       },
     });
 

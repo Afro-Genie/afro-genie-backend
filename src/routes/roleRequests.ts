@@ -15,8 +15,8 @@ roleRequestsRouter.post(
   '/',
   [
     body('role')
-      .isIn(['ARTIST', 'MODERATOR'])
-      .withMessage('Role must be one of: ARTIST, MODERATOR'),
+      .isIn(['MODERATOR'])
+      .withMessage('Role must be one of: MODERATOR. Artist applications must use the dedicated artist signup flow.'),
     body('fields').isObject().withMessage('Fields object is required'),
     body('notes').optional().isString(),
   ],
@@ -124,6 +124,70 @@ roleRequestsRouter.get(
       }
 
       res.status(200).json(roleRequest);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── GET /roles/pending ──────────────────────────────────────────────────────
+// Check if user has pending/under-review role requests.
+
+roleRequestsRouter.get(
+  '/pending',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+
+      const requests = await prisma.roleRequest.findMany({
+        where: {
+          userId,
+          status: { in: ['PENDING', 'UNDER_REVIEW'] },
+        },
+        select: { id: true, role: true, status: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      res.status(200).json({ requests });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── DELETE /roles/:id ───────────────────────────────────────────────────────
+// Cancel a pending role request.
+
+roleRequestsRouter.delete(
+  '/:id',
+  [param('id').isString().notEmpty().withMessage('Request ID is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+      const { id } = req.params;
+
+      const roleRequest = await prisma.roleRequest.findFirst({
+        where: { id, userId },
+      });
+
+      if (!roleRequest) {
+        throw new ApiError('Role request not found', 'NOT_FOUND', 404);
+      }
+
+      if (roleRequest.status !== 'PENDING' && roleRequest.status !== 'UNDER_REVIEW') {
+        throw new ApiError(
+          `Cannot cancel a request that has already been ${roleRequest.status.toLowerCase()}`,
+          'CONFLICT',
+          409,
+        );
+      }
+
+      await prisma.roleRequest.delete({
+        where: { id },
+      });
+
+      res.status(200).json({ success: true });
     } catch (error) {
       next(error);
     }

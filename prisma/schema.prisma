@@ -138,6 +138,7 @@ model User {
   topicVotes                 TopicVote[]
   topicCommentVotes          TopicCommentVote[]
   artist                     Artist?
+  songPlays                  SongPlay[]
 
   @@index([role])
   @@index([lastLoginAt])
@@ -171,6 +172,7 @@ model Artist {
   topics          Topic[]
   releases        Release[]
   analytics       ArtistAnalyticsDaily[]
+  listenerRegions ArtistListenerRegion[]
   notifications   ArtistNotification[]
 
   @@index([verified])
@@ -231,6 +233,7 @@ model Song {
   translationRequests TranslationRequest[]
   genres              SongGenre[]
   topics              Topic[]
+  songPlays           SongPlay[]
 
   @@unique([title, artistId])
   @@index([artistId])
@@ -575,6 +578,8 @@ model ArtistApplication {
   genre            String
   bio              String
   socialLinks      Json
+  imageUrl         String?
+  spotifyArtistId  String?
   status           ArtistApplicationStatus @default(PENDING)
   rejectionReason  String?
   reviewedByUserId String?
@@ -654,4 +659,37 @@ model ArtistNotification {
   @@index([artistId])
   @@index([isRead])
   @@index([createdAt])
+}
+
+model SongPlay {
+  id       String   @id @default(cuid())
+  songId   String
+  playedAt DateTime @default(now())
+  userId   String?
+  country  String?
+  city     String?
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([songId, playedAt])
+  @@index([playedAt])
+  @@index([userId])
+  @@index([country])
+}
+
+model ArtistListenerRegion {
+  id          String   @id @default(cuid())
+  artistId    String
+  date        DateTime
+  country     String
+  city        String
+  listeners   Int      @default(0)
+  plays       Int      @default(0)
+  createdAt   DateTime @default(now())
+  artist      Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  @@unique([artistId, date, country, city])
+  @@index([artistId])
+  @@index([date])
+  @@index([country])
 }

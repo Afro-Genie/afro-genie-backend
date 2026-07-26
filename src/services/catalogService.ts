@@ -40,9 +40,9 @@ let memCache: { data: any; expiresAt: number; cacheKey: string } | null = null;
 const MEM_CACHE_TTL_MS = 3600 * 1000;
 
 class CatalogService {
-  async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[] }> {
+  async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[]; featuredArtists: any[] }> {
     const enableSpotifyEnrichment = options?.spotifyFallback !== false;
-    const cacheKey = 'catalog:homepage:v17';
+    const cacheKey = 'catalog:homepage:v18';
 
     // 1. Try Redis (fast path)
     try {
@@ -60,11 +60,19 @@ class CatalogService {
     let dbSongs: any[] = [];
     let dbArtists: any[] = [];
     let genres: any[] = [];
+    let featuredArtists: any[] = [];
 
     try {
       const results = await withTimeout(Promise.all([
         prisma.song.findMany({
-          where: { softDeleted: false },
+          where: {
+            softDeleted: false,
+            artist: { suspended: false },
+            OR: [
+              { release: null },
+              { release: { status: { not: 'SCHEDULED' } } },
+            ],
+          },
           include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
           orderBy: { views: 'desc' },
           take: 20,
@@ -89,11 +97,28 @@ class CatalogService {
           orderBy: { popularity: 'desc' },
         }),
         prisma.genre.findMany({ take: 10 }),
+        prisma.artist.findMany({
+          where: {
+            isFeatured: true,
+            suspended: false,
+            softDeleted: false,
+          },
+          select: {
+            id: true,
+            name: true,
+            imageUrl: true,
+            genres: true,
+            verified: true,
+          },
+          take: 8,
+          orderBy: { popularity: 'desc' },
+        }),
       ]), 6000, 'db:homepage');
 
       dbSongs = results[0];
       dbArtists = results[1];
       genres = results[2];
+      featuredArtists = results[3];
 
       if (dbSongs.length === 0 || dbArtists.length === 0) {
         logger.warn({ dbSongs: dbSongs.length, dbArtists: dbArtists.length, genres: genres.length }, 'Catalog: DB returned empty results — possible Neon cold start');
@@ -156,6 +181,13 @@ class CatalogService {
         name: g.name,
         image: genreImageObj[g.name] || generateGradientImage(g.name),
       })),
+      featuredArtists: featuredArtists.map((a) => ({
+        id: a.id,
+        name: a.name,
+        image: a.imageUrl || '',
+        genres: a.genres || [],
+        verified: a.verified,
+      })),
     };
 
     const hasRealData = result.songs.length > 0 && result.genres.length > 0;
@@ -180,7 +212,14 @@ class CatalogService {
 
   private async enrichHomepageCache(cacheKey: string): Promise<void> {
     const dbSongs = await prisma.song.findMany({
-      where: { softDeleted: false },
+      where: {
+        softDeleted: false,
+        artist: { suspended: false },
+        OR: [
+          { release: null },
+          { release: { status: { not: 'SCHEDULED' } } },
+        ],
+      },
       include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
       orderBy: { views: 'desc' },
       take: 20,
@@ -199,6 +238,18 @@ class CatalogService {
       orderBy: { popularity: 'desc' },
     });
     const genres = await prisma.genre.findMany({ take: 10 });
+    const dbFeaturedArtists = await prisma.artist.findMany({
+      where: {
+        isFeatured: true,
+        suspended: false,
+        softDeleted: false,
+      },
+      select: {
+        id: true, name: true, imageUrl: true, genres: true, verified: true,
+      },
+      take: 8,
+      orderBy: { popularity: 'desc' },
+    });
 
     const artists = dbArtists.map((a) => ({
       id: a.id,
@@ -304,6 +355,13 @@ class CatalogService {
         name: g.name,
         image: genreImageObj[g.name] || generateGradientImage(g.name),
       })),
+      featuredArtists: dbFeaturedArtists.map((a) => ({
+        id: a.id,
+        name: a.name,
+        image: a.imageUrl || '',
+        genres: a.genres || [],
+        verified: a.verified,
+      })),
     };
 
     try {
@@ -324,7 +382,14 @@ class CatalogService {
     sortBy?: string;
     sortOrder?: string;
   }): Promise<{ songs: any[]; total: number }> {
-    const where: any = { softDeleted: false, artist: { suspended: false } };
+    const where: any = {
+      softDeleted: false,
+      artist: { suspended: false },
+      OR: [
+        { release: null },
+        { release: { status: { not: 'SCHEDULED' } } },
+      ],
+    };
 
     if (params.language && params.language !== 'all') {
       where.songLanguages = { some: { language: { code: params.language } } };

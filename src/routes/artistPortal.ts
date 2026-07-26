@@ -27,6 +27,7 @@ artistPortalRouter.post(
     body('bio').isString().trim().notEmpty().withMessage('Bio is required'),
     body('socialLinks').optional().isObject(),
     body('spotifyArtistId').optional({ nullable: true }).isString(),
+    body('imageUrl').optional({ nullable: true }).isString(),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -50,7 +51,7 @@ artistPortalRouter.post(
         );
       }
 
-      const { stageName, genre, bio, socialLinks, spotifyArtistId } = req.body;
+      const { stageName, genre, bio, socialLinks, spotifyArtistId, imageUrl } = req.body;
 
       const application = await prisma.artistApplication.create({
         data: {
@@ -59,6 +60,8 @@ artistPortalRouter.post(
           genre: genre.trim(),
           bio: bio.trim(),
           socialLinks: socialLinks ?? {},
+          imageUrl: imageUrl ?? null,
+          spotifyArtistId: spotifyArtistId ?? null,
         },
         select: { id: true, status: true },
       });
@@ -77,6 +80,63 @@ artistPortalRouter.post(
         applicationId: application.id,
         status: application.status,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── GET /api/artists/me/application-status ──────────────────────────────────
+// Check if user has a pending/under-review artist application.
+
+artistPortalRouter.get(
+  '/artists/me/application-status',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+
+      const application = await prisma.artistApplication.findFirst({
+        where: {
+          userId,
+          status: { in: ['PENDING', 'UNDER_REVIEW'] },
+        },
+        select: { id: true, status: true, stageName: true, createdAt: true },
+      });
+
+      res.status(200).json({ application: application ?? null });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── DELETE /api/artists/me/application ──────────────────────────────────────
+// Cancel a pending artist application.
+
+artistPortalRouter.delete(
+  '/artists/me/application',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user!.id;
+
+      const application = await prisma.artistApplication.findFirst({
+        where: {
+          userId,
+          status: { in: ['PENDING', 'UNDER_REVIEW'] },
+        },
+      });
+
+      if (!application) {
+        throw new ApiError('No pending application found', 'NOT_FOUND', 404);
+      }
+
+      await prisma.artistApplication.delete({
+        where: { id: application.id },
+      });
+
+      res.status(200).json({ success: true });
     } catch (error) {
       next(error);
     }
@@ -113,6 +173,7 @@ artistPortalRouter.get(
           popularity: true,
           followers: true,
           createdAt: true,
+          user: { select: { email: true } },
           _count: { select: { songs: true, releases: true } },
         },
       });
@@ -121,7 +182,29 @@ artistPortalRouter.get(
         throw new ApiError('Artist profile not found. Complete your application first.', 'NOT_FOUND', 404);
       }
 
-      res.status(200).json(artist);
+      // Compute totalStreams (sum of all song views)
+      const streamsAgg = await prisma.song.aggregate({
+        where: { artistId: artist.id, softDeleted: false },
+        _sum: { views: true },
+      });
+
+      // Compute totalListeners (unique listeners over last 30 days)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      thirtyDaysAgo.setHours(0, 0, 0, 0);
+      const listenersAgg = await prisma.artistAnalyticsDaily.aggregate({
+        where: { artistId: artist.id, date: { gte: thirtyDaysAgo } },
+        _sum: { uniqueListeners: true },
+      });
+
+      const { user, ...artistData } = artist;
+      res.status(200).json({
+        ...artistData,
+        stageName: artist.name,
+        email: user?.email ?? null,
+        totalStreams: streamsAgg._sum.views ?? 0,
+        totalListeners: listenersAgg._sum.uniqueListeners ?? 0,
+      });
     } catch (error) {
       next(error);
     }
@@ -140,7 +223,9 @@ artistPortalRouter.put(
     body('profileImageUrl').optional({ nullable: true }).isString(),
     body('bannerImageUrl').optional({ nullable: true }).isString(),
     body('socialLinks').optional().isObject(),
+    body('contact').optional().isObject(),
     body('spotifyArtistId').optional({ nullable: true }).isString(),
+    body('stageName').optional({ nullable: true }).isString(),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -156,7 +241,7 @@ artistPortalRouter.put(
         throw new ApiError('Artist profile not found', 'NOT_FOUND', 404);
       }
 
-      const { bio, profileImageUrl, bannerImageUrl, socialLinks, spotifyArtistId } = req.body;
+      const { bio, profileImageUrl, bannerImageUrl, socialLinks, spotifyArtistId, stageName } = req.body;
 
       const updated = await prisma.artist.update({
         where: { id: artist.id },
@@ -166,6 +251,7 @@ artistPortalRouter.put(
           ...(bannerImageUrl !== undefined && { bannerImageUrl }),
           ...(socialLinks !== undefined && { socialLinks }),
           ...(spotifyArtistId !== undefined && { spotifyArtistId }),
+          ...(stageName !== undefined && { name: stageName }),
         },
         select: {
           id: true,
@@ -388,12 +474,15 @@ artistPortalRouter.put(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const song = await prisma.song.findFirst({
-        where: { id: req.params.id, artistId: artist.id },
-        select: { id: true },
+      const song = await prisma.song.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
       });
       if (!song) {
-        throw new ApiError('Song not found or access denied', 'NOT_FOUND', 404);
+        throw new ApiError('Song not found', 'NOT_FOUND', 404);
+      }
+      if (song.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
       const { title, lyrics, albumName, releaseYear, imageUrl, genres, languages } = req.body;
@@ -469,12 +558,15 @@ artistPortalRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const song = await prisma.song.findFirst({
-        where: { id: req.params.id, artistId: artist.id },
-        select: { id: true },
+      const song = await prisma.song.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
       });
       if (!song) {
-        throw new ApiError('Song not found or access denied', 'NOT_FOUND', 404);
+        throw new ApiError('Song not found', 'NOT_FOUND', 404);
+      }
+      if (song.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
       await prisma.song.update({
@@ -548,12 +640,15 @@ artistPortalRouter.put(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const release = await prisma.release.findFirst({
-        where: { id: req.params.id, artistId: artist.id },
-        select: { id: true, status: true, releaseDate: true },
+      const release = await prisma.release.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, status: true, releaseDate: true, artistId: true },
       });
       if (!release) {
-        throw new ApiError('Release not found or access denied', 'NOT_FOUND', 404);
+        throw new ApiError('Release not found', 'NOT_FOUND', 404);
+      }
+      if (release.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
       const { title, type, releaseDate, coverImageUrl, status } = req.body;
@@ -613,12 +708,15 @@ artistPortalRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const release = await prisma.release.findFirst({
-        where: { id: req.params.id, artistId: artist.id },
-        select: { id: true },
+      const release = await prisma.release.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
       });
       if (!release) {
-        throw new ApiError('Release not found or access denied', 'NOT_FOUND', 404);
+        throw new ApiError('Release not found', 'NOT_FOUND', 404);
+      }
+      if (release.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
       const { songIds } = req.body as { songIds: string[] };
@@ -699,7 +797,7 @@ artistPortalRouter.get(
   '/artists/me/analytics',
   authenticate,
   requireRole('ARTIST'),
-  [query('rangeDays').optional().isIn(['30', '90'])],
+  [query('rangeDays').optional().isIn(['7', '14', '30', '90', '365'])],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -747,6 +845,7 @@ artistPortalRouter.get(
           views: true,
           requestCount: true,
           imageUrl: true,
+          durationMs: true,
           _count: { select: { translations: true } },
         },
       });
@@ -759,6 +858,291 @@ artistPortalRouter.get(
         series,
         topSongs,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// GET /api/artists/me/listener-regions
+// Returns country and city breakdown of listeners for the artist.
+artistPortalRouter.get(
+  '/artists/me/listener-regions',
+  authenticate,
+  requireRole('ARTIST'),
+  [query('rangeDays').optional().isIn(['7', '14', '30', '90', '365'])],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+      const rangeDays = typeof req.query.rangeDays === 'string' ? Number(req.query.rangeDays) : 30;
+
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - rangeDays);
+      startDate.setHours(0, 0, 0, 0);
+
+      const regionRows = await prisma.artistListenerRegion.findMany({
+        where: {
+          artistId: artist.id,
+          date: { gte: startDate },
+        },
+        select: {
+          country: true,
+          city: true,
+          listeners: true,
+          plays: true,
+        },
+      });
+
+      // Aggregate by country
+      const countryMap = new Map<string, { listeners: number; plays: number }>();
+      // Aggregate by city
+      const cityMap = new Map<string, { country: string; listeners: number; plays: number }>();
+
+      for (const row of regionRows) {
+        // Country aggregation
+        const existing = countryMap.get(row.country) || { listeners: 0, plays: 0 };
+        existing.listeners += row.listeners;
+        existing.plays += row.plays;
+        countryMap.set(row.country, existing);
+
+        // City aggregation
+        const cityKey = `${row.city}, ${row.country}`;
+        const existingCity = cityMap.get(cityKey) || { country: row.country, listeners: 0, plays: 0 };
+        existingCity.listeners += row.listeners;
+        existingCity.plays += row.plays;
+        cityMap.set(cityKey, existingCity);
+      }
+
+      // Calculate total listeners across all regions
+      let totalListeners = 0;
+      for (const entry of countryMap.values()) {
+        totalListeners += entry.listeners;
+      }
+
+      // Convert to sorted arrays
+      const regions = Array.from(countryMap.entries())
+        .map(([name, data]) => ({
+          name,
+          listeners: data.listeners,
+          plays: data.plays,
+          percentage: totalListeners > 0 ? Math.round((data.listeners / totalListeners) * 100) : 0,
+        }))
+        .sort((a, b) => b.listeners - a.listeners);
+
+      const cities = Array.from(cityMap.entries())
+        .map(([name, data]) => ({
+          name: name.split(',')[0].trim(),
+          country: data.country,
+          listeners: data.listeners,
+          plays: data.plays,
+          percentage: totalListeners > 0 ? Math.round((data.listeners / totalListeners) * 100) : 0,
+        }))
+        .sort((a, b) => b.listeners - a.listeners)
+        .slice(0, 10);
+
+      res.status(200).json({
+        rangeDays,
+        totalListeners,
+        regions,
+        cities,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── GET /api/artists/me/notifications ─────────────────────────────────────
+// Returns paginated notifications for the authenticated artist.
+
+artistPortalRouter.get(
+  '/artists/me/notifications',
+  authenticate,
+  requireRole('ARTIST'),
+  [
+    query('limit').optional().isInt({ min: 1, max: 50 }),
+    query('offset').optional().isInt({ min: 0 }),
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      const [notifications, total] = await Promise.all([
+        prisma.artistNotification.findMany({
+          where: { artistId: artist.id },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+          skip: offset,
+          select: {
+            id: true,
+            type: true,
+            message: true,
+            metadata: true,
+            isRead: true,
+            createdAt: true,
+          },
+        }),
+        prisma.artistNotification.count({
+          where: { artistId: artist.id },
+        }),
+      ]);
+
+      res.status(200).json({
+        notifications: notifications.map((n) => ({
+          id: n.id,
+          type: n.type,
+          message: n.message,
+          metadata: n.metadata,
+          isRead: n.isRead,
+          timestamp: n.createdAt.toISOString(),
+        })),
+        total,
+        unreadCount: await prisma.artistNotification.count({
+          where: { artistId: artist.id, isRead: false },
+        }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── PATCH /api/artists/me/notifications/:id ──────────────────────────────
+// Mark a notification as read.
+
+artistPortalRouter.patch(
+  '/artists/me/notifications/:id',
+  authenticate,
+  requireRole('ARTIST'),
+  [param('id').isString().notEmpty()],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+      const notification = await prisma.artistNotification.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
+      });
+      if (!notification) {
+        throw new ApiError('Notification not found', 'NOT_FOUND', 404);
+      }
+      if (notification.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
+      }
+
+      await prisma.artistNotification.update({
+        where: { id: req.params.id },
+        data: { isRead: true },
+      });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── DELETE /api/artists/me/notifications/:id ─────────────────────────────
+// Delete a notification.
+
+artistPortalRouter.delete(
+  '/artists/me/notifications/:id',
+  authenticate,
+  requireRole('ARTIST'),
+  [param('id').isString().notEmpty()],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+      const notification = await prisma.artistNotification.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
+      });
+      if (!notification) {
+        throw new ApiError('Notification not found', 'NOT_FOUND', 404);
+      }
+      if (notification.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
+      }
+
+      await prisma.artistNotification.delete({
+        where: { id: req.params.id },
+      });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── DELETE /api/artists/me/releases/:id ──────────────────────────────────
+// Delete a release and detach its tracks.
+
+artistPortalRouter.delete(
+  '/artists/me/releases/:id',
+  authenticate,
+  requireRole('ARTIST'),
+  [param('id').isString().notEmpty()],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+      const release = await prisma.release.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, artistId: true },
+      });
+      if (!release) {
+        throw new ApiError('Release not found', 'NOT_FOUND', 404);
+      }
+      if (release.artistId !== artist.id) {
+        throw new ApiError('Access denied', 'FORBIDDEN', 403);
+      }
+
+      // Detach songs from this release (don't delete the songs themselves)
+      await prisma.song.updateMany({
+        where: { releaseId: release.id },
+        data: { releaseId: null },
+      });
+
+      await prisma.release.delete({
+        where: { id: release.id },
+      });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// DELETE /api/artists/me/account
+// Soft-deletes the artist account and all associated data.
+artistPortalRouter.delete(
+  '/artists/me/account',
+  authenticate,
+  requireRole('ARTIST'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await getArtistFromUser(req.user!.id);
+
+      // Soft-delete the artist
+      await prisma.artist.update({
+        where: { id: artist.id },
+        data: { softDeleted: true },
+      });
+
+      // Soft-delete all songs
+      await prisma.song.updateMany({
+        where: { artistId: artist.id },
+        data: { softDeleted: true },
+      });
+
+      res.status(200).json({ success: true });
     } catch (error) {
       next(error);
     }

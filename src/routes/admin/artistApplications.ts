@@ -209,6 +209,8 @@ adminArtistApplicationsRouter.patch(
               data: {
                 userId: application.userId,
                 bio: application.bio,
+                imageUrl: application.imageUrl ?? undefined,
+                spotifyArtistId: application.spotifyArtistId ?? undefined,
                 socialLinks: application.socialLinks as Prisma.InputJsonValue,
               },
             });
@@ -219,6 +221,8 @@ adminArtistApplicationsRouter.patch(
                 userId: application.userId,
                 name: application.stageName,
                 bio: application.bio,
+                imageUrl: application.imageUrl ?? null,
+                spotifyArtistId: application.spotifyArtistId ?? null,
                 socialLinks: application.socialLinks as Prisma.InputJsonValue,
                 verified: true,
               },
