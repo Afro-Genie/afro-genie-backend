@@ -10,6 +10,9 @@ pnpm-debug.log*
 node_modules
 dist
 
+# Uploaded files
+uploads/
+
 # Environment files (never commit secrets)
 .env
 .env.*
