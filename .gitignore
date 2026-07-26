@@ -29,3 +29,14 @@ dist
 *.njsproj
 *.sln
 *.sw?
+
+# Backups and data exports
+backups/
+
+# Seed progress files
+seed-progress.json
+.seed-progress.json
+.playlist-seed-progress.json
+
+# Audit reports
+audit-artists-report.json

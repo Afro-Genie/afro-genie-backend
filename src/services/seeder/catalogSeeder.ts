@@ -465,6 +465,33 @@ class ManualSeeder implements Seeder {
           data: { title: item.title, artistId: artist.id },
         });
 
+        // Auto-link song to artist's genres if no explicit genre provided
+        if (!item.genre) {
+          const artistGenres = artist.genres;
+          if (artistGenres && artistGenres.length > 0) {
+            for (const tag of artistGenres) {
+              const genre = await prisma.genre.findFirst({
+                where: { name: { equals: tag, mode: 'insensitive' } },
+              });
+              if (genre) {
+                await prisma.songGenre.create({
+                  data: { songId: song.id, genreId: genre.id },
+                });
+              }
+            }
+          }
+        } else {
+          // Explicit genre: upsert the genre record and link
+          const genre = await prisma.genre.upsert({
+            where: { name: item.genre },
+            create: { name: item.genre },
+            update: {},
+          });
+          await prisma.songGenre.create({
+            data: { songId: song.id, genreId: genre.id },
+          });
+        }
+
         // Auto-provision lyrics if provided (idempotent upsert)
         if (item.lyrics) {
           await prisma.lyric.upsert({

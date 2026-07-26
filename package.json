@@ -48,7 +48,14 @@
     "test:integration": "tsx src/__tests__/integration/artist-management-checklist.test.ts",
     "test:regression": "tsx src/__tests__/integration/regression-checklist.test.ts",
     "test:code-verify": "tsx src/__tests__/integration/code-verification.test.ts",
-    "test:phase7": "tsx src/__tests__/integration/artist-management-checklist.test.ts && tsx src/__tests__/integration/regression-checklist.test.ts && tsx src/__tests__/integration/code-verification.test.ts"
+    "test:phase7": "tsx src/__tests__/integration/artist-management-checklist.test.ts && tsx src/__tests__/integration/regression-checklist.test.ts && tsx src/__tests__/integration/code-verification.test.ts",
+    "cleanup:backup": "tsx scripts/backup-critical-data.ts",
+    "cleanup:audit:typesense": "tsx scripts/audit-typesense-stale.ts",
+    "cleanup:audit:orphans": "tsx scripts/audit-orphaned-records.ts",
+    "cleanup:typesense:dry": "tsx scripts/clean-typesense-stale.ts",
+    "cleanup:typesense:apply": "tsx scripts/clean-typesense-stale.ts --apply",
+    "cleanup:cache": "tsx scripts/clear-caches.ts",
+    "cleanup:reindex": "tsx -e \"import('./src/services/searchService').then((m)=>m.bulkIndex())\""
   },
   "dependencies": {
     "@google/genai": "^2.12.0",
