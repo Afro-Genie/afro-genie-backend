@@ -37,7 +37,7 @@ const envSchema = z.object({
   SYNC_MAX_BATCH: z.coerce.number().int().positive().default(50),
   SYNC_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(60),
   APP_VERSION: z.string().default('1.0.0'),
-  ENABLE_WORKERS: z.coerce.boolean().default(false)
+  ENABLE_WORKERS: z.string().default('true').transform((v) => v === 'true' || v === '1')
 });
 
 const parsed = envSchema.safeParse(process.env);

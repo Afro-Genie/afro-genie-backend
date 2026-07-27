@@ -711,6 +711,22 @@ model Favorite {
   @@index([songId])
 }
 
+model SyncRun {
+  id          String   @id @default(cuid())
+  type        String
+  startedAt   DateTime
+  completedAt DateTime
+  songsAdded  Int      @default(0)
+  artistsUpdated Int   @default(0)
+  errors      Int      @default(0)
+  durationMs  Int
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+  @@index([startedAt])
+  @@index([createdAt])
+}
+
 model UserHistory {
   id       String   @id @default(cuid())
   userId   String

@@ -104,7 +104,7 @@ export async function processLyricsEnrichmentJob(job: Job<LyricsEnrichmentJobDat
     },
   });
 
-  if (!song || song.lyrics[0]?.content) {
+  if (!song || (song.lyrics[0]?.content && song.lyrics[0].content.trim().length > 0)) {
     return;
   }
 
