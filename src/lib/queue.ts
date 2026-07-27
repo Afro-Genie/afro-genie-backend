@@ -1,33 +1,11 @@
 import { Queue } from 'bullmq';
-// Use BullMQ's bundled ioredis to avoid type mismatch with the project's ioredis
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const IORedis = require('bullmq/node_modules/ioredis') as typeof import('ioredis').default;
-import { env } from './env';
+import { redis } from './redis';
 
 const redisDisabled = process.env.DISABLE_REDIS === 'true';
 
-// Single shared ioredis connection for ALL BullMQ queues and workers
-// This keeps us under Redis Cloud's max connections limit (~10 free tier)
-const sharedConnection = redisDisabled
-  ? null
-  : new IORedis(env.REDIS_URL, {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: true,
-      lazyConnect: true,
-      enableOfflineQueue: true,
-      connectTimeout: 10000,
-      commandTimeout: 5000,
-      retryStrategy(times: number) {
-        if (times > 15) return null;
-        return Math.min(times * 300, 10000);
-      },
-    });
-
-if (sharedConnection) {
-  sharedConnection.on('error', (err: Error) => {
-    console.error('[Redis-Queue] Connection error:', err.message);
-  });
-}
+// Single shared ioredis connection for ALL BullMQ queues and workers.
+// Reuses the redis instance from lib/redis to avoid a second TCP connection.
+const sharedConnection = redisDisabled ? null : (redis as any);
 
 export const createQueue = (name: string) => {
   if (redisDisabled) {

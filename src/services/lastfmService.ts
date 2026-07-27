@@ -14,8 +14,7 @@
  */
 
 const LASTFM_API_BASE = 'https://ws.audioscrobbler.com/2.0/';
-// Public Last.fm demo key — works for basic artist lookups
-const LASTFM_API_KEY = 'b25b959554ed76058ac220b7b2e0a026';
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY;
 
 export interface LastFmArtistData {
   name: string;
@@ -31,6 +30,8 @@ export interface LastFmArtistData {
  * Returns null if the artist is not found or the request fails.
  */
 export async function fetchLastFmArtist(artistName: string): Promise<LastFmArtistData | null> {
+  if (!LASTFM_API_KEY) return null;
+
   try {
     const params = new URLSearchParams({
       method: 'artist.getinfo',

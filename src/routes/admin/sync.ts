@@ -11,7 +11,7 @@ export const adminSyncRouter = Router();
 
 adminSyncRouter.use(authenticate, requireRole('ADMIN'));
 
-const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks'];
+const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks', 'sync-new-releases', 'sync-genre-discovery', 'curated-playlists', 'backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm'];
 
 const syncRunLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -56,7 +56,7 @@ adminSyncRouter.post(
         artistId?: string;
       };
 
-      const needsArtistId = type === 'artist' || type === 'artist-albums' || type === 'artist-full';
+      const needsArtistId = type === 'artist' || type === 'artist-albums' || type === 'artist-full' || type === 'enrich-artist-lastfm';
       if (needsArtistId && !artistId) {
         res.status(400).json({
           error: `artistId is required when type is "${type}"`,
@@ -74,7 +74,19 @@ adminSyncRouter.post(
               ? 'sync-genres'
               : type === 'sync-popular-tracks'
                 ? 'sync-popular-tracks'
-                : `sync-${type}-${artistId}`;
+                : type === 'sync-new-releases'
+                  ? 'sync-new-releases'
+                  : type === 'sync-genre-discovery'
+                    ? 'sync-genre-discovery'
+                    : type === 'curated-playlists'
+                      ? 'curated-playlists'
+                      : type === 'backfill-lyrics'
+                        ? 'backfill-lyrics'
+                    : type === 'backfill-artists-lastfm'
+                      ? 'backfill-artists-lastfm'
+                      : type === 'enrich-artist-lastfm'
+                        ? 'enrich-artist-lastfm'
+                        : `sync-${type}-${artistId}`;
 
       const targetQueue = type === 'sync-popular-tracks' ? syncPopularTracksQueue : syncQueue;
 

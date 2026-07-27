@@ -164,37 +164,33 @@ export class GeniusProvider implements LyricsProvider {
 
       const html = await pageResponse.text();
 
-      // Extract lyrics from the page's JSON-LD structured data or DOM
-      // Genius embeds lyrics in a <div> with data-lyrics-container="true"
-      const lyricsMatch = html.match(/data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/);
-      if (lyricsMatch) {
-        // Decode HTML entities and strip tags
-        const decoded = lyricsMatch[1]
-          .replace(/<br\s*\/?>/g, '\n')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/&#x27;/g, "'")
-          .replace(/&#39;/g, "'")
-          .replace(/&nbsp;/g, ' ')
-          .trim();
-
-        if (decoded) {
-          return decoded;
-        }
+      // Reject login/CAPTCHA walls
+      if (html.includes('captcha') || html.includes('Sign In')) {
+        logger.warn({ provider: 'GENIUS', trackId }, 'Genius page returned login/CAPTCHA wall');
+        return null;
       }
 
-      // Fallback: try to extract from window.__PRELOADED_STATE__
+      // Method 1: data-lyrics-container div (current Genius embed)
+      const lyricsMatch = html.match(/data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/);
+      if (lyricsMatch) {
+        const decoded = decodeHtmlEntities(stripTags(lyricsMatch[1]));
+        if (decoded) return decoded;
+      }
+
+      // Method 2: Lyrics__Container (older Genius markup)
+      const altMatch = html.match(/class="Lyrics__Container[^"]*"[^>]*>([\s\S]*?)<\/div>/);
+      if (altMatch) {
+        const decoded = decodeHtmlEntities(stripTags(altMatch[1]));
+        if (decoded) return decoded;
+      }
+
+      // Method 3: window.__PRELOADED_STATE__
       const stateMatch = html.match(/window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
       if (stateMatch) {
         try {
           const state = JSON.parse(stateMatch[1]);
           const lyrics = state?.songPage?.lyrics?.plain;
-          if (lyrics) {
-            return lyrics.trim();
-          }
+          if (lyrics) return lyrics.trim();
         } catch {
           // JSON parse failed, continue
         }
@@ -209,4 +205,23 @@ export class GeniusProvider implements LyricsProvider {
       return null;
     }
   }
+}
+
+const HTML_ENTITY_MAP: Record<string, string> = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
+  '&#x27;': "'", '&#39;': "'", '&nbsp;': ' ', '&#x2F;': '/',
+  '&apos;': "'", '&#x26;': '&', '&#x2D;': '-', '&#x2019;': '\u2019',
+  '&#x2018;': '\u2018', '&#x201C;': '\u201C', '&#x201D;': '\u201D',
+};
+
+function decodeHtmlEntities(html: string): string {
+  let result = html;
+  for (const [entity, char] of Object.entries(HTML_ENTITY_MAP)) {
+    result = result.replaceAll(entity, char);
+  }
+  return result.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10))).trim();
+}
+
+function stripTags(html: string): string {
+  return html.replace(/<br\s*\/?>/g, '\n').replace(/<[^>]+>/g, '');
 }

@@ -13,10 +13,10 @@
  */
 
 import { prisma } from '../../lib/prisma';
-import { redis } from '../../lib/redis';
 import { getSpotifyToken, searchSpotify } from '../spotifyService';
 import { logger } from '../../lib/logger';
 import { lyricsEnrichmentQueue } from '../../lib/queue';
+import { catalogService } from '../catalogService';
 
 const SPOTIFY_API = 'https://api.spotify.com/v1';
 
@@ -166,7 +166,7 @@ class SpotifyPlaylistSeeder implements Seeder {
 
     logger.info({ ...result }, 'Seeding complete');
     try {
-      await redis.del('catalog:homepage:v15');
+      await catalogService.clearCache();
     } catch {
       // Cache invalidation is best-effort.
     }
@@ -347,7 +347,7 @@ class CuratedAfricanPlaylistSeeder implements Seeder {
 
     logger.info({ ...result }, 'Curated African seeding complete');
     try {
-      await redis.del('catalog:homepage:v15');
+      await catalogService.clearCache();
     } catch {
       // Cache invalidation is best-effort.
     }
@@ -422,7 +422,7 @@ class GenreDiscoverySeeder implements Seeder {
 
     logger.info({ ...result }, 'Genre discovery seeding complete');
     try {
-      await redis.del('catalog:homepage:v15');
+      await catalogService.clearCache();
     } catch {
       // Cache invalidation is best-effort.
     }
@@ -598,7 +598,7 @@ class CatalogSeeder {
     this.lastSeedAt = new Date();
 
     try {
-      await redis.del('catalog:homepage:v15');
+      await catalogService.clearCache();
     } catch {
       // Cache invalidation is best-effort.
     }

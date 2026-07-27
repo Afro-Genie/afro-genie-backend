@@ -215,6 +215,16 @@ Lyrics: ${chunk.substring(0, 1200)}`;
   console.log(`\nDone in ${elapsed}s: ${done} categorized, ${skipped} skipped`);
 }
 
+async function clearCatalogCache(): Promise<void> {
+  try {
+    const mod = await import('../src/services/catalogService.js');
+    await mod.clearCache();
+    console.log('Catalog cache cleared');
+  } catch (err) {
+    console.warn('Failed to clear catalog cache (non-fatal):', err);
+  }
+}
+
 async function main() {
   if (MODE === 'lyrics') await backfillLyrics();
   if (MODE === 'lang') await backfillLang();
@@ -227,6 +237,7 @@ async function main() {
   console.log(`\n═══ FINAL ═══`);
   console.log(`Songs: ${totalSongs} | Lyrics: ${lyricCount} (${(lyricCount / totalSongs * 100).toFixed(1)}%) | Languages: ${Number(langCount[0].cnt)} (${(Number(langCount[0].cnt) / totalSongs * 100).toFixed(1)}%)`);
 
+  await clearCatalogCache();
   await prisma.$disconnect();
   await pool.end();
 }

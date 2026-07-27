@@ -16,6 +16,7 @@ import {
 } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { lyricsEnrichmentQueue } from '../src/lib/queue';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL
@@ -242,7 +243,10 @@ async function fetchTracksFromSpotify(
   return allTracks;
 }
 
-async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: number; artistsCreated: number }> {
+async function bulkInsertToDb(
+  allTracks: TrackData[],
+  shouldUpdate = false,
+): Promise<{ songsCreated: number; artistsCreated: number }> {
   if (!allTracks.length) return { songsCreated: 0, artistsCreated: 0 };
 
   // ── Phase 1: Collect unique artists, fetch details from Spotify ──
@@ -270,8 +274,10 @@ async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: n
     }
   }
 
-  // ── Phase 2: Batch insert artists (skip existing) ──
-  console.log(`  Inserting artists into DB...`);
+  const BATCH = 50;
+
+  // ── Phase 2: Upsert artists (insert or update) ──
+  console.log(`  Upserting artists into DB...`);
   const existingArtistRows = await prisma.artist.findMany({
     where: { spotifyId: { in: [...artistMap.keys()] } },
     select: { id: true, spotifyId: true },
@@ -279,45 +285,55 @@ async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: n
   const existingArtistMap = new Map(existingArtistRows.map(r => [r.spotifyId, r.id]));
   console.log(`    ${existingArtistMap.size} artists already exist`);
 
-  const newArtists: { name: string; spotifyId: string; imageUrl: string | null; genres: string[]; popularity: number; followers: number; verified: boolean }[] = [];
-  for (const [spotifyId, info] of artistMap) {
-    if (existingArtistMap.has(spotifyId)) continue;
-    const details = artistDetails.get(spotifyId) || {};
-    newArtists.push({
-      name: info.name,
-      spotifyId,
-      imageUrl: details.images?.[0]?.url || null,
-      genres: details.genres || [],
-      popularity: details.popularity || 0,
-      followers: details.followers?.total || 0,
-      verified: false,
+  let artistsUpserted = 0;
+  const artistEntriesForDb = [...artistMap.entries()];
+  for (let i = 0; i < artistEntriesForDb.length; i += BATCH) {
+    const batch = artistEntriesForDb.slice(i, i + BATCH);
+    const ops = batch.map(([spotifyId, info]) => {
+      const details = artistDetails.get(spotifyId) || {};
+      return prisma.artist.upsert({
+        where: { spotifyId },
+        create: {
+          name: info.name,
+          spotifyId,
+          imageUrl: details.images?.[0]?.url || null,
+          genres: details.genres || [],
+          popularity: details.popularity || 0,
+          followers: details.followers?.total || 0,
+          verified: false,
+        },
+        update: shouldUpdate ? {
+          name: info.name,
+          imageUrl: details.images?.[0]?.url ?? undefined,
+          genres: details.genres ?? [],
+          popularity: details.popularity ?? 0,
+          followers: details.followers?.total ?? 0,
+        } : {},
+      });
     });
-  }
-
-  const BATCH = 50;
-  for (let i = 0; i < newArtists.length; i += BATCH) {
-    const batch = newArtists.slice(i, i + BATCH);
     try {
-      await prisma.artist.createMany({ data: batch, skipDuplicates: true });
+      await prisma.$transaction(ops);
+      artistsUpserted += batch.length;
     } catch (err: any) {
       if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
         console.log(`    DB connection lost, retrying in 3s...`);
         await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.artist.createMany({ data: batch, skipDuplicates: true }); } catch { /* skip */ }
+        try { await prisma.$transaction(ops); } catch { /* skip */ }
       } else { throw err; }
     }
+    if ((i / BATCH + 1) % 5 === 0) {
+      console.log(`    ...${Math.min(i + BATCH, artistEntriesForDb.length)}/${artistEntriesForDb.length} artists`);
+    }
   }
-  let artistsCreated = newArtists.length;
 
-  // Re-fetch all artist IDs (existing + newly created)
   const allArtistRows = await prisma.artist.findMany({
     where: { spotifyId: { in: [...artistMap.keys()] } },
     select: { id: true, spotifyId: true },
   });
   const dbArtistMap = new Map(allArtistRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Artists: ${artistsCreated} new, ${existingArtistMap.size} existed (total ${allArtistRows.length})`);
+  console.log(`  Artists: ${artistsUpserted} upserted, ${existingArtistMap.size} existed (total ${allArtistRows.length})`);
 
-  // ── Phase 3: Batch insert albums (skip existing) ──
+  // ── Phase 3: Upsert albums (insert or update) ──
   const albumMap = new Map<string, { name: string; spotifyId: string; artistSpotifyId: string; image: string | null; year: number | null }>();
   for (const t of allTracks) {
     if (t.albumSpotifyId && !albumMap.has(t.albumSpotifyId)) {
@@ -336,48 +352,56 @@ async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: n
     select: { id: true, spotifyId: true },
   });
   const existingAlbumMap = new Map(existingAlbumRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Inserting albums (${albumMap.size} total, ${existingAlbumMap.size} exist)...`);
+  console.log(`  Upserting albums (${albumMap.size} total, ${existingAlbumMap.size} exist)...`);
 
-  const newAlbums: { name: string; artistId: string; spotifyId: string; imageUrl: string | null; releaseYear: number | null; totalTracks: number | null; popularity: number; genres: string[] }[] = [];
-  for (const [spotifyId, info] of albumMap) {
-    if (existingAlbumMap.has(spotifyId)) continue;
-    const dbArtistId = dbArtistMap.get(info.artistSpotifyId);
-    if (!dbArtistId) continue;
-    newAlbums.push({
-      name: info.name,
-      artistId: dbArtistId,
-      spotifyId,
-      imageUrl: info.image,
-      releaseYear: info.year,
-      totalTracks: null,
-      popularity: 0,
-      genres: [],
-    });
-  }
-
-  for (let i = 0; i < newAlbums.length; i += BATCH) {
-    const batch = newAlbums.slice(i, i + BATCH);
+  let albumsUpserted = 0;
+  const albumEntriesForDb = [...albumMap.entries()];
+  for (let i = 0; i < albumEntriesForDb.length; i += BATCH) {
+    const batch = albumEntriesForDb.slice(i, i + BATCH);
+    const ops = batch.map(([spotifyId, info]) => {
+      const dbArtistId = dbArtistMap.get(info.artistSpotifyId);
+      if (!dbArtistId) return null;
+      return prisma.album.upsert({
+        where: { spotifyId },
+        create: {
+          name: info.name,
+          artistId: dbArtistId,
+          spotifyId,
+          imageUrl: info.image,
+          releaseYear: info.year,
+          totalTracks: null,
+          popularity: 0,
+          genres: [],
+        },
+        update: shouldUpdate ? {
+          name: info.name,
+          imageUrl: info.image ?? undefined,
+          releaseYear: info.year ?? undefined,
+        } : {},
+      });
+    }).filter(Boolean) as Array<ReturnType<typeof prisma.album.upsert>>;
+    if (ops.length === 0) continue;
     try {
-      await prisma.album.createMany({ data: batch, skipDuplicates: true });
+      await prisma.$transaction(ops);
+      albumsUpserted += batch.length;
     } catch (err: any) {
       if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
         console.log(`    DB connection lost at albums, retrying in 3s...`);
         await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.album.createMany({ data: batch, skipDuplicates: true }); } catch { /* skip */ }
+        try { await prisma.$transaction(ops); } catch { /* skip */ }
       } else { throw err; }
     }
   }
 
-  // Re-fetch all album IDs
   const allAlbumRows = await prisma.album.findMany({
     where: { spotifyId: { in: [...albumMap.keys()] } },
     select: { id: true, spotifyId: true },
   });
   const dbAlbumMap = new Map(allAlbumRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Albums: ${newAlbums.length} new, ${existingAlbumMap.size} existed`);
+  console.log(`  Albums: ${albumsUpserted} upserted, ${existingAlbumMap.size} existed`);
 
-  // ── Phase 4: Batch insert songs (skip existing) ──
-  console.log(`  Inserting songs...`);
+  // ── Phase 4: Upsert songs (insert or update) ──
+  console.log(`  Upserting songs...`);
   const existingSongIds = new Set(
     (await prisma.song.findMany({
       where: { spotifyId: { in: allTracks.map(t => t.track.id) } },
@@ -386,18 +410,17 @@ async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: n
   );
   console.log(`    ${existingSongIds.size} songs already exist`);
 
-  const newSongs: {
+  const songEntries: {
     title: string; artistId: string; albumId: string | null; albumName: string | null;
     imageUrl: string | null; spotifyId: string; spotifyPreviewUrl: string | null;
     previewAvailable: boolean; durationMs: number | null; trackNumber: number | null;
     releaseYear: number | null; views: number;
   }[] = [];
   for (const t of allTracks) {
-    if (existingSongIds.has(t.track.id)) continue;
     const dbArtistId = dbArtistMap.get(t.artistSpotifyId);
     if (!dbArtistId) continue;
     const dbAlbumId = t.albumSpotifyId ? dbAlbumMap.get(t.albumSpotifyId) || null : null;
-    newSongs.push({
+    songEntries.push({
       title: t.track.name,
       artistId: dbArtistId,
       albumId: dbAlbumId || null,
@@ -413,32 +436,52 @@ async function bulkInsertToDb(allTracks: TrackData[]): Promise<{ songsCreated: n
     });
   }
 
-  for (let i = 0; i < newSongs.length; i += BATCH) {
-    const batch = newSongs.slice(i, i + BATCH);
+  // In --update mode, upsert all songs including existing ones
+  const songsToProcess = shouldUpdate ? songEntries : songEntries.filter(s => !existingSongIds.has(s.spotifyId));
+
+  for (let i = 0; i < songsToProcess.length; i += BATCH) {
+    const batch = songsToProcess.slice(i, i + BATCH);
+    const ops = batch.map(s =>
+      prisma.song.upsert({
+        where: { spotifyId: s.spotifyId },
+        create: s,
+        update: shouldUpdate ? {
+          title: s.title,
+          albumName: s.albumName,
+          imageUrl: s.imageUrl,
+          spotifyPreviewUrl: s.spotifyPreviewUrl ?? undefined,
+          previewAvailable: s.previewAvailable,
+          durationMs: s.durationMs ?? undefined,
+          trackNumber: s.trackNumber ?? undefined,
+          releaseYear: s.releaseYear ?? undefined,
+        } : {},
+      })
+    );
     try {
-      await prisma.song.createMany({ data: batch, skipDuplicates: true });
+      await prisma.$transaction(ops);
     } catch (err: any) {
       if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
         console.log(`    DB connection lost at songs, retrying in 3s...`);
         await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.song.createMany({ data: batch, skipDuplicates: true }); } catch { /* skip */ }
+        try { await prisma.$transaction(ops); } catch { /* skip */ }
       } else { throw err; }
     }
     if ((i / BATCH + 1) % 5 === 0) {
-      console.log(`    ...${Math.min(i + BATCH, newSongs.length)}/${newSongs.length} songs`);
+      console.log(`    ...${Math.min(i + BATCH, songsToProcess.length)}/${songsToProcess.length} songs`);
     }
   }
 
-  console.log(`  Songs: ${newSongs.length} new, ${existingSongIds.size} existed`);
-  return { songsCreated: newSongs.length, artistsCreated };
+  console.log(`  Songs: ${songsToProcess.length} processed (${existingSongIds.size} existed)`);
+  return { songsCreated: songsToProcess.length, artistsCreated: artistsUpserted };
 }
 
 async function seedFromSpotifySearch(
   queries: string[],
   limitPerQuery: number = 30,
+  shouldUpdate = false,
 ): Promise<{ songsCreated: number; artistsCreated: number }> {
   const allTracks = await fetchTracksFromSpotify(queries, limitPerQuery);
-  return bulkInsertToDb(allTracks);
+  return bulkInsertToDb(allTracks, shouldUpdate);
 }
 
 // ─── Database Reset ──────────────────────────────────────────────────────────
@@ -473,13 +516,19 @@ async function resetSeededData() {
 // ─── Main Seed ───────────────────────────────────────────────────────────────
 
 async function main() {
+  const shouldUpdate = process.argv.includes('--update');
+
   const existingSongCount = await prisma.song.count();
   const existingArtistCount = await prisma.artist.count();
   const isIdempotentRun = existingSongCount > 0;
 
   if (isIdempotentRun) {
     console.log(`\n📊 DB already has ${existingSongCount} songs, ${existingArtistCount} artists.`);
-    console.log('   Running in idempotent mode — will only add new Spotify data.\n');
+    if (shouldUpdate) {
+      console.log('   Running in UPDATE mode — will refresh metadata for existing records.\n');
+    } else {
+      console.log('   Running in idempotent mode — will only add new Spotify data.\n');
+    }
   } else {
     console.log('\n🆕 Empty DB detected — running full seed...\n');
     await resetSeededData();
@@ -662,8 +711,48 @@ async function main() {
   await getSpotifyToken();
   console.log('🎵 Seeding from Spotify (keyword search across African music)...\n');
 
-  const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30);
-  console.log(`  Search: ${searchResult.songsCreated} new songs, ${searchResult.artistsCreated} new artists`);
+  const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30, shouldUpdate);
+  console.log(`  Search: ${searchResult.songsCreated} songs processed, ${searchResult.artistsCreated} artists processed`);
+
+  // ── Enqueue lyrics enrichment for songs missing lyrics ──
+  console.log('\n📝 Checking for songs needing lyrics enrichment...');
+  try {
+    const songsWithoutLyrics = await prisma.song.findMany({
+      where: {
+        spotifyId: { not: null },
+        lyrics: { none: {} },
+      },
+      select: { id: true },
+    });
+
+    if (songsWithoutLyrics.length > 0) {
+      console.log(`  Enqueuing lyrics enrichment for ${songsWithoutLyrics.length} songs...`);
+      let enqueued = 0;
+      for (const song of songsWithoutLyrics) {
+        try {
+          await lyricsEnrichmentQueue.add(
+            `lyrics-enrichment-${song.id}`,
+            { songId: song.id },
+            {
+              jobId: `lyrics-enrichment-${song.id}`,
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 5000 },
+              removeOnComplete: 1000,
+              removeOnFail: 500,
+            }
+          );
+          enqueued++;
+        } catch {
+          // Non-fatal: lyrics enrichment is best-effort during seeding.
+        }
+      }
+      console.log(`  ✅ ${enqueued} lyrics enrichment jobs enqueued`);
+    } else {
+      console.log('  All songs already have lyrics — skipping');
+    }
+  } catch (err) {
+    console.warn('  Lyrics enrichment enqueue skipped (non-fatal):', (err as Error).message);
+  }
 
   // ── Summary ──
   const finalSongCount = await prisma.song.count();

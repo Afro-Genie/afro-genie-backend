@@ -17,40 +17,124 @@ if (env.ENABLE_WORKERS) {
 }
 
 const scheduleSyncJobs = async () => {
-  await syncQueue.add(
-    'sync-all',
-    { type: 'sync-all' },
+  // Monday 2am — popular tracks (heavy weekly discovery)
+  await syncPopularTracksQueue.add(
+    'sync-popular-tracks',
+    {},
     {
-      repeat: { pattern: '0 3 * * *' },
-      jobId: 'sync-all-daily',
+      repeat: { pattern: '0 2 * * 1' },
+      jobId: 'sync-popular-tracks-monday',
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
 
+  // Monday 3am — new releases (light, check fresh Spotify drops)
+  await syncQueue.add(
+    'sync-new-releases',
+    { type: 'sync-new-releases' },
+    {
+      repeat: { pattern: '0 3 * * 1' },
+      jobId: 'sync-new-releases-monday',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  // Wednesday 2am — full artist sync (mid-week refresh)
+  await syncQueue.add(
+    'sync-all',
+    { type: 'sync-all' },
+    {
+      repeat: { pattern: '0 2 * * 3' },
+      jobId: 'sync-all-wednesday',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  // Friday 2am — genre discovery (supplementary terms)
+  await syncQueue.add(
+    'sync-genre-discovery',
+    { type: 'sync-genre-discovery' },
+    {
+      repeat: { pattern: '0 2 * * 5' },
+      jobId: 'sync-genre-discovery-friday',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  // Daily 4am — incremental metadata refresh (quick stale-artist scan)
   await syncQueue.add(
     'refresh-stale',
     { type: 'refresh-stale' },
     {
-      repeat: { pattern: '0 6 * * *' },
+      repeat: { pattern: '0 4 * * *' },
       jobId: 'refresh-stale-daily',
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
 
-  await syncPopularTracksQueue.add(
-    'sync-popular-tracks',
-    {},
+  // Daily 5am — lyrics backfill sweep for songs that were missed
+  await syncQueue.add(
+    'backfill-lyrics',
+    { type: 'backfill-lyrics' },
     {
-      repeat: { pattern: '0 2 * * 0' },
-      jobId: 'sync-popular-tracks-weekly',
+      repeat: { pattern: '0 5 * * *' },
+      jobId: 'backfill-lyrics-daily',
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
 
-  logger.info('Sync cron jobs scheduled: daily sync-all at 3am, refresh-stale at 6am, popular tracks weekly Sunday 2am');
+  logger.info('Sync cron jobs scheduled: Mon 2am popular + 3am new releases, Wed 2am full sync, Fri 2am genre discovery, daily 4am refresh stale, daily 5am lyrics backfill');
+};
+
+// ---------------------------------------------------------------------------
+// Self-healing repeat job verification — re-registers if Redis lost the jobs
+// ---------------------------------------------------------------------------
+const verifyRepeatJobs = async () => {
+  const coreJobs = await Promise.all([
+    syncQueue.getJob('refresh-stale-daily'),
+    syncPopularTracksQueue.getJob('sync-popular-tracks-monday'),
+    syncQueue.getJob('backfill-lyrics-daily'),
+  ]);
+
+  const missing = coreJobs.some((j) => !j);
+  if (missing) {
+    logger.warn('Core repeat jobs missing from Redis — re-registering all sync jobs');
+    await scheduleSyncJobs();
+  } else {
+    logger.info('Core repeat jobs confirmed present in Redis');
+  }
+};
+
+const FALLBACK_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+const startFallbackSyncTimer = () => {
+  setInterval(async () => {
+    try {
+      const lastSync = await redis.get('sync:lastSync:popularTracks');
+      const daysSinceLastSync = lastSync
+        ? (Date.now() - new Date(lastSync).getTime()) / (1000 * 60 * 60 * 24)
+        : 99;
+
+      if (daysSinceLastSync >= 3) {
+        logger.info({ daysSinceLastSync }, 'Fallback timer: 3+ days since last popular tracks sync, triggering now');
+        await syncPopularTracksQueue.add('sync-popular-tracks', {}, {
+          jobId: `sync-popular-tracks-fallback-${Date.now()}`,
+          removeOnComplete: 100,
+          removeOnFail: 50,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Fallback sync check failed');
+    }
+  }, FALLBACK_SYNC_INTERVAL_MS);
+
+  logger.info({ intervalHours: FALLBACK_SYNC_INTERVAL_MS / 3_600_000 }, 'Fallback sync timer started');
 };
 
 const invalidateStaleCaches = async () => {
@@ -125,9 +209,12 @@ const server = app.listen(env.PORT, async () => {
   if (env.ENABLE_WORKERS) {
     try {
       await scheduleSyncJobs();
+      await verifyRepeatJobs();
     } catch (err) {
       logger.error({ err }, 'Failed to schedule sync jobs');
     }
+
+    startFallbackSyncTimer();
   }
 
   // Pre-warm homepage cache in background so first user request hits Redis
