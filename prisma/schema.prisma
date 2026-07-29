@@ -71,6 +71,13 @@ enum NotificationType {
   TOPIC
   COMMENT
   REWARD
+  FLAGGED_CONTENT
+}
+
+enum ReportStatus {
+  PENDING
+  DISMISSED
+  RESOLVED
 }
 
 enum BadgeType {
@@ -79,6 +86,17 @@ enum BadgeType {
   CULTURE_CURATOR
   COMMUNITY_HELPER
   ARTIST_SPOTLIGHT
+  DAILY_STREAK_7
+  FIRST_PROFILE
+  GENEROUS_SUPPORTER
+  SEASON_CHAMPION
+  REFERRAL_STAR
+  GUARDIAN
+  HELPFUL_VOTER
+  GENIUS_ARTIST
+  MODERATION_QUEUE
+  PLATINUM_ARTIST
+  FAN_FAVORITE
 }
 
 enum ArtistApplicationStatus {
@@ -118,6 +136,8 @@ model User {
   photoUrl                   String?
   role                       UserRole                  @default(USER)
   schemaVersion              Int                       @default(1)
+  referralCode               String?                   @unique
+  referredByUserId           String?
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
   lastLoginAt                DateTime?
@@ -141,6 +161,11 @@ model User {
   songPlays                  SongPlay[]
   favorites                  Favorite[]
   historyEntries             UserHistory[]
+  referredUsers              User[]                     @relation("ReferralChain")
+  referrer                   User?                      @relation("ReferralChain", fields: [referredByUserId], references: [id], onDelete: SetNull)
+  storePurchases             StorePurchase[]
+  contentReports             ContentReport[]               @relation("ContentReport_reporter")
+  moderatedReports           ContentReport[]               @relation("ContentReport_moderator")
 
   @@index([role])
   @@index([lastLoginAt])
@@ -559,20 +584,24 @@ model UserBadge {
   earnedAt  DateTime  @default(now())
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, badgeType])
   @@index([userId])
   @@index([badgeType])
 }
 
 model TokenReward {
-  id        String   @id @default(cuid())
-  userId    String
-  amount    Int
-  reason    String
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  userId          String
+  amount          Int
+  reason          String
+  idempotencyKey  String?
+  createdAt       DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([idempotencyKey])
   @@index([userId])
   @@index([createdAt])
+  @@index([reason])
 }
 
 model ArtistApplication {
@@ -737,4 +766,68 @@ model UserHistory {
 
   @@index([userId, viewedAt(sort: Desc)])
   @@index([songId])
+}
+
+// ── Phase 6: Feature Expansion ──────────────────────────────
+
+model StoreItem {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  tokenCost   Int
+  category    String   @default("cosmetic")
+  metadata    Json?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  purchases   StorePurchase[]
+}
+
+model StorePurchase {
+  id         String   @id @default(cuid())
+  userId     String
+  itemId     String
+  spentAmount Int
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item       StoreItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId, createdAt])
+  @@index([userId])
+  @@index([itemId])
+  @@index([createdAt])
+}
+
+model ContentReport {
+  id           String       @id @default(cuid())
+  reporterId   String
+  targetType   String
+  targetId     String
+  reason       String
+  description  String?
+  status       ReportStatus @default(PENDING)
+  moderatorId  String?
+  createdAt    DateTime     @default(now())
+  resolvedAt   DateTime?
+  reporter     User         @relation(fields: [reporterId], references: [id], onDelete: Cascade, name: "ContentReport_reporter")
+  moderator    User?        @relation(fields: [moderatorId], references: [id], onDelete: SetNull, name: "ContentReport_moderator")
+
+  @@index([reporterId])
+  @@index([moderatorId])
+  @@index([status])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model LeaderboardSnapshot {
+  id         String   @id @default(cuid())
+  period     String
+  startDate  DateTime
+  endDate    DateTime
+  data       Json
+  createdAt  DateTime @default(now())
+
+  @@unique([period, startDate])
+  @@index([period])
+  @@index([startDate])
 }

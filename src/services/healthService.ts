@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { env } from '../lib/env';
 import { dbPopulationStatus } from '../index';
+import { getRewardQueueStats } from './rewardService';
 
 export interface PopulationCheck {
   artists: number;
@@ -20,6 +21,15 @@ export interface HealthStatus {
     redis: 'ok' | 'error';
   };
   population: PopulationCheck;
+  rewards: {
+    queue: {
+      waiting: number;
+      active: number;
+      completed: number;
+      failed: number;
+      status: 'ok' | 'error';
+    };
+  };
 }
 
 async function getPopulationCheck(): Promise<PopulationCheck> {
@@ -66,6 +76,7 @@ export const getHealthStatus = async (): Promise<HealthStatus> => {
   }
 
   const population = await getPopulationCheck();
+  const rewards = await getRewardQueueStats();
 
   let status: HealthStatus['status'];
   if (database === 'error' || redisStatus === 'error') {
@@ -84,6 +95,7 @@ export const getHealthStatus = async (): Promise<HealthStatus> => {
       database,
       redis: redisStatus
     },
-    population
+    population,
+    rewards: { queue: rewards }
   };
 };

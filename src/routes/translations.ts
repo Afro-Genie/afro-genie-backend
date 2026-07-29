@@ -8,6 +8,7 @@ import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
 import { estimateCostUsd, CURRENT_PROMPT_VERSION } from '../services/providers/geminiProvider';
 import { logger } from '../lib/logger';
+import { queueReward } from '../services/rewardService';
 import {
   checkDailyBudget,
   checkUserRateLimit,
@@ -211,6 +212,16 @@ translationsRouter.post(
             where: { id: recentPending.id },
             data: { status: 'APPROVED' },
           });
+
+          // Reward the original requester for their fulfilled request
+          await queueReward(
+            recentPending.userId,
+            5,
+            'Translation request fulfilled',
+            'TRANSLATION_REQUEST_FULFILLED',
+            `request-fulfilled:${recentPending.id}`,
+          );
+
           return res.status(200).json({ status: 'existing', translation: approved });
         }
         // Still processing — return the pending ID so frontend can poll
@@ -513,7 +524,7 @@ translationsRouter.post(
       const result = await prisma.$transaction(async (tx) => {
         const translation = await tx.translation.findUnique({
           where: { id: translationId },
-          select: { id: true },
+          select: { id: true, userId: true },
         });
 
         if (!translation) {
@@ -530,6 +541,7 @@ translationsRouter.post(
         });
 
         let userVote: VoteType | null = null;
+        let isNewUpvote = false;
 
         if (existingVote) {
           if (existingVote.voteType === voteType) {
@@ -541,6 +553,10 @@ translationsRouter.post(
               data: { voteType },
             });
             userVote = voteType;
+            // Changed from DOWNVOTE to UPVOTE — counts as new upvote for author
+            if (voteType === VoteType.UPVOTE) {
+              isNewUpvote = true;
+            }
           }
         } else {
           await tx.translationVote.create({
@@ -551,6 +567,9 @@ translationsRouter.post(
             },
           });
           userVote = voteType;
+          if (voteType === VoteType.UPVOTE) {
+            isNewUpvote = true;
+          }
         }
 
         const [upvotes, downvotes] = await Promise.all([
@@ -563,8 +582,19 @@ translationsRouter.post(
           data: { upvotes, downvotes },
         });
 
-        return { upvotes, downvotes, userVote };
+        return { upvotes, downvotes, userVote, isNewUpvote, authorId: translation.userId };
       });
+
+      // Queue reward for translation author when they receive a new upvote
+      if (result.isNewUpvote && result.authorId !== userId) {
+        await queueReward(
+          result.authorId,
+          2,
+          'Translation upvoted',
+          'TRANSLATION_UPVOTED',
+          `upvote:${translationId}:${userId}`,
+        );
+      }
 
       return res.status(200).json(result);
     } catch (err) {

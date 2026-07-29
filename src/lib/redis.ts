@@ -12,6 +12,8 @@ export const redis =
         get: async () => null,
         set: async () => 'OK',
         del: async () => 0,
+        incrby: async () => 0,
+        expire: async () => 1,
         quit: async () => 'OK',
         on: () => undefined,
       } as unknown as IORedis)

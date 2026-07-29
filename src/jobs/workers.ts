@@ -12,7 +12,9 @@ import { processSyncJob } from './syncWorker';
 import { processPopularTracksSyncJob } from './popularTracksSyncJob';
 import { processAnalyticsRollupJob, scheduleAnalyticsRollup } from './rollupArtistAnalytics';
 import { processReleasePublishJob, scheduleReleasePublish } from './publishScheduledReleases';
+import { processRewardJob } from './rewardJob';
 import type { TranslationJobData } from '../types/translation';
+import type { RewardJobData } from './rewardJob';
 import type { SyncJobData } from './syncWorker';
 
 // Reuse the single shared connection from queue.ts (1 Redis connection for all workers)
@@ -181,7 +183,24 @@ async function startWorkers(): Promise<void> {
     logger.error({ jobId: job?.id, err }, 'Release publish job failed');
   });
 
-  logger.info('All 10 workers started successfully');
+  const rewardWorker = new Worker<RewardJobData>(
+    'rewardQueue',
+    async (job) => {
+      logger.info({ jobId: job.id, userId: job.data.userId, reason: job.data.reason }, 'Processing reward job');
+      await processRewardJob(job);
+    },
+    { connection, concurrency: 3 }
+  );
+
+  rewardWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err }, 'Reward job failed');
+  });
+
+  rewardWorker.on('error', (err) => {
+    logger.error({ err }, 'Reward worker error');
+  });
+
+  logger.info('All 11 workers started successfully');
 
   await scheduleViewCountFlush();
   await scheduleAnalyticsRollup();

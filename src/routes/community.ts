@@ -4,6 +4,7 @@ import { body, param, query } from 'express-validator';
 import { authenticate, optionalAuth, requireRole } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import { communityService } from '../services/communityService';
+import { getLeaderboard, getUserRank, queueReward } from '../services/rewardService';
 import type { AuthUser } from '../types/auth';
 
 export const communityRouter = Router();
@@ -131,6 +132,8 @@ communityRouter.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.pinTopic(req.params.id);
+      const moderatorId = (req.user as AuthUser).id;
+      await queueReward(moderatorId, 2, 'Topic pinned', 'MODERATOR_ACTION', `mod-pin:${req.params.id}:${moderatorId}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -146,6 +149,8 @@ communityRouter.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.lockTopic(req.params.id);
+      const moderatorId = (req.user as AuthUser).id;
+      await queueReward(moderatorId, 2, 'Topic locked', 'MODERATOR_ACTION', `mod-lock:${req.params.id}:${moderatorId}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -161,6 +166,8 @@ communityRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.softDeleteTopic(req.params.id);
+      const moderatorId = (req.user as AuthUser).id;
+      await queueReward(moderatorId, 1, 'Topic deleted', 'MODERATOR_ACTION', `mod-delete:${req.params.id}:${moderatorId}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -219,6 +226,8 @@ communityRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.createCategory(req.body);
+      const moderatorId = (req.user as AuthUser).id;
+      await queueReward(moderatorId, 5, 'Category created', 'MODERATOR_ACTION', `mod-category:${result.id}:${moderatorId}`);
       res.status(201).json(result);
     } catch (error) {
       next(error);
@@ -296,6 +305,46 @@ communityRouter.post(
       const user = req.user as AuthUser;
       const result = await communityService.voteOnComment(user.id, req.body.commentId, req.body.voteType);
       res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ── Leaderboard ────────────────────────────────────────────
+
+// GET /api/community/leaderboard — top 20 contributors by token balance
+communityRouter.get(
+  '/community/leaderboard',
+  [
+    query('period').optional().isIn(['all', 'week', 'month']).withMessage('Period must be all, week, or month'),
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const period = (req.query.period as string) || 'all';
+      const leaderboard = await getLeaderboard(period as 'all' | 'week' | 'month');
+      res.json(leaderboard);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// GET /api/community/leaderboard/me — authenticated user's rank and token total
+communityRouter.get(
+  '/community/leaderboard/me',
+  authenticate,
+  [
+    query('period').optional().isIn(['all', 'week', 'month']),
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const period = (req.query.period as string) || 'all';
+      const rankInfo = await getUserRank(user.id, period as 'all' | 'week' | 'month');
+      res.json(rankInfo);
     } catch (error) {
       next(error);
     }
