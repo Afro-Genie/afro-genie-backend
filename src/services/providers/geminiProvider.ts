@@ -346,7 +346,6 @@ export class GeminiProvider implements TranslationProvider {
       responseMimeType: 'application/json',
       responseSchema: TRANSLATION_SCHEMA,
       maxOutputTokens: 16384,
-      thinkingConfig: { thinkingBudget: 0 },
     });
 
     const rawText = geminiResult.text;
@@ -411,9 +410,8 @@ export class GeminiProvider implements TranslationProvider {
       const mergeResult = await this.generateWithFallback(mergePrompt, {
         responseMimeType: 'application/json',
         responseSchema: MERGE_SCHEMA,
-        maxOutputTokens: 16384,
-        thinkingConfig: { thinkingBudget: 0 },
-      });
+      maxOutputTokens: 16384,
+    });
 
       const mergeRaw = mergeResult.text;
       const mergeParsed = JSON.parse(extractJson(mergeRaw)) as { translatedLyrics: string; culturalContext: string };
@@ -452,7 +450,6 @@ export class GeminiProvider implements TranslationProvider {
       responseMimeType: 'application/json',
       responseSchema: LANGUAGE_DETECT_SCHEMA,
       maxOutputTokens: 256,
-      thinkingConfig: { thinkingBudget: 0 },
     });
 
     const rawText = geminiResult.text;
@@ -490,7 +487,6 @@ export class GeminiProvider implements TranslationProvider {
       responseMimeType: 'application/json',
       responseSchema: LANGUAGE_DETECT_PROMPT_SCHEMA,
       maxOutputTokens: 256,
-      thinkingConfig: { thinkingBudget: 0 },
     });
 
     const rawText = geminiResult.text;

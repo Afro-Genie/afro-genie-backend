@@ -5,6 +5,7 @@ import { UserRole } from '@prisma/client';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 import { ApiError } from '../../middleware/errorHandler';
 
 export const adminUsersRouter = Router();
@@ -128,6 +129,63 @@ adminUsersRouter.delete(
       await prisma.user.delete({ where: { id } });
 
       res.status(200).json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// POST /admin/users/:id/remove-moderator — demote MODERATOR back to USER
+adminUsersRouter.post(
+  '/users/:id/remove-moderator',
+  [param('id').isString().notEmpty().withMessage('User ID is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (!user) {
+        throw new ApiError('User not found', 'NOT_FOUND', 404);
+      }
+      if (user.role !== 'MODERATOR') {
+        throw new ApiError('User is not a MODERATOR', 'BAD_REQUEST', 400);
+      }
+
+      const updated = await prisma.user.update({
+        where: { id },
+        data: { role: 'USER' },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          photoUrl: true,
+          role: true,
+          createdAt: true,
+          updatedAt: true,
+          lastLoginAt: true,
+        },
+      });
+
+      // Unassign open reports assigned to this moderator
+      await prisma.contentReport.updateMany({
+        where: { moderatorId: id, status: 'PENDING' },
+        data: { moderatorId: null },
+      });
+
+      // Notify the user
+      await prisma.notification.create({
+        data: {
+          userId: id,
+          title: 'Moderator Privileges Removed',
+          message: 'Your moderator privileges have been removed by an admin. You can still use the platform as a regular user.',
+          type: 'SYSTEM',
+        },
+      });
+
+      logger.info({ userId: id, adminId: req.user!.id }, 'Moderator privileges removed');
+
+      res.status(200).json(updated);
     } catch (error) {
       next(error);
     }

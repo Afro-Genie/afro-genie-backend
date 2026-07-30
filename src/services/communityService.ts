@@ -1,6 +1,7 @@
 import type { Prisma, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { ApiError } from '../middleware/errorHandler';
+import { queueReward } from './rewardService';
 
 interface ListTopicsParams {
   categoryId?: string;
@@ -17,6 +18,7 @@ interface CreateTopicData {
   songId?: string;
   artistId?: string;
   imageUrl?: string;
+  isModeratorOnly?: boolean;
 }
 
 interface CreateCommentData {
@@ -163,6 +165,7 @@ class CommunityService {
         songId: data.songId || null,
         artistId: data.artistId || null,
         imageUrl: data.imageUrl || null,
+        isModeratorOnly: data.isModeratorOnly || false,
       },
     });
 
@@ -174,6 +177,8 @@ class CommunityService {
     } catch {
       // Non-critical — topic is already created
     }
+
+    await queueReward(userId, 5, 'Topic created', 'TOPIC_CREATED', `topic:${topic.id}`);
 
     return topic;
   }
@@ -275,6 +280,8 @@ class CommunityService {
       return created;
     });
 
+    await queueReward(userId, 2, 'Comment created', 'COMMENT_CREATED', `comment:${comment.id}`);
+
     return comment;
   }
 
@@ -288,6 +295,8 @@ class CommunityService {
     const existing = await prisma.topicVote.findUnique({
       where: { userId_topicId: { userId, topicId } },
     });
+
+    const isNewUpvote = voteType === 'UPVOTE' && (!existing || existing.voteType === 'DOWNVOTE');
 
     if (existing) {
       if (existing.voteType === voteType) {
@@ -331,6 +340,10 @@ class CommunityService {
       });
     }
 
+    if (isNewUpvote && topic.authorId !== userId) {
+      await queueReward(topic.authorId, 1, 'Topic upvoted', 'TOPIC_UPVOTED', `topic-upvote:${topicId}:${userId}`);
+    }
+
     const updated = await prisma.topic.findUnique({
       where: { id: topicId },
       select: { likes: true },
@@ -348,6 +361,8 @@ class CommunityService {
     const existing = await prisma.topicCommentVote.findUnique({
       where: { userId_commentId: { userId, commentId } },
     });
+
+    const isNewUpvote = voteType === 'UPVOTE' && (!existing || existing.voteType === 'DOWNVOTE');
 
     if (existing) {
       if (existing.voteType === voteType) {
@@ -387,6 +402,10 @@ class CommunityService {
           data: { likes: { increment: delta } },
         });
       });
+    }
+
+    if (isNewUpvote && comment.userId !== userId) {
+      await queueReward(comment.userId, 1, 'Comment upvoted', 'COMMENT_UPVOTED', `comment-upvote:${commentId}:${userId}`);
     }
 
     const updated = await prisma.topicComment.findUnique({

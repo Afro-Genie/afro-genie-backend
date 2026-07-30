@@ -71,6 +71,13 @@ enum NotificationType {
   TOPIC
   COMMENT
   REWARD
+  FLAGGED_CONTENT
+}
+
+enum ReportStatus {
+  PENDING
+  DISMISSED
+  RESOLVED
 }
 
 enum BadgeType {
@@ -79,6 +86,17 @@ enum BadgeType {
   CULTURE_CURATOR
   COMMUNITY_HELPER
   ARTIST_SPOTLIGHT
+  DAILY_STREAK_7
+  FIRST_PROFILE
+  GENEROUS_SUPPORTER
+  SEASON_CHAMPION
+  REFERRAL_STAR
+  GUARDIAN
+  HELPFUL_VOTER
+  GENIUS_ARTIST
+  MODERATION_QUEUE
+  PLATINUM_ARTIST
+  FAN_FAVORITE
 }
 
 enum ArtistApplicationStatus {
@@ -118,9 +136,12 @@ model User {
   photoUrl                   String?
   role                       UserRole                  @default(USER)
   schemaVersion              Int                       @default(1)
+  referralCode               String?                   @unique
+  referredByUserId           String?
   createdAt                  DateTime                  @default(now())
   updatedAt                  DateTime                  @updatedAt
   lastLoginAt                DateTime?
+  moderatorPinnedAt          DateTime?
   translations               Translation[]
   translationVotes           TranslationVote[]
   corrections                TranslationCorrection[]
@@ -137,10 +158,24 @@ model User {
   communityMemberships       UserCommunityMembership[]
   topicVotes                 TopicVote[]
   topicCommentVotes          TopicCommentVote[]
+  topicViews                 TopicView[]
   artist                     Artist?
   songPlays                  SongPlay[]
   favorites                  Favorite[]
   historyEntries             UserHistory[]
+  referredUsers              User[]                     @relation("ReferralChain")
+  referrer                   User?                      @relation("ReferralChain", fields: [referredByUserId], references: [id], onDelete: SetNull)
+  storePurchases             StorePurchase[]
+  contentReports             ContentReport[]               @relation("ContentReport_reporter")
+  moderatedReports           ContentReport[]               @relation("ContentReport_moderator")
+  modActionLogs              ModActionLog[]
+  applicationRecommendations ArtistApplicationRecommendation[]
+  correctionRequests          CorrectionRequest[]
+  resolvedCorrectionRequests  CorrectionRequest[]            @relation("CorrectionRequestResolver")
+  correctedTranslations       Translation[]                  @relation("CorrectedTranslations")
+  listeningPreference         UserListeningPreference?
+  playlists                   Playlist[]
+  playlistLikes               PlaylistLike[]
 
   @@index([role])
   @@index([lastLoginAt])
@@ -236,6 +271,7 @@ model Song {
   genres              SongGenre[]
   topics              Topic[]
   songPlays           SongPlay[]
+  correctionRequests  CorrectionRequest[]
   favoritedBy         Favorite[]
   viewedBy            UserHistory[]
 
@@ -313,7 +349,13 @@ model Translation {
   song             Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
   user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   votes            TranslationVote[]
-  corrections      TranslationCorrection[]
+  corrections            TranslationCorrection[]
+  correctionRequests      CorrectionRequest[]         @relation("TranslationCorrectionRequests")
+  correctedById           String?                     @map("corrected_by_id")
+  correctedBy             User?                       @relation("CorrectedTranslations", fields: [correctedById], references: [id], onDelete: SetNull)
+  correctionRequestId     String?                    @unique
+  correctionRequest       CorrectionRequest?          @relation("TranslationResolvedByRequest", fields: [correctionRequestId], references: [id], onDelete: SetNull)
+  correctedAt             DateTime?
 
   @@unique([songId, userId, sourceLang, targetLang])
   @@index([songId])
@@ -373,6 +415,33 @@ model TranslationRequest {
   @@index([createdAt])
 }
 
+model CorrectionRequest {
+  id             String           @id @default(cuid())
+  songId         String
+  translationId  String?
+  userId         String
+  title          String
+  description    String           @db.Text
+  status         CorrectionStatus @default(PENDING)
+  resolvedById   String?
+  resolvedAt     DateTime?
+  moderatorNote  String?          @db.Text
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  song         Song        @relation(fields: [songId], references: [id], onDelete: Cascade)
+  translation  Translation? @relation("TranslationCorrectionRequests", fields: [translationId], references: [id], onDelete: SetNull)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resolvedBy          User?        @relation("CorrectionRequestResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedTranslation Translation? @relation("TranslationResolvedByRequest")
+
+  @@unique([songId, userId, title])
+  @@index([songId])
+  @@index([userId])
+  @@index([status])
+  @@index([translationId])
+}
+
 model SongRequest {
   id        String        @id @default(cuid())
   songTitle String
@@ -427,14 +496,15 @@ model SongGenre {
 }
 
 model ForumCategory {
-  id          String                    @id @default(cuid())
-  name        String                    @unique
-  description String?
-  icon        String?
-  order       Int                       @default(0)
-  topicCount  Int                       @default(0)
-  topics      Topic[]
-  memberships UserCommunityMembership[]
+  id              String                    @id @default(cuid())
+  name            String                    @unique
+  description     String?
+  icon            String?
+  order           Int                       @default(0)
+  topicCount      Int                       @default(0)
+  isModeratorOnly Boolean                   @default(false)
+  topics          Topic[]
+  memberships     UserCommunityMembership[]
 
   @@index([order])
   @@index([topicCount])
@@ -455,6 +525,8 @@ model Topic {
   commentCount    Int            @default(0)
   isPinned        Boolean        @default(false)
   isLocked        Boolean        @default(false)
+  isModeratorOnly Boolean        @default(false)
+  viewCount       Int            @default(0)
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   author          User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
@@ -463,6 +535,7 @@ model Topic {
   forumCategory   ForumCategory? @relation(fields: [forumCategoryId], references: [id], onDelete: SetNull)
   comments        TopicComment[] @relation("TopicComments")
   votes           TopicVote[]
+  views           TopicView[]
 
   @@index([authorId])
   @@index([songId])
@@ -507,6 +580,64 @@ model TopicVote {
   @@unique([userId, topicId])
   @@index([userId])
   @@index([topicId])
+}
+
+model TopicView {
+  id        String   @id @default(cuid())
+  topicId   String
+  userId    String?
+  viewedAt  DateTime @default(now())
+  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([topicId])
+  @@index([userId])
+  @@index([viewedAt])
+}
+
+model UserListeningPreference {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  genreIds          String[]
+  languageCodes     String[]
+  listenedArtistIds String[]
+  lastComputedAt    DateTime @default(now())
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Playlist {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  imageUrl    String?
+  songIds     String[]
+  createdBy   String
+  isPublic    Boolean        @default(true)
+  likeCount   Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  creator     User           @relation(fields: [createdBy], references: [id])
+  likes       PlaylistLike[]
+
+  @@index([createdBy])
+  @@index([isPublic])
+  @@index([likeCount])
+  @@index([createdAt])
+}
+
+model PlaylistLike {
+  id         String   @id @default(cuid())
+  userId     String
+  playlistId String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, playlistId])
+  @@index([userId])
+  @@index([playlistId])
 }
 
 model TopicCommentVote {
@@ -559,20 +690,24 @@ model UserBadge {
   earnedAt  DateTime  @default(now())
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, badgeType])
   @@index([userId])
   @@index([badgeType])
 }
 
 model TokenReward {
-  id        String   @id @default(cuid())
-  userId    String
-  amount    Int
-  reason    String
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  userId          String
+  amount          Int
+  reason          String
+  idempotencyKey  String?
+  createdAt       DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([idempotencyKey])
   @@index([userId])
   @@index([createdAt])
+  @@index([reason])
 }
 
 model ArtistApplication {
@@ -592,6 +727,7 @@ model ArtistApplication {
   updatedAt        DateTime                @updatedAt
   user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   reviewedBy       User?                   @relation("ReviewedByUser", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  recommendations  ArtistApplicationRecommendation[]
 
   @@index([userId])
   @@index([status])
@@ -737,4 +873,109 @@ model UserHistory {
 
   @@index([userId, viewedAt(sort: Desc)])
   @@index([songId])
+}
+
+// ── Phase 6: Feature Expansion ──────────────────────────────
+
+model StoreItem {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  tokenCost   Int
+  category    String   @default("cosmetic")
+  metadata    Json?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  purchases   StorePurchase[]
+}
+
+model StorePurchase {
+  id         String   @id @default(cuid())
+  userId     String
+  itemId     String
+  spentAmount Int
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item       StoreItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, itemId, createdAt])
+  @@index([userId])
+  @@index([itemId])
+  @@index([createdAt])
+}
+
+model ContentReport {
+  id           String       @id @default(cuid())
+  reporterId   String
+  targetType   String
+  targetId     String
+  reason       String
+  description  String?
+  status       ReportStatus @default(PENDING)
+  moderatorId  String?
+  createdAt    DateTime     @default(now())
+  resolvedAt   DateTime?
+  reporter     User         @relation(fields: [reporterId], references: [id], onDelete: Cascade, name: "ContentReport_reporter")
+  moderator    User?        @relation(fields: [moderatorId], references: [id], onDelete: SetNull, name: "ContentReport_moderator")
+
+  @@index([reporterId])
+  @@index([moderatorId])
+  @@index([status])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model LeaderboardSnapshot {
+  id         String   @id @default(cuid())
+  period     String
+  startDate  DateTime
+  endDate    DateTime
+  data       Json
+  createdAt  DateTime @default(now())
+
+  @@unique([period, startDate])
+  @@index([period])
+  @@index([startDate])
+}
+
+model ModActionLog {
+  id            String   @id @default(cuid())
+  moderatorId   String?
+  actionType    String
+  targetId      String
+  targetType    String
+  details       String?
+  createdAt     DateTime @default(now())
+
+  moderator     User?    @relation(fields: [moderatorId], references: [id], onDelete: SetNull)
+
+  @@index([moderatorId])
+  @@index([actionType])
+  @@index([targetId, targetType])
+  @@index([createdAt])
+}
+
+model CommunityGuideline {
+  id        String   @id @default(cuid())
+  content   String   @db.Text
+  version   Int      @default(1)
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ArtistApplicationRecommendation {
+  id            String   @id @default(cuid())
+  applicationId String
+  moderatorId   String
+  notes         String
+  createdAt     DateTime @default(now())
+
+  application   ArtistApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  moderator     User              @relation(fields: [moderatorId], references: [id])
+
+  @@unique([applicationId, moderatorId])
+  @@index([applicationId])
+  @@index([moderatorId])
 }

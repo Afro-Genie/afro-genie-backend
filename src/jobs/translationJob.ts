@@ -1,6 +1,7 @@
 import type { Job } from 'bullmq';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { rewardQueue } from '../lib/queue';
 import { estimateCostUsd } from '../services/providers/geminiProvider';
 import { logAICall, translateWithFallback } from '../services/translationService';
 import type { TranslationJobData } from '../types/translation';
@@ -143,6 +144,16 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
 
   // Report progress: complete
   await job.updateProgress({ stage: 'completed', percent: 100 });
+
+  // Credit reward tokens for completed translation (idempotent via dedup key)
+  const rewardIdempotencyKey = `translation:${songId}:${userId}:${sourceLang}:${targetLang}`;
+  await rewardQueue.add('translation-reward', {
+    userId,
+    amount: 10,
+    reason: 'Translation approved',
+    event: 'TRANSLATION_APPROVED',
+    idempotencyKey: rewardIdempotencyKey,
+  });
 
   logger.info(
     {
