@@ -18,6 +18,7 @@ interface CreateTopicData {
   songId?: string;
   artistId?: string;
   imageUrl?: string;
+  isModeratorOnly?: boolean;
 }
 
 interface CreateCommentData {
@@ -164,6 +165,7 @@ class CommunityService {
         songId: data.songId || null,
         artistId: data.artistId || null,
         imageUrl: data.imageUrl || null,
+        isModeratorOnly: data.isModeratorOnly || false,
       },
     });
 

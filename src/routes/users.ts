@@ -4,6 +4,7 @@ import { body, param, query } from 'express-validator';
 import { validateRequest } from '../middleware/validateRequest';
 import { authenticate } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
+import { logger } from '../lib/logger';
 import { getUserTokenBalance, getUserTokenHistory } from '../services/rewardService';
 import { getUserBadges } from '../services/badgeService';
 
@@ -183,9 +184,43 @@ usersRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const userId = (req.user as any).id;
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, role: true, displayName: true, email: true },
+      });
+      if (!user) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+
+      // If the user is a MODERATOR, unassign open reports and notify admins
+      if (user.role === 'MODERATOR') {
+        // Unassign open reports assigned to this moderator
+        await prisma.contentReport.updateMany({
+          where: { moderatorId: userId, status: 'PENDING' },
+          data: { moderatorId: null },
+        });
+
+        // Notify all admins
+        const admins = await prisma.user.findMany({
+          where: { role: 'ADMIN' },
+          select: { id: true },
+        });
+        if (admins.length > 0) {
+          await prisma.notification.createMany({
+            data: admins.map((admin) => ({
+              userId: admin.id,
+              title: 'Moderator Account Deleted',
+              message: `Moderator "${user.displayName || user.email}" has deleted their account. Their assigned open reports have been unassigned.`,
+              type: 'SYSTEM',
+            })),
+          });
+        }
+      }
 
       await prisma.user.delete({ where: { id: userId } });
 
+      logger.info({ userId, role: user.role }, 'User account deleted');
       res.status(200).json({ success: true });
     } catch (error) {
       next(error);

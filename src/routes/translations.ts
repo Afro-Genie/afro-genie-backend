@@ -738,6 +738,104 @@ translationsRouter.post(
 );
 
 // ---------------------------------------------------------------------------
+// POST /api/translations/:id/correction-request
+// Authenticated. Creates a correction request for a moderator to review.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/:id/correction-request',
+  authenticate,
+  [
+    param('id').isString().notEmpty().withMessage('Translation ID is required'),
+    body('title').isString().notEmpty().withMessage('Title is required').isLength({ min: 1 }),
+    body('description').isString().isLength({ min: 40 }).withMessage('Description must be at least 40 characters'),
+  ],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const translationId = req.params.id;
+      const userId = req.user!.id;
+      const { title, description } = req.body as { title: string; description: string };
+
+      const translation = await prisma.translation.findUnique({
+        where: { id: translationId },
+        select: { id: true, songId: true },
+      });
+
+      if (!translation) {
+        return next(new ApiError('Translation not found', 'NOT_FOUND', 404));
+      }
+
+      const existing = await prisma.correctionRequest.findFirst({
+        where: { songId: translation.songId, userId, title, status: { in: ['PENDING', 'APPROVED'] } },
+        select: { id: true },
+      });
+
+      if (existing) {
+        return next(new ApiError('You already have a pending or completed request with this title for this song', 'CONFLICT', 409));
+      }
+
+      const correctionRequest = await prisma.correctionRequest.create({
+        data: { songId: translation.songId, translationId, userId, title, description },
+      });
+
+      return res.status(201).json(correctionRequest);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/translations/:id/correction-history
+// Returns the latest completed correction info for display on the song page.
+// ---------------------------------------------------------------------------
+translationsRouter.get(
+  '/translations/:id/correction-history',
+  [param('id').isString().notEmpty().withMessage('Translation ID is required')],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const translationId = req.params.id;
+
+      const translation = await prisma.translation.findUnique({
+        where: { id: translationId },
+        select: {
+          correctedById: true,
+          correctedAt: true,
+          correctionRequestId: true,
+          correctedBy: { select: { id: true, displayName: true } },
+          correctionRequest: {
+            select: {
+              id: true,
+              title: true,
+              user: { select: { id: true, displayName: true } },
+              resolvedAt: true,
+            },
+          },
+        },
+      });
+
+      if (!translation) {
+        return next(new ApiError('Translation not found', 'NOT_FOUND', 404));
+      }
+
+      if (!translation.correctedById || !translation.correctedAt) {
+        return res.json(null);
+      }
+
+      res.json({
+        correctedBy: translation.correctedBy,
+        correctedAt: translation.correctedAt,
+        requestedBy: translation.correctionRequest?.user ?? null,
+        title: translation.correctionRequest?.title ?? null,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /api/translations/detect-language
 // Public endpoint. {lyrics} -> {languageCode, languageName, confidence}
 // ---------------------------------------------------------------------------

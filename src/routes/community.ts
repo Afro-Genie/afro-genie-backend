@@ -72,12 +72,17 @@ communityRouter.post(
     body('songId').optional().isString(),
     body('artistId').optional().isString(),
     body('imageUrl').optional().isString(),
+    body('isModeratorOnly').optional().isBoolean(),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user as AuthUser;
-      const topic = await communityService.createTopic(req.body, user.id);
+      const isModeratorOnly = req.body.isModeratorOnly === true;
+      if (isModeratorOnly && user.role !== 'MODERATOR' && user.role !== 'ADMIN') {
+        return res.status(403).json({ error: 'Only moderators can create moderator-only topics', code: 'FORBIDDEN' });
+      }
+      const topic = await communityService.createTopic({ ...req.body, isModeratorOnly }, user.id);
       res.status(201).json(topic);
     } catch (error) {
       next(error);
