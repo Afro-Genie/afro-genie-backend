@@ -1,0 +1,2 @@
+[phases.install]
+cmds = ["...", "find node_modules/.bin -type l -exec chmod +x {} +"]
