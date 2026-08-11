@@ -1084,6 +1084,7 @@ model ArtistApplicationRecommendation {
 
   @@index([applicationId])
   @@index([moderatorId])
+  @@unique([applicationId, moderatorId])
 }
 
 model ModerationLog {

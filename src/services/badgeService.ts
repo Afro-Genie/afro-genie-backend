@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { REWARD_CONFIG } from '../config/rewards';
 import type { BadgeType } from '@prisma/client';
 
 const BADGE_DESCRIPTIONS: Record<BadgeType, string> = {
@@ -173,4 +174,68 @@ export async function getUserBadges(userId: string) {
     where: { userId },
     orderBy: { earnedAt: 'desc' },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Per-event award helpers (Phase 4). Called from the real reward events; every
+// award is idempotent via the unique (userId, badgeType) on UserBadge.
+// ---------------------------------------------------------------------------
+
+export async function awardBadge(userId: string, badgeType: BadgeType): Promise<void> {
+  const existing = await prisma.userBadge.findUnique({
+    where: { userId_badgeType: { userId, badgeType } },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  await prisma.userBadge.create({
+    data: { userId, badgeType },
+  });
+
+  await prisma.notification.create({
+    data: {
+      userId,
+      title: 'Badge Earned!',
+      message: `You earned the ${BADGE_DESCRIPTIONS[badgeType]} badge!`,
+      type: 'REWARD',
+    },
+  });
+
+  logMetric('badge_awarded', { userId, badgeType });
+}
+
+export async function awardFirstProfileBadge(userId: string): Promise<void> {
+  await awardBadge(userId, 'FIRST_PROFILE');
+}
+
+export async function awardArtistSpotlightBadge(userId: string): Promise<void> {
+  await awardBadge(userId, 'ARTIST_SPOTLIGHT');
+}
+
+export async function evaluateVoterBadges(userId: string): Promise<BadgeType[]> {
+  return checkAndAwardBadges(userId, 'vote');
+}
+
+export async function evaluateCommunityHelperBadge(userId: string): Promise<BadgeType[]> {
+  return checkAndAwardBadges(userId, 'community');
+}
+
+export async function evaluateGuardianBadge(userId: string): Promise<BadgeType[]> {
+  return checkAndAwardBadges(userId, 'guardian');
+}
+
+export async function evaluateTranslationBadges(userId: string): Promise<BadgeType[]> {
+  return checkAndAwardBadges(userId, 'translation');
+}
+
+export async function evaluateStreakBadge(userId: string): Promise<void> {
+  const streak = await prisma.userStreak.findUnique({
+    where: { userId },
+    select: { currentStreak: true },
+  });
+  if (!streak) return;
+
+  if (streak.currentStreak >= REWARD_CONFIG.BADGE_THRESHOLDS.DAILY_STREAK_7_DAYS) {
+    await awardBadge(userId, 'DAILY_STREAK_7');
+  }
 }

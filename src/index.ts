@@ -2,7 +2,7 @@ import { app } from './app';
 import { env } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
-import { redis } from './lib/redis';
+import { redis, scanKeys } from './lib/redis';
 import { syncQueue, syncPopularTracksQueue } from './lib/queue';
 import { catalogService } from './services/catalogService';
 import { bulkIndex } from './services/searchService';
@@ -141,7 +141,7 @@ const invalidateStaleCaches = async () => {
   try {
     const patterns = ['catalog:homepage:v*', 'spotify:search:*'];
     for (const pattern of patterns) {
-      const keys = await redis.keys(pattern);
+      const keys = await scanKeys(pattern);
       if (keys.length > 0) {
         await redis.del(...keys);
         logger.info({ pattern, count: keys.length }, 'Cleared stale cache keys on deploy');

@@ -6,7 +6,7 @@ import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { ApiError } from '../../middleware/errorHandler';
-import { creditTokens } from '../../services/rewardService';
+import { adjustTokens } from '../../services/tokenService';
 import { checkAndAwardBadges } from '../../services/badgeService';
 
 export const adminRewardsRouter = Router();
@@ -31,7 +31,11 @@ adminRewardsRouter.post(
         throw new ApiError('User not found', 'NOT_FOUND', 404);
       }
 
-      const rewardId = await creditTokens(userId, amount, `Admin adjustment: ${reason}`);
+      const reward = await adjustTokens({
+        userId,
+        amount,
+        reason: `Admin adjustment: ${reason}`,
+      });
 
       await checkAndAwardBadges(userId, 'ADMIN_ADJUSTMENT').catch((err) => {
         logger.warn({ err, userId }, 'Badge evaluation after admin adjustment failed');
@@ -48,7 +52,7 @@ adminRewardsRouter.post(
 
       res.status(200).json({
         success: true,
-        rewardId,
+        rewardId: reward.id,
         userId,
         amount,
         reason,
@@ -123,7 +127,7 @@ adminRewardsRouter.get(
       }
 
       const [rewards, total] = await Promise.all([
-        prisma.tokenReward.findMany({
+        prisma.tokenLedger.findMany({
           where,
           orderBy: { createdAt: 'desc' },
           skip,
@@ -144,7 +148,7 @@ adminRewardsRouter.get(
             },
           },
         }),
-        prisma.tokenReward.count({ where }),
+        prisma.tokenLedger.count({ where }),
       ]);
 
       res.status(200).json({
@@ -167,10 +171,10 @@ adminRewardsRouter.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const [totalRewards, totalTokensResult, totalBadges, recentRewards] = await Promise.all([
-        prisma.tokenReward.count(),
-        prisma.tokenReward.aggregate({ _sum: { amount: true } }),
+        prisma.tokenLedger.count(),
+        prisma.tokenLedger.aggregate({ _sum: { amount: true } }),
         prisma.userBadge.count(),
-        prisma.tokenReward.groupBy({
+        prisma.tokenLedger.groupBy({
           by: ['reason'],
           _count: { id: true },
           _sum: { amount: true },

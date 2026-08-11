@@ -443,7 +443,7 @@ class CommunityRedesignService {
     });
 
     const userIds = moderators.map((m) => m.id);
-    const tokenBalances = await prisma.tokenReward.groupBy({
+    const tokenBalances = await prisma.tokenLedger.groupBy({
       by: ['userId'],
       where: { userId: { in: userIds } },
       _sum: { amount: true },

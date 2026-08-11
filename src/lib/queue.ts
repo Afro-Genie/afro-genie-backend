@@ -17,7 +17,13 @@ export const createQueue = (name: string) => {
   }
 
   try {
-    return new Queue(name, { connection: sharedConnection as any });
+    return new Queue(name, {
+      connection: sharedConnection as any,
+      defaultJobOptions: {
+        removeOnComplete: { count: 50 },
+        removeOnFail: { count: 50 },
+      },
+    });
   } catch {
     return {
       add: async () => ({ id: undefined }),

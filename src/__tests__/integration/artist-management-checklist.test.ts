@@ -31,6 +31,10 @@ import { prisma } from '../../lib/prisma';
 
 // ─── Shared Test State ────────────────────────────────────────────────────────
 
+// Unique per-run suffix so approved-artist names never collide with rows left by
+// previous runs (Artist.name is unique in the schema).
+const RUN_ID = Date.now().toString(36);
+
 let adminToken: string;
 
 // Artist users: real DB users registered via API
@@ -66,7 +70,7 @@ describe('Checklist 1: New user apply → confirmation email', () => {
     const res = await apiPost(
       '/artists/apply',
       {
-        stageName: 'Test Artist Alpha',
+        stageName: `Test Artist Alpha ${RUN_ID}`,
         genre: 'Afrobeats',
         bio: 'A test artist for integration testing',
         socialLinks: { instagram: '@testalpha' },
@@ -290,7 +294,7 @@ describe('Checklist 8: Cross-artist edit → 403', () => {
     const applyRes = await apiPost(
       '/artists/apply',
       {
-        stageName: 'Second Artist For Cross Edit',
+        stageName: `Second Artist For Cross Edit ${RUN_ID}`,
         genre: 'Afrobeats',
         bio: 'Second artist for cross-edit test',
       },
@@ -616,4 +620,5 @@ describe('Checklist 14: Zero firebaseService imports in artist files', () => {
 
 after(async () => {
   console.log('\n  Integration test cleanup complete');
+  await prisma.$disconnect();
 });

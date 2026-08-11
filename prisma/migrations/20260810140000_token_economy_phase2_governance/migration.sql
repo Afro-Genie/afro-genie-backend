@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS "ArtistApplicationRecommendation" (
 
 CREATE INDEX IF NOT EXISTS "ArtistApplicationRecommendation_applicationId_idx" ON "ArtistApplicationRecommendation"("applicationId");
 CREATE INDEX IF NOT EXISTS "ArtistApplicationRecommendation_moderatorId_idx" ON "ArtistApplicationRecommendation"("moderatorId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ArtistApplicationRecommendation_applicationId_moderatorId_key" ON "ArtistApplicationRecommendation"("applicationId", "moderatorId");
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ArtistApplicationRecommendation_applicationId_fkey') THEN

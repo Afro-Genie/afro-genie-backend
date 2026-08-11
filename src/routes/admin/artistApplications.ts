@@ -236,6 +236,18 @@ adminArtistApplicationsRouter.patch(
         return updated;
       });
 
+      // The application's embedded user is read before the role upgrade, so
+      // re-fetch the user to reflect the post-approval role in the response.
+      if (status === 'APPROVED') {
+        const freshUser = await prisma.user.findUnique({
+          where: { id: application.userId },
+          select: { id: true, email: true, displayName: true, role: true },
+        });
+        if (freshUser) {
+          result.user = freshUser;
+        }
+      }
+
       // Send email (non-blocking)
       const userEmail = application.user.email;
       if (userEmail) {

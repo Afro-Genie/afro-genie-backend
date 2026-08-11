@@ -34,7 +34,7 @@ export async function takeLeaderboardSnapshot(period: string): Promise<{ success
   }
 
   // Get leaderboard data
-  const results = await prisma.tokenReward.groupBy({
+  const results = await prisma.tokenLedger.groupBy({
     by: ['userId'],
     _sum: { amount: true },
     _count: { id: true },

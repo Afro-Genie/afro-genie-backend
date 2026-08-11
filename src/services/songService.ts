@@ -18,6 +18,8 @@ const extractSpotifyTrackId = (prefixedId: string): string =>
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
 
+const VIEW_COUNT_TTL_SECONDS = 6 * 60 * 60;
+
 type SortBy = 'views' | 'popularity' | 'createdAt';
 type SortOrder = 'asc' | 'desc';
 
@@ -344,6 +346,10 @@ export const getSongById = async (songId: string, options?: { incrementViewCount
   let currentCount = 0;
   try {
     currentCount = shouldIncrement ? await redis.incr(key) : Number((await redis.get(key)) ?? 0);
+    if (shouldIncrement && currentCount === 1) {
+      // Safety TTL so view counters can't linger if the flush job ever lags.
+      await redis.expire(key, VIEW_COUNT_TTL_SECONDS);
+    }
   } catch {
     // Do not fail the song detail request when Redis is unavailable.
     currentCount = 0;

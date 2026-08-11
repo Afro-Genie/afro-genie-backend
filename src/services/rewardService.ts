@@ -2,12 +2,14 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { rewardQueue } from '../lib/queue';
 import { logger } from '../lib/logger';
+import { awardTokens, getBalance } from './tokenService';
 
 const TOKEN_CACHE_TTL = 3600;
 const LEADERBOARD_CACHE_TTL = 900;
 const TOKEN_BALANCE_PREFIX = 'user:tokens:';
 const LEADERBOARD_PREFIX = 'leaderboard:';
 const LEADERBOARD_ZSET = 'leaderboard:zset';
+const LEADERBOARD_MAX_MEMBERS = 1000;
 
 interface LeaderboardEntry {
   userId: string;
@@ -35,9 +37,12 @@ function logMetric(event: string, data: Record<string, unknown>) {
 }
 
 export async function creditTokens(userId: string, amount: number, reason: string, idempotencyKey?: string): Promise<string> {
-  const reward = await prisma.tokenReward.create({
-    data: { userId, amount, reason, idempotencyKey },
-    select: { id: true },
+  const ledger = await awardTokens({
+    userId,
+    type: 'EARN',
+    amount,
+    reason,
+    idempotencyKey,
   });
 
   const key = `${TOKEN_BALANCE_PREFIX}${userId}`;
@@ -46,11 +51,14 @@ export async function creditTokens(userId: string, amount: number, reason: strin
 
   await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, amount, userId), undefined);
 
+  // Keep the permanent leaderboard zset bounded (drop members ranked below the top 1000).
+  await safeRedisOp('trim leaderboard', () => redis.zremrangebyrank(LEADERBOARD_ZSET, 0, -LEADERBOARD_MAX_MEMBERS), undefined);
+
   await safeRedisOp('del leaderboards', () => redis.del(`${LEADERBOARD_PREFIX}all`, `${LEADERBOARD_PREFIX}week`, `${LEADERBOARD_PREFIX}month`), undefined);
 
-  logMetric('tokens_credited', { rewardId: reward.id, userId, amount, reason, idempotencyKey });
+  logMetric('tokens_credited', { rewardId: ledger.id, userId, amount, reason, idempotencyKey });
 
-  return reward.id;
+  return ledger.id;
 }
 
 export async function dedupeCreditTokens(
@@ -59,16 +67,13 @@ export async function dedupeCreditTokens(
   amount: number,
   reason: string,
 ): Promise<boolean> {
-  try {
-    await creditTokens(userId, amount, reason, idempotencyKey);
-    return true;
-  } catch (err: any) {
-    if (err?.code === 'P2002' && err?.meta?.target?.includes('idempotencyKey')) {
-      logMetric('reward_dedup_blocked', { userId, reason, idempotencyKey });
-      return false;
-    }
-    throw err;
+  const existing = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
+  if (existing) {
+    logMetric('reward_dedup_blocked', { userId, reason, idempotencyKey });
+    return false;
   }
+  await creditTokens(userId, amount, reason, idempotencyKey);
+  return true;
 }
 
 export async function getUserTokenBalance(userId: string): Promise<number> {
@@ -79,12 +84,7 @@ export async function getUserTokenBalance(userId: string): Promise<number> {
     return parseInt(cached, 10);
   }
 
-  const result = await prisma.tokenReward.aggregate({
-    _sum: { amount: true },
-    where: { userId },
-  });
-
-  const balance = result._sum.amount ?? 0;
+  const balance = await getBalance(userId);
 
   await safeRedisOp('set balance', () => redis.set(key, balance.toString(), 'EX', TOKEN_CACHE_TTL), undefined);
 
@@ -95,7 +95,7 @@ export async function getUserTokenHistory(userId: string, page = 1, limit = 20) 
   const skip = (page - 1) * limit;
 
   const [rewards, total] = await Promise.all([
-    prisma.tokenReward.findMany({
+    prisma.tokenLedger.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
       skip,
@@ -107,7 +107,7 @@ export async function getUserTokenHistory(userId: string, page = 1, limit = 20) 
         createdAt: true,
       },
     }),
-    prisma.tokenReward.count({ where: { userId } }),
+    prisma.tokenLedger.count({ where: { userId } }),
   ]);
 
   return {
@@ -142,7 +142,7 @@ async function fetchLeaderboardFromZset(): Promise<LeaderboardEntry[]> {
 }
 
 async function fetchLeaderboardFromDb(where?: Record<string, unknown>): Promise<LeaderboardEntry[]> {
-  const results = await prisma.tokenReward.groupBy({
+  const results = await prisma.tokenLedger.groupBy({
     by: ['userId'],
     _sum: { amount: true },
     orderBy: { _sum: { amount: 'desc' } },
@@ -185,7 +185,7 @@ async function buildLeaderboardResponse(period: LeaderboardPeriod): Promise<unkn
       where: { userId: { in: userIds } },
       select: { userId: true, name: true },
     }),
-    prisma.tokenReward.groupBy({
+    prisma.tokenLedger.groupBy({
       by: ['userId'],
       _count: { id: true },
       where: { userId: { in: userIds } },
@@ -228,7 +228,7 @@ export async function getUserRank(userId: string, period: LeaderboardPeriod = 'a
     const score = await safeRedisOp('zscore', () => redis.zscore(LEADERBOARD_ZSET, userId), null);
     if (score !== null) {
       const rank = await safeRedisOp('zrevrank', () => redis.zrevrank(LEADERBOARD_ZSET, userId), null);
-      const rewardCount = await prisma.tokenReward.count({ where: { userId } });
+      const rewardCount = await prisma.tokenLedger.count({ where: { userId } });
       return {
         rank: rank !== null ? rank + 1 : null,
         totalTokens: parseInt(score, 10),
@@ -241,7 +241,7 @@ export async function getUserRank(userId: string, period: LeaderboardPeriod = 'a
     ? { createdAt: { gte: new Date(Date.now() - PERIOD_WINDOW[period]) } }
     : {};
 
-  const userTotal = await prisma.tokenReward.aggregate({
+  const userTotal = await prisma.tokenLedger.aggregate({
     _sum: { amount: true },
     _count: { id: true },
     where: { userId, ...where },
@@ -255,7 +255,7 @@ export async function getUserRank(userId: string, period: LeaderboardPeriod = 'a
   }
 
   // Count how many users have a higher total than this user
-  const allTotals = await prisma.tokenReward.groupBy({
+  const allTotals = await prisma.tokenLedger.groupBy({
     by: ['userId'],
     _sum: { amount: true },
     where,
