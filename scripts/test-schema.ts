@@ -49,7 +49,7 @@ async function testTablesExist() {
     'Translation', 'TranslationVote', 'TranslationCorrection',
     'TranslationRequest', 'SongRequest', 'Genre', 'SongGenre',
     'ForumCategory', 'Topic', 'TopicComment', 'Notification',
-    'UserBadge', 'TokenReward', 'ArtistApplication'
+    'UserBadge', 'ArtistApplication'
   ];
 
   for (const t of tables) {
@@ -81,7 +81,7 @@ async function testForeignKeys() {
   const expected = [
     'Song', 'SongLanguage', 'Lyric', 'Translation', 'TranslationVote',
     'TranslationCorrection', 'TranslationRequest', 'SongRequest', 'SongGenre',
-    'Topic', 'TopicComment', 'Notification', 'UserBadge', 'TokenReward',
+    'Topic', 'TopicComment', 'Notification', 'UserBadge',
     'ArtistApplication'
   ];
 

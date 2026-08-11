@@ -136,9 +136,9 @@ communityRouter.patch(
   [param('id').isString(), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await communityService.pinTopic(req.params.id);
-      const moderatorId = (req.user as AuthUser).id;
-      await queueReward(moderatorId, 2, 'Topic pinned', 'MODERATOR_ACTION', `mod-pin:${req.params.id}:${moderatorId}`);
+      const user = req.user as AuthUser;
+      const result = await communityService.pinTopic(req.params.id, user.id);
+      await queueReward(user.id, 2, 'Topic pinned', 'MODERATOR_ACTION', `mod-pin:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -153,9 +153,9 @@ communityRouter.patch(
   [param('id').isString(), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await communityService.lockTopic(req.params.id);
-      const moderatorId = (req.user as AuthUser).id;
-      await queueReward(moderatorId, 2, 'Topic locked', 'MODERATOR_ACTION', `mod-lock:${req.params.id}:${moderatorId}`);
+      const user = req.user as AuthUser;
+      const result = await communityService.lockTopic(req.params.id, user.id);
+      await queueReward(user.id, 2, 'Topic locked', 'MODERATOR_ACTION', `mod-lock:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -170,9 +170,9 @@ communityRouter.delete(
   [param('id').isString(), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await communityService.softDeleteTopic(req.params.id);
-      const moderatorId = (req.user as AuthUser).id;
-      await queueReward(moderatorId, 1, 'Topic deleted', 'MODERATOR_ACTION', `mod-delete:${req.params.id}:${moderatorId}`);
+      const user = req.user as AuthUser;
+      const result = await communityService.softDeleteTopic(req.params.id, user.id);
+      await queueReward(user.id, 1, 'Topic deleted', 'MODERATOR_ACTION', `mod-delete:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -270,6 +270,22 @@ communityRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await communityService.deleteCategory(req.params.id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ── Topic Shares ──────────────────────────────────────────────
+communityRouter.post(
+  '/community/topics/:topicId/share',
+  authenticate,
+  [param('topicId').isString(), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const result = await communityService.shareTopic(req.params.topicId, user.id);
       res.json(result);
     } catch (error) {
       next(error);

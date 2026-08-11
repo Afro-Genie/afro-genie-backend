@@ -1,6 +1,13 @@
-import type { Prisma, VoteType } from '@prisma/client';
+import type { ModerationAction, Prisma, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
+import { REWARD_CONFIG } from '../config/rewards';
+import { awardTokens } from './tokenService';
+import { contributeTax } from './modPoolService';
+import { createNotification } from './notificationService';
+import { onTopicShare } from './rewardHooks';
+import { evaluateCommunityHelperBadge, evaluateVoterBadges } from './badgeService';
 import { queueReward } from './rewardService';
 
 interface ListTopicsParams {
@@ -180,6 +187,8 @@ class CommunityService {
 
     await queueReward(userId, 5, 'Topic created', 'TOPIC_CREATED', `topic:${topic.id}`);
 
+    await evaluateCommunityHelperBadge(userId);
+
     return topic;
   }
 
@@ -280,14 +289,32 @@ class CommunityService {
       return created;
     });
 
+    await evaluateCommunityHelperBadge(userId);
+
     await queueReward(userId, 2, 'Comment created', 'COMMENT_CREATED', `comment:${comment.id}`);
 
     return comment;
   }
 
-  // ── Voting ──────────────────────────────────────────────────
-  async voteOnTopic(userId: string, topicId: string, voteType: VoteType) {
+  // ── Topic Shares ─────────────────────────────────────────────
+  async shareTopic(topicId: string, userId: string) {
     const topic = await prisma.topic.findUnique({ where: { id: topicId } });
+    if (!topic) {
+      throw new ApiError('Topic not found', 'NOT_FOUND', 404);
+    }
+
+    const updated = await prisma.topic.update({
+      where: { id: topicId },
+      data: { shares: { increment: 1 } },
+    });
+
+    await onTopicShare({ topicId, userId });
+
+    return { shares: updated.shares };
+  }
+
+  // ── Voting ──────────────────────────────────────────────────
+  async voteOnTopic(userId: string, topicId: string, voteType: VoteType) {    const topic = await prisma.topic.findUnique({ where: { id: topicId } });
     if (!topic) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
@@ -348,6 +375,8 @@ class CommunityService {
       where: { id: topicId },
       select: { likes: true },
     });
+
+    await evaluateVoterBadges(userId);
 
     return { likes: updated!.likes };
   }
@@ -413,11 +442,67 @@ class CommunityService {
       select: { likes: true },
     });
 
+    await evaluateVoterBadges(userId);
+
     return { likes: updated!.likes };
   }
 
   // ── Moderation ──────────────────────────────────────────────
-  async pinTopic(id: string) {
+  private async logAction(action: ModerationAction, moderatorId: string | undefined, id: string) {
+    if (!moderatorId) return;
+    await prisma.moderationLog
+      .create({
+        data: {
+          action,
+          moderatorId,
+          targetType: 'TOPIC',
+          targetId: id,
+        },
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * +5 EARN (idempotent per action/target/moderator) for a community
+   * governance action, with the 5% moderation-pool tax applied. Replays are
+   * safe: the unique idempotencyKey prevents double-awarding.
+   */
+  private async moderationReward(
+    action: ModerationAction,
+    moderatorId: string | undefined,
+    id: string,
+  ) {
+    if (!moderatorId) return;
+    const amount = REWARD_CONFIG.COMMUNITY_MODERATION_REWARD;
+    try {
+      await awardTokens({
+        userId: moderatorId,
+        type: 'EARN',
+        amount,
+        reason: 'Community moderation action',
+        sourceType: 'COMMUNITY_MODERATION',
+        sourceId: `${action}:${id}`,
+        idempotencyKey: `moderation:${action}:${id}:${moderatorId}`,
+      });
+
+      await createNotification({
+        userId: moderatorId,
+        title: 'Community moderation reward',
+        message: `You earned +${amount} tokens for a community moderation action.`,
+        type: 'REWARD',
+      });
+
+      await contributeTax({
+        userId: moderatorId,
+        rewardAmount: amount,
+        sourceId: `moderation:${action}:${id}`,
+      });
+    } catch (err) {
+      logger.error({ err, action, moderatorId, targetId: id }, 'community moderation reward failed');
+    }
+  }
+
+  async pinTopic(id: string, moderatorId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id } });
     if (!topic) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
@@ -428,10 +513,15 @@ class CommunityService {
       data: { isPinned: !topic.isPinned },
     });
 
+    if (updated.isPinned) {
+      await this.logAction('TOPIC_PINNED', moderatorId, id);
+      await this.moderationReward('TOPIC_PINNED', moderatorId, id);
+    }
+
     return { isPinned: updated.isPinned };
   }
 
-  async lockTopic(id: string) {
+  async lockTopic(id: string, moderatorId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id } });
     if (!topic) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
@@ -442,10 +532,15 @@ class CommunityService {
       data: { isLocked: !topic.isLocked },
     });
 
+    if (updated.isLocked) {
+      await this.logAction('TOPIC_LOCKED', moderatorId, id);
+      await this.moderationReward('TOPIC_LOCKED', moderatorId, id);
+    }
+
     return { isLocked: updated.isLocked };
   }
 
-  async softDeleteTopic(id: string) {
+  async softDeleteTopic(id: string, moderatorId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id } });
     if (!topic) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
@@ -455,6 +550,9 @@ class CommunityService {
       where: { id },
       data: { title: '[deleted]', content: '[deleted]' },
     });
+
+    await this.logAction('TOPIC_DELETED', moderatorId, id);
+    await this.moderationReward('TOPIC_DELETED', moderatorId, id);
 
     return { deleted: true };
   }
@@ -551,6 +649,11 @@ class CommunityService {
       where: { id: commentId },
       data: { content: '[deleted]' },
     });
+
+    if (isAdmin) {
+      await this.logAction('COMMENT_DELETED', userId, commentId);
+      await this.moderationReward('COMMENT_DELETED', userId, commentId);
+    }
 
     return { deleted: true };
   }

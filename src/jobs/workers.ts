@@ -5,6 +5,7 @@ import { env } from '../lib/env';
 import { sharedConnection } from '../lib/queue';
 import { processLanguageCategorizationJob } from './languageCategorizationJob';
 import { processLyricsEnrichmentJob } from './lyricsEnrichmentJob';
+import { processNotificationJob } from './notificationJob';
 import { processSearchIndexJob } from './searchIndexJob';
 import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
@@ -13,6 +14,22 @@ import { processPopularTracksSyncJob } from './popularTracksSyncJob';
 import { processAnalyticsRollupJob, scheduleAnalyticsRollup } from './rollupArtistAnalytics';
 import { processReleasePublishJob, scheduleReleasePublish } from './publishScheduledReleases';
 import { processRewardJob } from './rewardJob';
+import {
+  processModPoolDistributionJob,
+  scheduleModPoolDistribution,
+} from './modPoolDistributionJob';
+import {
+  processSeasonSnapshotJob,
+  scheduleSeasonSnapshot,
+} from './seasonSnapshotJob';
+import {
+  processReconciliationJob,
+  scheduleReconciliation,
+} from './reconciliationJob';
+import {
+  processOverturnRateAlertJob,
+  scheduleOverturnRateAlert,
+} from './overturnRateAlertJob';
 import type { TranslationJobData } from '../types/translation';
 import type { RewardJobData } from './rewardJob';
 import type { SyncJobData } from './syncWorker';
@@ -200,14 +217,53 @@ async function startWorkers(): Promise<void> {
     logger.error({ err }, 'Reward worker error');
   });
 
-  logger.info('All 11 workers started successfully');
+  const modPoolDistributionWorker = new Worker(
+    'modPoolDistributionQueue',
+    async () => {
+      logger.info('Processing mod pool distribution job');
+      await processModPoolDistributionJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  const seasonSnapshotWorker = new Worker(
+    'seasonSnapshotQueue',
+    async () => {
+      logger.info('Processing season snapshot job');
+      await processSeasonSnapshotJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  const reconciliationWorker = new Worker(
+    'reconciliationQueue',
+    async () => {
+      logger.info('Processing wallet/ledger reconciliation job');
+      await processReconciliationJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  const overturnRateAlertWorker = new Worker(
+    'overturnRateAlertQueue',
+    async () => {
+      logger.info('Processing overturn-rate alert job');
+      await processOverturnRateAlertJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  logger.info('All 15 workers started successfully');
 
   await scheduleViewCountFlush();
   await scheduleAnalyticsRollup();
   await scheduleReleasePublish();
+  await scheduleModPoolDistribution();
+  await scheduleSeasonSnapshot();
+  await scheduleReconciliation();
+  await scheduleOverturnRateAlert();
 }
 
 startWorkers().catch((err) => {
   logger.error({ err }, 'Worker startup failed — jobs will not be processed');
 });
-

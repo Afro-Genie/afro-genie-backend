@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
+import rateLimit from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 import { TranslationStatus, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -9,6 +10,7 @@ import { translationQueue } from '../lib/queue';
 import { estimateCostUsd, CURRENT_PROMPT_VERSION } from '../services/providers/geminiProvider';
 import { logger } from '../lib/logger';
 import { queueReward } from '../services/rewardService';
+import { evaluateVoterBadges } from '../services/badgeService';
 import {
   checkDailyBudget,
   checkUserRateLimit,
@@ -137,6 +139,17 @@ function heuristicDetectLanguage(lyrics: string): {
 
 export const translationsRouter = Router();
 
+const translationRequestLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Too many translation requests, please try again later.',
+    code: 'RATE_LIMITED',
+  },
+});
+
 const validate = (req: Request, res: Response, next: NextFunction) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -153,6 +166,7 @@ const validate = (req: Request, res: Response, next: NextFunction) => {
 translationsRouter.post(
   '/translations/request',
   authenticate,
+  translationRequestLimiter,
   [
     body('songId').isString().notEmpty().withMessage('songId is required'),
     body('sourceLang').isString().notEmpty().withMessage('sourceLang is required'),
@@ -595,6 +609,9 @@ translationsRouter.post(
           `upvote:${translationId}:${userId}`,
         );
       }
+
+      // Phase 4: HELPFUL_VOTER / FAN_FAVORITE thresholds.
+      await evaluateVoterBadges(userId);
 
       return res.status(200).json(result);
     } catch (err) {

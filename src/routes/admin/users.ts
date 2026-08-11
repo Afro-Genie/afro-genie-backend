@@ -18,7 +18,7 @@ adminUsersRouter.get(
     query('cursor').optional().isString(),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('search').optional().isString(),
-    query('role').optional().isIn(['USER', 'ADMIN', 'ARTIST', 'MODERATOR']),
+    query('role').optional().isIn(['USER', 'ADMIN', 'ARTIST', 'MODERATOR', 'ARBITER']),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -77,8 +77,8 @@ adminUsersRouter.patch(
   [
     param('id').isString().notEmpty().withMessage('User ID is required'),
     body('role')
-      .isIn(['USER', 'ADMIN', 'ARTIST', 'MODERATOR'])
-      .withMessage('Role must be one of: USER, ADMIN, ARTIST, MODERATOR'),
+      .isIn(['USER', 'ADMIN', 'ARTIST', 'MODERATOR', 'ARBITER'])
+      .withMessage('Role must be one of: USER, ADMIN, ARTIST, MODERATOR, ARBITER'),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {

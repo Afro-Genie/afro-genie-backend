@@ -9,7 +9,10 @@ import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { ApiError } from '../middleware/errorHandler';
+import nodemailer from 'nodemailer';
 import { sendEmail, getSmtpDebugInfo } from './emailService';
+import { recordLogin } from './streakService';
+import { awardFirstProfileBadge, awardArtistSpotlightBadge } from './badgeService';
 
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '7d';
@@ -115,6 +118,22 @@ const buildAuthResult = async (
 // Re-export getSmtpDebugInfo for backward compatibility
 export { getSmtpDebugInfo } from './emailService';
 
+export const createMailTransporter = () => {
+  if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !env.SMTP_PASS) {
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    host: env.SMTP_HOST,
+    port: env.SMTP_PORT,
+    secure: env.SMTP_PORT === 465,
+    auth: {
+      user: env.SMTP_USER,
+      pass: env.SMTP_PASS
+    }
+  });
+};
+
 export const registerArtist = async (
   email: string,
   password: string,
@@ -165,6 +184,10 @@ export const registerArtist = async (
     }
   });
 
+  // Phase 4: first-profile + verified-artist badges on registration.
+  await awardFirstProfileBadge(user.id);
+  await awardArtistSpotlightBadge(user.id);
+
   return buildAuthResult(user);
 };
 
@@ -194,6 +217,8 @@ export const register = async (email: string, password: string, displayName: str
       spotifyProduct: true
     }
   });
+
+  await awardFirstProfileBadge(user.id);
 
   return buildAuthResult(user);
 };
@@ -228,6 +253,8 @@ export const login = async (email: string, password: string): Promise<AuthResult
     data: { lastLoginAt: new Date() }
   });
 
+  await recordLogin(user.id);
+
   return buildAuthResult(user);
 };
 
@@ -255,6 +282,10 @@ export const refresh = async (refreshToken: string): Promise<AuthResult> => {
   }
 
   await redis.del(refreshKey(claims.userId));
+
+  // Streak counts a new calendar day once; same-day refresh is a safe no-op.
+  await recordLogin(user.id);
+
   return buildAuthResult(user);
 };
 
@@ -422,6 +453,8 @@ export const configureGoogleStrategy = () => {
                 spotifyProduct: true
               }
             });
+
+            await awardFirstProfileBadge(user.id);
           } else {
             user = await prisma.user.update({
               where: { id: user.id },
@@ -441,6 +474,8 @@ export const configureGoogleStrategy = () => {
               }
             });
           }
+
+          await recordLogin(user.id);
 
           return done(null, user);
         } catch (error) {
@@ -500,6 +535,8 @@ export const signInWithSpotify = async (accessToken: string): Promise<AuthResult
       },
       select: { id: true, email: true, displayName: true, role: true, spotifyId: true, spotifyProduct: true },
     });
+
+    await awardFirstProfileBadge(user.id);
   } else {
     user = await prisma.user.update({
       where: { id: user.id },

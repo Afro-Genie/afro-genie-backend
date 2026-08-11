@@ -36,6 +36,10 @@ export const lyricsEnrichmentQueue = createQueue('lyricsEnrichmentQueue');
 export const syncQueue = createQueue('syncQueue');
 export const syncPopularTracksQueue = createQueue('syncPopularTracksQueue');
 export const rewardQueue = createQueue('rewardQueue');
+export const modPoolDistributionQueue = createQueue('modPoolDistributionQueue');
+export const seasonSnapshotQueue = createQueue('seasonSnapshotQueue');
+export const reconciliationQueue = createQueue('reconciliationQueue');
+export const overturnRateAlertQueue = createQueue('overturnRateAlertQueue');
 
 // Export shared connection for workers to reuse (1 connection total, not 17)
 export { sharedConnection };
