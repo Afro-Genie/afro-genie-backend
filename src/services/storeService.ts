@@ -13,7 +13,7 @@ async function safeRedisOp<T>(label: string, fn: () => Promise<T>, fallback: T):
 export interface StoreItemResponse {
   id: string;
   name: string;
-  description: string;
+  description: string | null;
   tokenCost: number;
   category: string;
   metadata: unknown;
@@ -54,8 +54,8 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
   const balanceKey = `${BALANCE_PREFIX}${userId}`;
   let balance = await safeRedisOp('get', () => redis.get(balanceKey), null);
   if (balance === null) {
-    const result = await prisma.tokenReward.aggregate({ _sum: { amount: true }, where: { userId } });
-    balance = String(result._sum.amount ?? 0);
+    const wallet = await prisma.userWallet.findUnique({ where: { userId } });
+    balance = String(wallet?.balance ?? 0);
     await safeRedisOp('set', () => redis.set(balanceKey, balance!, 'EX', BALANCE_TTL), undefined);
   }
 
@@ -64,14 +64,38 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
   }
 
   // Deduct tokens and record purchase atomically
-  await prisma.$transaction([
-    prisma.tokenReward.create({
-      data: { userId, amount: -item.tokenCost, reason: `Store purchase: ${item.name}` },
-    }),
-    prisma.storePurchase.create({
+  await prisma.$transaction(async (tx) => {
+    const wallet = await tx.userWallet.upsert({
+      where: { userId },
+      update: {},
+      create: { userId, balance: 0, version: 1 },
+    });
+
+    const balanceAfter = wallet.balance - item.tokenCost;
+    if (balanceAfter < 0) {
+      throw new Error(`Insufficient tokens. You need ${item.tokenCost} but have ${wallet.balance}`);
+    }
+
+    await tx.tokenLedger.create({
+      data: {
+        userId,
+        type: 'SPEND',
+        amount: -item.tokenCost,
+        balanceAfter,
+        reason: `Store purchase: ${item.name}`,
+        idempotencyKey: `store-purchase:${userId}:${itemId}`,
+      },
+    });
+
+    await tx.userWallet.update({
+      where: { id: wallet.id },
+      data: { balance: balanceAfter, version: { increment: 1 } },
+    });
+
+    await tx.storePurchase.create({
       data: { userId, itemId, spentAmount: item.tokenCost },
-    }),
-  ]);
+    });
+  });
 
   // Update Redis balance
   await safeRedisOp('decrby', () => redis.decrby(balanceKey, item.tokenCost), undefined);
@@ -100,4 +124,28 @@ export async function getUserPurchases(userId: string) {
       },
     },
   });
+}
+
+export async function fulfillPurchase(purchaseId: string) {
+  const purchase = await prisma.storePurchase.update({
+    where: { id: purchaseId },
+    data: { status: 'FULFILLED', fulfilledAt: new Date() },
+    include: {
+      item: { select: { id: true, name: true } },
+      user: { select: { id: true } },
+    },
+  });
+
+  await prisma.notification.create({
+    data: {
+      userId: purchase.user.id,
+      title: 'Purchase fulfilled',
+      message: `Your purchase of ${purchase.item.name} has been fulfilled!`,
+      type: 'STORE',
+    },
+  });
+
+  logger.info({ purchaseId, userId: purchase.user.id }, 'Store purchase fulfilled');
+
+  return purchase;
 }

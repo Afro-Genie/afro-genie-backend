@@ -7,6 +7,7 @@ import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../middleware/errorHandler';
 import { enqueueIndexArtist } from '../../jobs/searchIndexJob';
 import { deleteArtist } from '../../services/searchService';
+import { catalogService } from '../../services/catalogService';
 
 export const adminArtistsRouter = Router();
 
@@ -167,6 +168,8 @@ adminArtistsRouter.patch(
         data: { isFeatured: !artist.isFeatured },
         select: { id: true, isFeatured: true },
       });
+
+      await catalogService.invalidateHomepageCache();
 
       res.status(200).json({ id: updated.id, isFeatured: updated.isFeatured });
     } catch (error) {

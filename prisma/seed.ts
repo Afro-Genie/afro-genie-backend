@@ -499,7 +499,6 @@ async function resetSeededData() {
   await prisma.topic.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.userBadge.deleteMany();
-  await prisma.tokenReward.deleteMany();
   await prisma.artistApplication.deleteMany();
   await prisma.songGenre.deleteMany();
   await prisma.songLanguage.deleteMany();
@@ -750,8 +749,151 @@ async function main() {
     } else {
       console.log('  All songs already have lyrics — skipping');
     }
+
+    await prisma.tokenLedger.createMany({
+      data: [
+        {
+          userId: regularUser.id,
+          type: 'EARN',
+          amount: 100,
+          balanceAfter: 100,
+          reason: 'Published translation contribution',
+          sourceType: 'LEGACY',
+          idempotencyKey: 'legacy:seed-demo-1'
+        },
+        {
+          userId: regularUser.id,
+          type: 'EARN',
+          amount: 25,
+          balanceAfter: 125,
+          reason: 'Helpful forum participation',
+          sourceType: 'LEGACY',
+          idempotencyKey: 'legacy:seed-demo-2'
+        }
+      ],
+      skipDuplicates: true
+    });
   } catch (err) {
     console.warn('  Lyrics enrichment enqueue skipped (non-fatal):', (err as Error).message);
+  }
+
+  // ── Token economy (Phase 1) ──────────────────────────────────
+  // Create wallets for every user and seed tier/streak rows. The legacy
+  // TokenReward table was retired in Phase 4; demo balances are seeded
+  // directly into the TokenLedger above (idempotent via legacy keys).
+  const allUsers = await prisma.user.findMany({ select: { id: true } });
+  await prisma.userWallet.createMany({
+    data: allUsers.map((u) => ({ userId: u.id })),
+    skipDuplicates: true,
+  });
+  await prisma.userTier.createMany({
+    data: allUsers.map((u) => ({ userId: u.id })),
+    skipDuplicates: true,
+  });
+  await prisma.userStreak.createMany({
+    data: allUsers.map((u) => ({ userId: u.id })),
+    skipDuplicates: true,
+  });
+
+  // Keep the seeded demo wallet balance in sync with its ledger rows.
+  const demoBalance = await prisma.tokenLedger.aggregate({
+    where: { userId: regularUser.id },
+    _sum: { amount: true },
+  });
+  await prisma.userWallet.update({
+    where: { userId: regularUser.id },
+    data: { balance: demoBalance._sum.amount ?? 0 },
+  });
+
+  // ── Store (Phase 3) ─────────────────────────────────────────
+  // Digital avatar-border / title perks auto-grant a UserEntitlement on
+  // purchase; the signed poster is a manual-fulfillment prize. Idempotent:
+  // existing items are updated in place rather than duplicated.
+  const storeItemsSeed = [
+    {
+      name: 'Amber Border',
+      description: 'A warm amber avatar border to show off on your profile.',
+      tokenCost: 40,
+      category: 'avatar',
+      metadata: { digital: true, entitlementType: 'avatar:border:amber' },
+    },
+    {
+      name: 'Sapphire Border',
+      description: 'A cool sapphire avatar border for your profile.',
+      tokenCost: 80,
+      category: 'avatar',
+      metadata: { digital: true, entitlementType: 'avatar:border:sapphire' },
+    },
+    {
+      name: 'Emerald Border',
+      description: 'A vibrant emerald avatar border for your profile.',
+      tokenCost: 120,
+      category: 'avatar',
+      metadata: { digital: true, entitlementType: 'avatar:border:emerald' },
+    },
+    {
+      name: 'Royal Gold Border',
+      description: 'The premium gold avatar border. Reserved for true legends.',
+      tokenCost: 250,
+      category: 'avatar',
+      metadata: { digital: true, entitlementType: 'avatar:border:gold' },
+    },
+    {
+      name: 'Early Adopter Title',
+      description: 'A display title marking you as one of the first on Afro Genie.',
+      tokenCost: 150,
+      category: 'title',
+      metadata: { digital: true, entitlementType: 'title:early-adopter' },
+    },
+    {
+      name: 'Master Translator Title',
+      description: 'A display title for the sharpest translators in the community.',
+      tokenCost: 300,
+      category: 'title',
+      metadata: { digital: true, entitlementType: 'title:master-translator' },
+    },
+    {
+      name: 'Golden Candle',
+      description: 'A digital golden candle to light up your listener profile.',
+      tokenCost: 30,
+      category: 'digital',
+      metadata: { digital: true, entitlementType: 'digital:candle' },
+    },
+    {
+      name: 'Signed Artist Poster',
+      description: 'A physical signed poster from a featured Afrobeats artist. Ships to you!',
+      tokenCost: 500,
+      category: 'merch',
+      metadata: { digital: false },
+    },
+  ] as const;
+
+  const existingStoreItems = await prisma.storeItem.findMany();
+  const storeItemKeys = new Map(
+    existingStoreItems.map((item) => [`${item.name}|${item.category}`, item]),
+  );
+  let storeItemsCreated = 0;
+  let storeItemsUpdated = 0;
+  for (const item of storeItemsSeed) {
+    const key = `${item.name}|${item.category}`;
+    const previous = storeItemKeys.get(key);
+    if (previous) {
+      await prisma.storeItem.update({
+        where: { id: previous.id },
+        data: {
+          name: item.name,
+          description: item.description,
+          tokenCost: item.tokenCost,
+          category: item.category,
+          metadata: item.metadata,
+          active: true,
+        },
+      });
+      storeItemsUpdated += 1;
+    } else {
+      await prisma.storeItem.create({ data: item });
+      storeItemsCreated += 1;
+    }
   }
 
   // ── Summary ──

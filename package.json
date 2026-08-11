@@ -10,7 +10,7 @@
     "start": "prisma migrate deploy && prisma generate && node dist/index.js",
     "lint": "npm run prisma:generate && tsc --noEmit",
     "type-check": "npm run prisma:generate && tsc --noEmit",
-    "test": "node --test",
+    "test": "set NODE_ENV=test&& node --import tsx --test --test-concurrency=1 test/*.test.ts",
     "test:schema": "tsx scripts/test-schema.ts",
     "test:translations": "tsx scripts/translation-acceptance-test.ts",
     "test:lyrics-enrichment": "tsx scripts/lyrics-enrichment-acceptance-test.ts",

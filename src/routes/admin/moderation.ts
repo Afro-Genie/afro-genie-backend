@@ -511,7 +511,7 @@ adminModerationRouter.get(
         modActionCounts,
       ] = await Promise.all([
         prisma.contentReport.count({ where: { moderatorId, status: 'RESOLVED' } }),
-        prisma.tokenReward.aggregate({
+        prisma.tokenLedger.aggregate({
           _sum: { amount: true },
           where: { userId: moderatorId },
         }),

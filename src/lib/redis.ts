@@ -39,3 +39,15 @@ if (!redisDisabled) {
 if (process.env.NODE_ENV !== 'production') {
   globalForRedis.redis = redis;
 }
+
+// Non-blocking KEYS replacement: SCAN in batches instead of a single O(N) KEYS call.
+export async function scanKeys(pattern: string, batchSize = 500): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor = '0';
+  do {
+    const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', batchSize);
+    cursor = nextCursor;
+    keys.push(...batch);
+  } while (cursor !== '0');
+  return keys;
+}

@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { redis } from '../lib/redis';
+import { redis, scanKeys } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { searchSpotify } from './spotifyService';
 import { genreService } from './genreService';
@@ -74,48 +74,13 @@ class CatalogService {
 
     try {
       const results = await withTimeout(Promise.all([
-        // 1. Top artists first
-        prisma.artist.findMany({
-          where: {
-            softDeleted: false,
-            suspended: false,
-            genres: { hasSome: [...AFROBEAT_GENRES] },
-          },
-          select: {
-            id: true,
-            name: true,
-            imageUrl: true,
-            genres: true,
-            spotifyId: true,
-            bio: true,
-            popularity: true,
-            followers: true,
-          },
-          take: 12,
-          orderBy: { popularity: 'desc' },
-        }),
+        this.fetchHomepageArtists(),
         prisma.genre.findMany({ take: 10 }),
-        prisma.artist.findMany({
-          where: {
-            isFeatured: true,
-            suspended: false,
-            softDeleted: false,
-          },
-          select: {
-            id: true,
-            name: true,
-            imageUrl: true,
-            genres: true,
-            verified: true,
-          },
-          take: 8,
-          orderBy: { popularity: 'desc' },
-        }),
       ]), 6000, 'db:homepage');
 
-      dbArtists = results[0];
+      dbArtists = results[0].artists;
       genres = results[1];
-      featuredArtists = results[2];
+      featuredArtists = results[0].featuredArtists;
 
       // 2. Fetch songs from top artists first, then fill with remaining
       const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
@@ -210,7 +175,7 @@ class CatalogService {
       })),
     };
 
-    const hasRealData = result.songs.length > 0 && result.genres.length > 0;
+    const hasRealData = result.songs.length > 0 && result.genres.length > 0 && result.artists.length > 0;
     if (hasRealData) {
       memCache = { data: result, expiresAt: Date.now() + MEM_CACHE_TTL_MS, cacheKey };
       withTimeout(redis.set(cacheKey, JSON.stringify(result), 'EX', 3600), 500, 'redis:homepage:set').catch(() => {
@@ -230,33 +195,58 @@ class CatalogService {
     return result;
   }
 
+  /**
+   * Fetches homepage artists with a case-insensitive afrobeat-genre match.
+   * `genres` is a Postgres String[] so Prisma's `hasSome` is case-sensitive and
+   * returns nothing when the stored casing differs. We fetch active artists and
+   * partition in JS: afrobeat-genred artists first, then fill with the rest so
+   * the section is never empty. Falls back to top artists when none are flagged
+   * `isFeatured`.
+   */
+  private async fetchHomepageArtists(): Promise<{ artists: any[]; featuredArtists: any[] }> {
+    const select = {
+      id: true,
+      name: true,
+      imageUrl: true,
+      genres: true,
+      spotifyId: true,
+      bio: true,
+      popularity: true,
+      followers: true,
+      verified: true,
+      isFeatured: true,
+    } as const;
+
+    const candidates = await prisma.artist.findMany({
+      where: {
+        softDeleted: false,
+        suspended: false,
+      },
+      select,
+      take: 40,
+      orderBy: [{ popularity: 'desc' }, { followers: 'desc' }],
+    });
+
+    const lowerGenres = new Set(AFROBEAT_GENRES.map((g) => g.toLowerCase()));
+    const matchesAfrobeat = (a: any) =>
+      (a.genres || []).some((g: string) => lowerGenres.has(String(g).toLowerCase()));
+
+    const afrobeat = candidates.filter(matchesAfrobeat);
+    const others = candidates.filter((a) => !matchesAfrobeat(a));
+
+    const dbArtists = [...afrobeat, ...others].slice(0, 12);
+
+    let featured = candidates.filter((a) => a.isFeatured);
+    if (featured.length === 0) {
+      featured = dbArtists;
+    }
+
+    return { artists: dbArtists, featuredArtists: featured.slice(0, 8) };
+  }
+
   private async enrichHomepageCache(cacheKey: string): Promise<void> {
-    const dbArtists = await prisma.artist.findMany({
-      where: {
-        softDeleted: false,
-        suspended: false,
-        genres: { hasSome: [...AFROBEAT_GENRES] },
-      },
-      select: {
-        id: true, name: true, imageUrl: true, genres: true,
-        spotifyId: true, bio: true, popularity: true, followers: true,
-      },
-      take: 12,
-      orderBy: { popularity: 'desc' },
-    });
+    const { artists: dbArtists, featuredArtists: dbFeaturedArtists } = await this.fetchHomepageArtists();
     const genres = await prisma.genre.findMany({ take: 10 });
-    const dbFeaturedArtists = await prisma.artist.findMany({
-      where: {
-        isFeatured: true,
-        suspended: false,
-        softDeleted: false,
-      },
-      select: {
-        id: true, name: true, imageUrl: true, genres: true, verified: true,
-      },
-      take: 8,
-      orderBy: { popularity: 'desc' },
-    });
 
     // Songs from top artists first, then fill with remaining
     const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
@@ -568,7 +558,7 @@ class CatalogService {
     const patterns = ['catalog:homepage:v*', 'spotify:search:*', 'song:views:*'];
     for (const pattern of patterns) {
       try {
-        const keys = await withTimeout(redis.keys(pattern), 2000, `redis:keys:${pattern}`);
+        const keys = await withTimeout(scanKeys(pattern), 2000, `redis:keys:${pattern}`);
         if (keys.length > 0) {
           await withTimeout(redis.del(...keys), 2000, `redis:del:${pattern}`);
           cleared.push(...keys);
@@ -579,6 +569,18 @@ class CatalogService {
     }
 
     return { cleared };
+  }
+
+  async invalidateHomepageCache(): Promise<void> {
+    memCache = null;
+    try {
+      const keys = await withTimeout(scanKeys('catalog:homepage:v*'), 2000, 'redis:keys:homepage');
+      if (keys.length > 0) {
+        await withTimeout(redis.del(...keys), 2000, 'redis:del:homepage');
+      }
+    } catch {
+      // Redis unavailable — skip
+    }
   }
 
   async getCatalogAlbums(artistId: string): Promise<{ albums: any[] }> {
