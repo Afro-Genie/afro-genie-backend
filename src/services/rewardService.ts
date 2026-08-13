@@ -77,18 +77,12 @@ export async function dedupeCreditTokens(
 }
 
 export async function getUserTokenBalance(userId: string): Promise<number> {
-  const key = `${TOKEN_BALANCE_PREFIX}${userId}`;
-  const cached = await safeRedisOp('get balance', () => redis.get(key), null);
-
-  if (cached !== null) {
-    return parseInt(cached, 10);
-  }
-
-  const balance = await getBalance(userId);
-
-  await safeRedisOp('set balance', () => redis.set(key, balance.toString(), 'EX', TOKEN_CACHE_TTL), undefined);
-
-  return balance;
+  // The wallet is the atomic source of truth (balance is updated in the same
+  // transaction that writes every ledger row). Reading the LiveUp cached
+  // `user:tokens:<id>` value here used to go stale for up to an hour because
+  // the current awardTokens path never invalidated it — the navbar showed an
+  // outdated balance between sessions. Read the wallet directly instead.
+  return getBalance(userId);
 }
 
 export async function getUserTokenHistory(userId: string, page = 1, limit = 20) {
