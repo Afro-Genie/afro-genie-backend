@@ -159,7 +159,17 @@ const collectionSchemas: CollectionCreateSchema[] = [
 
 const EMPTY_Q = '*';
 const DEFAULT_LIMIT = 12;
-const notDeletedFilter = { softDeleted: false } as Record<string, unknown>;
+const notDeletedFilter = {
+  softDeleted: false,
+  AND: [
+    {
+      OR: [
+        { audioUrl: null },
+        { released: true },
+      ],
+    },
+  ],
+} as Record<string, unknown>;
 
 const normalizeText = (value: string | null | undefined): string => {
   return (value ?? '').trim();

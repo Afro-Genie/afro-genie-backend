@@ -96,6 +96,14 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
 
   return {
     artist: { suspended: false },
+    AND: [
+      {
+        OR: [
+          { audioUrl: null },
+          { released: true },
+        ],
+      },
+    ],
     ...(filters.artistId ? { artistId: filters.artistId } : {}),
     ...(filters.search
       ? {
@@ -135,7 +143,14 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
 const isSongActive = async (songId: string): Promise<boolean> => {
   try {
     const song = await prisma.song.findFirst({
-      where: { id: songId, softDeleted: false },
+      where: {
+        id: songId,
+        softDeleted: false,
+        OR: [
+          { audioUrl: null },
+          { released: true },
+        ],
+      },
       select: { id: true },
     });
     return !!song;
@@ -181,7 +196,15 @@ const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
 
   try {
     const rows = await prisma.song.findMany({
-      where: { id: { in: songIds }, softDeleted: false, artist: { suspended: false } },
+      where: {
+        id: { in: songIds },
+        softDeleted: false,
+        artist: { suspended: false },
+        OR: [
+          { audioUrl: null },
+          { released: true },
+        ],
+      },
       select: { id: true },
     });
     return new Set(rows.map((row) => row.id));

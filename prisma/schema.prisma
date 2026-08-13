@@ -302,6 +302,10 @@ model Song {
   releaseId           String?
   releaseYear         Int?
   imageUrl            String?
+  audioUrl            String?
+  audioMimeType       String?
+  audioSize           Int?
+  released            Boolean              @default(false)
   spotifyId           String?              @unique
   spotifyPreviewUrl   String?
   previewAvailable    Boolean?
@@ -336,6 +340,7 @@ model Song {
   @@index([requestCount])
   @@index([softDeleted])
   @@index([previewAvailable])
+  @@index([released])
   @@index([createdAt])
 }
 
@@ -466,12 +471,14 @@ model TranslationCorrection {
 }
 
 model TranslationRequest {
-  id        String        @id @default(cuid())
-  songId    String
-  userId    String
-  status    RequestStatus @default(PENDING)
-  notes     String?
-  createdAt DateTime      @default(now())
+  id         String        @id @default(cuid())
+  songId     String
+  userId     String
+  status     RequestStatus @default(PENDING)
+  notes      String?
+  sourceLang String        @default("en")
+  targetLang String        @default("en")
+  createdAt  DateTime      @default(now())
   song      Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -592,6 +599,7 @@ model Topic {
   isPinned        Boolean        @default(false)
   isLocked        Boolean        @default(false)
   isModeratorOnly Boolean        @default(false)
+  softDeleted     Boolean        @default(false)
   viewCount       Int            @default(0)
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -610,6 +618,7 @@ model Topic {
   @@index([category])
   @@index([isPinned])
   @@index([isLocked])
+  @@index([softDeleted])
   @@index([createdAt])
 }
 
@@ -826,7 +835,7 @@ model Release {
   title         String
   type          ReleaseType
   coverImageUrl String?
-  releaseDate   DateTime
+  releaseDate   DateTime?
   status        ReleaseStatus @default(DRAFT)
   createdAt     DateTime      @default(now())
   artist        Artist        @relation(fields: [artistId], references: [id], onDelete: Cascade)

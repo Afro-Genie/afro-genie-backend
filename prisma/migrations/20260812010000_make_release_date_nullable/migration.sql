@@ -1,0 +1,1 @@
+ALTER TABLE "Release" ALTER COLUMN "releaseDate" DROP NOT NULL;

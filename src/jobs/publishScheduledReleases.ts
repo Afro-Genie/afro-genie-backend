@@ -21,17 +21,32 @@ export const scheduleReleasePublish = async () => {
 export const processReleasePublishJob = async (): Promise<void> => {
   const now = new Date();
 
-  const result = await prisma.release.updateMany({
+  const scheduled = await prisma.release.findMany({
     where: {
       status: 'SCHEDULED',
       releaseDate: { lte: now },
     },
-    data: {
-      status: 'PUBLISHED',
-    },
+    select: { id: true },
   });
 
-  if (result.count > 0) {
-    logger.info({ published: result.count }, 'Auto-published scheduled releases');
+  if (scheduled.length === 0) {
+    return;
   }
+
+  const releaseIds = scheduled.map((release) => release.id);
+
+  await prisma.$transaction([
+    prisma.release.updateMany({
+      where: { id: { in: releaseIds } },
+      data: {
+        status: 'PUBLISHED',
+      },
+    }),
+    prisma.song.updateMany({
+      where: { releaseId: { in: releaseIds } },
+      data: { released: true },
+    }),
+  ]);
+
+  logger.info({ published: releaseIds.length }, 'Auto-published scheduled releases');
 };

@@ -66,9 +66,19 @@ class CatalogService {
     const songWhere: Prisma.SongWhereInput = {
       softDeleted: false,
       artist: { suspended: false },
-      OR: [
-        { release: null },
-        { release: { status: { not: 'SCHEDULED' as const } } },
+      AND: [
+        {
+          OR: [
+            { release: null },
+            { release: { status: 'PUBLISHED' as const } },
+          ],
+        },
+        {
+          OR: [
+            { audioUrl: null },
+            { released: true },
+          ],
+        },
       ],
     };
 
@@ -122,6 +132,7 @@ class CatalogService {
       albumName: s.albumName || undefined,
       imageUrl: s.imageUrl || '',
       previewUrl: s.spotifyPreviewUrl,
+      audioUrl: s.audioUrl,
       spotifyId: s.spotifyId,
       source: 'DB' as const,
     }));
@@ -253,9 +264,19 @@ class CatalogService {
     const enrichSongWhere: Prisma.SongWhereInput = {
       softDeleted: false,
       artist: { suspended: false },
-      OR: [
-        { release: null },
-        { release: { status: { not: 'SCHEDULED' as const } } },
+      AND: [
+        {
+          OR: [
+            { release: null },
+            { release: { status: 'PUBLISHED' as const } },
+          ],
+        },
+        {
+          OR: [
+            { audioUrl: null },
+            { released: true },
+          ],
+        },
       ],
     };
     const [topArtistSongs, allSongs] = await Promise.all([
@@ -428,9 +449,19 @@ class CatalogService {
     const where: any = {
       softDeleted: false,
       artist: { suspended: false },
-      OR: [
-        { release: null },
-        { release: { status: { not: 'SCHEDULED' } } },
+      AND: [
+        {
+          OR: [
+            { release: null },
+            { release: { status: 'PUBLISHED' } },
+          ],
+        },
+        {
+          OR: [
+            { audioUrl: null },
+            { released: true },
+          ],
+        },
       ],
     };
 
@@ -489,6 +520,7 @@ class CatalogService {
       requestCount: s.requestCount,
       createdAt: s.createdAt,
       spotifyId: s.spotifyId || null,
+      audioUrl: (s as any).audioUrl || null,
       source: (s as any)._count?.lyrics > 0 ? 'DB' as const : s.spotifyId ? 'SPOTIFY' as const : 'DB' as const,
     }));
 

@@ -384,6 +384,10 @@ artistPortalRouter.post(
     body('albumName').optional({ nullable: true }).isString(),
     body('releaseYear').optional({ nullable: true }).isInt({ min: 1800, max: 2200 }),
     body('imageUrl').optional({ nullable: true }).isString(),
+    body('audioUrl').optional({ nullable: true }).isString(),
+    body('audioMimeType').optional({ nullable: true }).isString(),
+    body('audioSize').optional({ nullable: true }).isInt({ min: 0 }),
+    body('audioDurationMs').optional({ nullable: true }).isInt({ min: 0 }),
     body('genres').optional().isArray(),
     body('languages').optional().isArray(),
   ],
@@ -391,15 +395,33 @@ artistPortalRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const { title, lyrics, albumName, releaseYear, imageUrl, genres, languages } = req.body;
+      const { title, lyrics, albumName, releaseYear, imageUrl, audioUrl, audioMimeType, audioSize, audioDurationMs, genres, languages } = req.body;
+      const normalizedTitle = title.trim();
+
+      // Friendly guard for the [title, artistId] unique constraint
+      const existingSong = await prisma.song.findUnique({
+        where: { title_artistId: { title: normalizedTitle, artistId: artist.id } },
+        select: { id: true },
+      });
+      if (existingSong) {
+        throw new ApiError(
+          'You already have a song with this title. Choose a different title.',
+          'CONFLICT',
+          409,
+        );
+      }
 
       const song = await prisma.song.create({
         data: {
-          title: title.trim(),
+          title: normalizedTitle,
           artistId: artist.id,
           albumName: albumName ?? null,
           releaseYear: releaseYear ?? null,
           imageUrl: imageUrl ?? null,
+          audioUrl: audioUrl ?? null,
+          audioMimeType: audioMimeType ?? null,
+          audioSize: audioSize ?? null,
+          durationMs: audioDurationMs ?? null,
         },
       });
 
@@ -467,6 +489,10 @@ artistPortalRouter.put(
     body('albumName').optional({ nullable: true }).isString(),
     body('releaseYear').optional({ nullable: true }).isInt({ min: 1800, max: 2200 }),
     body('imageUrl').optional({ nullable: true }).isString(),
+    body('audioUrl').optional({ nullable: true }).isString(),
+    body('audioMimeType').optional({ nullable: true }).isString(),
+    body('audioSize').optional({ nullable: true }).isInt({ min: 0 }),
+    body('audioDurationMs').optional({ nullable: true }).isInt({ min: 0 }),
     body('genres').optional().isArray(),
     body('languages').optional().isArray(),
   ],
@@ -476,7 +502,7 @@ artistPortalRouter.put(
       const artist = await getArtistFromUser(req.user!.id);
       const song = await prisma.song.findUnique({
         where: { id: req.params.id },
-        select: { id: true, artistId: true },
+        select: { id: true, artistId: true, title: true },
       });
       if (!song) {
         throw new ApiError('Song not found', 'NOT_FOUND', 404);
@@ -485,7 +511,27 @@ artistPortalRouter.put(
         throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
-      const { title, lyrics, albumName, releaseYear, imageUrl, genres, languages } = req.body;
+      const { title, lyrics, albumName, releaseYear, imageUrl, audioUrl, audioMimeType, audioSize, audioDurationMs, genres, languages } = req.body;
+
+      // Friendly guard for the [title, artistId] unique constraint (excluding this song)
+      if (title !== undefined && title.trim().toLowerCase() !== song.title.toLowerCase()) {
+        const duplicate = await prisma.song.findFirst({
+          where: {
+            title: title.trim(),
+            artistId: artist.id,
+            id: { not: song.id },
+            softDeleted: false,
+          },
+          select: { id: true },
+        });
+        if (duplicate) {
+          throw new ApiError(
+            'You already have a song with this title. Choose a different title.',
+            'CONFLICT',
+            409,
+          );
+        }
+      }
 
       await prisma.song.update({
         where: { id: song.id },
@@ -494,6 +540,10 @@ artistPortalRouter.put(
           ...(albumName !== undefined && { albumName }),
           ...(releaseYear !== undefined && { releaseYear }),
           ...(imageUrl !== undefined && { imageUrl }),
+          ...(audioUrl !== undefined && { audioUrl }),
+          ...(audioMimeType !== undefined && { audioMimeType }),
+          ...(audioSize !== undefined && { audioSize }),
+          ...(audioDurationMs !== undefined && { durationMs: audioDurationMs }),
         },
       });
 
@@ -593,27 +643,89 @@ artistPortalRouter.post(
   [
     body('title').isString().trim().notEmpty().withMessage('Title is required'),
     body('type').isIn(['SINGLE', 'EP', 'ALBUM']).withMessage('Type must be SINGLE, EP, or ALBUM'),
-    body('releaseDate').isISO8601().withMessage('Release date is required'),
+    body('releaseDate').optional().isISO8601().withMessage('Release date must be a valid date'),
     body('coverImageUrl').optional({ nullable: true }).isString(),
+    body('status').optional().isIn(['DRAFT', 'SCHEDULED', 'PUBLISHED']).withMessage('Status must be DRAFT, SCHEDULED, or PUBLISHED'),
+    body('songIds').optional().isArray().withMessage('songIds must be an array'),
+    body('songIds.*').optional().isString(),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const artist = await getArtistFromUser(req.user!.id);
-      const { title, type, releaseDate, coverImageUrl } = req.body;
-      const releaseDateObj = new Date(releaseDate);
-      const now = new Date();
-      const status = releaseDateObj <= now ? 'PUBLISHED' : 'SCHEDULED';
+      const { title, type, releaseDate, coverImageUrl, status: requestedStatus, songIds } = req.body;
 
-      const release = await prisma.release.create({
-        data: {
-          artistId: artist.id,
-          title: title.trim(),
-          type,
-          releaseDate: releaseDateObj,
-          coverImageUrl: coverImageUrl ?? null,
-          status,
-        },
+      const releaseDateObj = releaseDate ? new Date(releaseDate) : null;
+      const now = new Date();
+
+      // An explicit status wins; otherwise derive it from the release date.
+      // "Publish now" (PUBLISHED without a date) records today as the effective
+      // release date so the catalog/sort timeline shows it immediately.
+      let status: 'DRAFT' | 'SCHEDULED' | 'PUBLISHED' = requestedStatus;
+      if (!status) {
+        status = releaseDateObj
+          ? releaseDateObj <= now
+            ? 'PUBLISHED'
+            : 'SCHEDULED'
+          : 'DRAFT';
+      }
+
+      // A scheduled release must have a future release date, otherwise it stays
+      // hidden forever (the auto-publish job only matches releaseDate <= now).
+      if (status === 'SCHEDULED' && (!releaseDateObj || releaseDateObj <= now)) {
+        throw new ApiError(
+          'A scheduled release requires a future release date',
+          'BAD_REQUEST',
+          400,
+        );
+      }
+
+      const effectiveReleaseDate = !releaseDateObj && status === 'PUBLISHED' ? now : releaseDateObj;
+
+      const selectedSongIds: string[] = Array.isArray(songIds) ? songIds : [];
+
+      // Validate song ownership up-front
+      if (selectedSongIds.length > 0) {
+        const owned = await prisma.song.count({
+          where: { id: { in: selectedSongIds }, artistId: artist.id, softDeleted: false },
+        });
+        if (owned !== selectedSongIds.length) {
+          throw new ApiError('One or more songs do not belong to this artist', 'BAD_REQUEST', 400);
+        }
+      }
+
+      const isPublished = status === 'PUBLISHED';
+
+      const release = await prisma.$transaction(async (tx) => {
+        const created = await tx.release.create({
+          data: {
+            artistId: artist.id,
+            title: title.trim(),
+            type,
+            releaseDate: effectiveReleaseDate,
+            coverImageUrl: coverImageUrl ?? null,
+            status,
+          },
+        });
+
+        if (selectedSongIds.length > 0) {
+          await tx.song.updateMany({
+            where: { id: { in: selectedSongIds } },
+            data: {
+              releaseId: created.id,
+              released: isPublished,
+            },
+          });
+          // Set track order based on the provided selection
+          for (const [index, songId] of selectedSongIds.entries()) {
+            await tx.song.update({
+              where: { id: songId },
+              data: { trackNumber: index + 1 },
+            });
+          }
+        }
+
+        return created;
       });
 
       res.status(201).json({ releaseId: release.id, title: release.title, status: release.status });
@@ -635,6 +747,8 @@ artistPortalRouter.put(
     body('releaseDate').optional().isISO8601(),
     body('coverImageUrl').optional({ nullable: true }).isString(),
     body('status').optional().isIn(['DRAFT', 'SCHEDULED', 'PUBLISHED']),
+    body('songIds').optional().isArray().withMessage('songIds must be an array'),
+    body('songIds.*').optional().isString(),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -642,7 +756,7 @@ artistPortalRouter.put(
       const artist = await getArtistFromUser(req.user!.id);
       const release = await prisma.release.findUnique({
         where: { id: req.params.id },
-        select: { id: true, status: true, releaseDate: true, artistId: true },
+        select: { id: true, artistId: true, status: true },
       });
       if (!release) {
         throw new ApiError('Release not found', 'NOT_FOUND', 404);
@@ -651,40 +765,101 @@ artistPortalRouter.put(
         throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
-      const { title, type, releaseDate, coverImageUrl, status } = req.body;
+      const { title, type, releaseDate, coverImageUrl, status, songIds } = req.body;
 
-      // Validate status transitions
-      if (status) {
-        const allowedTransitions: Record<string, string[]> = {
-          DRAFT: ['SCHEDULED', 'PUBLISHED'],
-          SCHEDULED: ['PUBLISHED'],
-        };
-        const allowed = allowedTransitions[release.status] ?? [];
-        if (!allowed.includes(status)) {
-          throw new ApiError(
-            `Cannot transition from ${release.status} to ${status}`,
-            'BAD_REQUEST',
-            400,
-          );
-        }
-      }
-
-      // Auto-assign status from releaseDate if provided
+      // Resolve the intended status: explicit status wins, otherwise derive
+      // from the provided release date (past -> PUBLISHED, future -> SCHEDULED).
       let finalStatus = status;
       if (!finalStatus && releaseDate) {
         const d = new Date(releaseDate);
         finalStatus = d <= new Date() ? 'PUBLISHED' : 'SCHEDULED';
       }
 
-      const updated = await prisma.release.update({
-        where: { id: release.id },
-        data: {
-          ...(title !== undefined && { title: title.trim() }),
-          ...(type !== undefined && { type }),
-          ...(releaseDate !== undefined && { releaseDate: new Date(releaseDate) }),
-          ...(coverImageUrl !== undefined && { coverImageUrl }),
-          ...(finalStatus !== undefined && { status: finalStatus }),
-        },
+      // A scheduled release must have a future release date, otherwise it stays
+      // hidden forever (the auto-publish job only matches releaseDate <= now).
+      if (finalStatus === 'SCHEDULED' && (!releaseDate || new Date(releaseDate) <= new Date())) {
+        throw new ApiError(
+          'A scheduled release requires a future release date',
+          'BAD_REQUEST',
+          400,
+        );
+      }
+
+      // Validate status transitions (PUBLISHED is terminal — no unpublishing)
+      if (finalStatus && finalStatus !== release.status) {
+        const allowedTransitions: Record<string, string[]> = {
+          DRAFT: ['SCHEDULED', 'PUBLISHED'],
+          SCHEDULED: ['PUBLISHED'],
+          PUBLISHED: [],
+        };
+        const allowed = allowedTransitions[release.status] ?? [];
+        if (!allowed.includes(finalStatus)) {
+          throw new ApiError(
+            `Cannot transition from ${release.status} to ${finalStatus}`,
+            'BAD_REQUEST',
+            400,
+          );
+        }
+      }
+
+      const isPublished = finalStatus === 'PUBLISHED' || release.status === 'PUBLISHED';
+
+      // "Publish now" (no date given) records today as the effective date
+      const effectiveReleaseDate = finalStatus === 'PUBLISHED' && !releaseDate ? new Date() : releaseDate;
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const upd = await tx.release.update({
+          where: { id: release.id },
+          data: {
+            ...(title !== undefined && { title: title.trim() }),
+            ...(type !== undefined && { type }),
+            ...(effectiveReleaseDate !== undefined && { releaseDate: new Date(effectiveReleaseDate) }),
+            ...(coverImageUrl !== undefined && { coverImageUrl }),
+            ...(finalStatus !== undefined && { status: finalStatus }),
+          },
+        });
+
+        if (Array.isArray(songIds)) {
+          // Validate ownership of the new track list
+          if (songIds.length > 0) {
+            const owned = await tx.song.count({
+              where: { id: { in: songIds }, artistId: artist.id, softDeleted: false },
+            });
+            if (owned !== songIds.length) {
+              throw new ApiError('One or more songs do not belong to this artist', 'BAD_REQUEST', 400);
+            }
+          }
+
+          // Detach songs no longer in the list (return them to private)
+          const currentSongs = await tx.song.findMany({
+            where: { releaseId: upd.id },
+            select: { id: true },
+          });
+          const removedIds = currentSongs
+            .map((s) => s.id)
+            .filter((id) => !songIds.includes(id));
+          if (removedIds.length > 0) {
+            await tx.song.updateMany({
+              where: { id: { in: removedIds } },
+              data: { releaseId: null, released: false },
+            });
+          }
+
+          // Attach the new track list in order
+          for (const [index, songId] of songIds.entries()) {
+            await tx.song.update({
+              where: { id: songId },
+              data: { releaseId: upd.id, trackNumber: index + 1, released: isPublished },
+            });
+          }
+        } else if (isPublished) {
+          await tx.song.updateMany({
+            where: { releaseId: release.id },
+            data: { released: true },
+          });
+        }
+
+        return upd;
       });
 
       res.status(200).json({ releaseId: updated.id, title: updated.title, status: updated.status });
@@ -710,7 +885,7 @@ artistPortalRouter.post(
       const artist = await getArtistFromUser(req.user!.id);
       const release = await prisma.release.findUnique({
         where: { id: req.params.id },
-        select: { id: true, artistId: true },
+        select: { id: true, artistId: true, status: true },
       });
       if (!release) {
         throw new ApiError('Release not found', 'NOT_FOUND', 404);
@@ -746,6 +921,13 @@ artistPortalRouter.post(
       );
       await prisma.$transaction(updates);
 
+      if (release.status === 'PUBLISHED') {
+        await prisma.song.updateMany({
+          where: { id: { in: deduped }, artistId: artist.id },
+          data: { released: true },
+        });
+      }
+
       res.status(200).json({ releaseId: release.id, tracksAdded: songs.length });
     } catch (error) {
       next(error);
@@ -775,7 +957,13 @@ artistPortalRouter.get(
       const [releases, total] = await Promise.all([
         prisma.release.findMany({
           where,
-          include: { _count: { select: { songs: true } } },
+          include: {
+            songs: {
+              select: { id: true, title: true },
+              orderBy: { trackNumber: 'asc' as const },
+            },
+            _count: { select: { songs: true } },
+          },
           orderBy: { releaseDate: 'desc' as const },
           skip: (page - 1) * limit,
           take: limit,
@@ -783,7 +971,18 @@ artistPortalRouter.get(
         prisma.release.count({ where }),
       ]);
 
-      res.status(200).json({ releases, total, page, totalPages: Math.max(1, Math.ceil(total / limit)) });
+      const mapped = releases.map((r) => ({
+        id: r.id,
+        title: r.title,
+        type: r.type,
+        status: r.status,
+        releaseDate: r.releaseDate,
+        coverImageUrl: r.coverImageUrl,
+        trackCount: r._count.songs,
+        tracks: r.songs.map((s) => ({ songId: s.id, title: s.title })),
+      }));
+
+      res.status(200).json({ releases: mapped, total, page, totalPages: Math.max(1, Math.ceil(total / limit)) });
     } catch (error) {
       next(error);
     }
@@ -1103,10 +1302,10 @@ artistPortalRouter.delete(
         throw new ApiError('Access denied', 'FORBIDDEN', 403);
       }
 
-      // Detach songs from this release (don't delete the songs themselves)
+      // Detach songs from this release and un-publish them so they return to private
       await prisma.song.updateMany({
         where: { releaseId: release.id },
-        data: { releaseId: null },
+        data: { releaseId: null, released: false },
       });
 
       await prisma.release.delete({

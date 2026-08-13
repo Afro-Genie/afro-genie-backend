@@ -238,12 +238,10 @@ translationsRouter.post(
 
           return res.status(200).json({ status: 'existing', translation: approved });
         }
-        // Still processing — return the pending ID so frontend can poll
-        return res.status(202).json({
-          status: 'queued',
-          jobId: `pending:${recentPending.id}`,
-          rateLimit: { remaining: rateLimit.remaining, resetAt: rateLimit.resetAt },
-        });
+        // A PENDING row with no content yet (e.g. after a reset) is treated as
+        // "no translation" and regenerated inline below rather than returning a
+        // dead-end `pending:<id>` jobId that the status endpoint can never resolve.
+        logger.info({ songId, userId, targetLang, pendingId: recentPending.id }, 'Stale empty pending translation will be regenerated inline');
       }
 
       // INLINE PROCESSING: Queue is unreliable (Redis ENOTFOUND), always process directly
@@ -304,6 +302,63 @@ translationsRouter.post(
       if (e.code === 'NOT_FOUND') {
         return next(new ApiError(e.message, 'NOT_FOUND', 404));
       }
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/translations/requests
+// Authenticated. Queues a HUMAN translation request for moderator review.
+// Unlike /translations/request (AI generation), this creates a persistent
+// TranslationRequest row that appears in the moderators dashboard asynchronously.
+// ---------------------------------------------------------------------------
+translationsRouter.post(
+  '/translations/requests',
+  authenticate,
+  [
+    body('songId').isString().notEmpty().withMessage('songId is required'),
+    body('sourceLang').optional().isString(),
+    body('targetLang').optional().isString(),
+    body('notes').optional().isString(),
+  ],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { songId, sourceLang, targetLang, notes } = req.body as {
+        songId: string;
+        sourceLang?: string;
+        targetLang?: string;
+        notes?: string;
+      };
+      const userId = req.user!.id;
+
+      const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
+      if (!song) {
+        return next(new ApiError('Song not found', 'NOT_FOUND', 404));
+      }
+
+      // Deduplicate: reuse an existing pending request for the same song+user
+      const existing = await prisma.translationRequest.findFirst({
+        where: { songId, userId, status: 'PENDING' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) {
+        return res.status(200).json({ status: 'existing', request: existing });
+      }
+
+      const request = await prisma.translationRequest.create({
+        data: {
+          songId,
+          userId,
+          sourceLang: sourceLang || 'en',
+          targetLang: targetLang || 'en',
+          notes: notes ?? null,
+        },
+      });
+
+      return res.status(201).json({ status: 'created', request });
+    } catch (err) {
       return next(err);
     }
   },
@@ -692,9 +747,23 @@ translationsRouter.put(
         return next(new ApiError('Forbidden', 'FORBIDDEN', 403));
       }
 
+      const resetting = translatedLyrics.trim() === '';
       const updated = await prisma.translation.update({
         where: { id },
-        data: { translatedLyrics },
+        data: resetting
+          ? {
+              translatedLyrics,
+              status: 'PENDING',
+              approvedById: null,
+              approvedAt: null,
+              reviewedById: null,
+              reviewedAt: null,
+              rejectionReason: null,
+              correctedById: null,
+              correctionRequestId: null,
+              correctedAt: null,
+            }
+          : { translatedLyrics },
       });
 
       return res.status(200).json(updated);
