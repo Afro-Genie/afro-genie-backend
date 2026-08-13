@@ -84,6 +84,15 @@ adminModerationRouter.patch(
 
       await queueReward(moderatorId, 2, 'Report resolved', 'MODERATOR_ACTION', `report-resolve:${reportId}:${moderatorId}`);
 
+      await prisma.notification.create({
+        data: {
+          userId: report.reporterId,
+          title: 'Report Resolved',
+          message: 'Your report has been addressed by our moderation team. Thank you for helping keep AfroGenie safe.',
+          type: 'MODERATION',
+        },
+      });
+
       logger.info({ reportId, moderatorId }, 'Content report resolved');
 
       res.json(resolved);
@@ -109,6 +118,15 @@ adminModerationRouter.patch(
         where: { id: reportId },
         data: { status: 'DISMISSED', moderatorId, resolvedAt: new Date() },
         select: { id: true, status: true, resolvedAt: true },
+      });
+
+      await prisma.notification.create({
+        data: {
+          userId: report.reporterId,
+          title: 'Report Reviewed',
+          message: 'Your report was reviewed by our moderation team and dismissed. Thank you for helping keep AfroGenie safe.',
+          type: 'MODERATION',
+        },
       });
 
       logger.info({ reportId, moderatorId }, 'Content report dismissed');
@@ -495,7 +513,203 @@ adminModerationRouter.patch(
   },
 );
 
-// ─── 1.7 Moderator stats endpoint ─────────────────────────────────────────────
+// ─── 1.7 Translation Requests (human request queue) ──────────────────────────
+
+adminModerationRouter.get(
+  '/moderation/translation-requests',
+  [
+    query('status').optional().isIn(['PENDING', 'IN_REVIEW', 'APPROVED', 'REJECTED', 'COMPLETED']),
+    query('page').optional().isInt({ min: 1 }).toInt(),
+    query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
+  ],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 20, 1), 100);
+      const status = req.query.status as string | undefined;
+      const skip = (page - 1) * limit;
+
+      const where: Record<string, unknown> = {};
+      if (status) where.status = status;
+
+      const [requests, total] = await Promise.all([
+        prisma.translationRequest.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit,
+          select: {
+            id: true,
+            sourceLang: true,
+            targetLang: true,
+            notes: true,
+            status: true,
+            createdAt: true,
+            user: { select: { id: true, displayName: true, email: true } },
+            song: { select: { id: true, title: true, artist: { select: { name: true } } } },
+          },
+        }),
+        prisma.translationRequest.count({ where }),
+      ]);
+
+      res.json({
+        data: requests,
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminModerationRouter.patch(
+  '/moderation/translation-requests/:id/resolve',
+  [
+    param('id').isString().notEmpty(),
+    body('translatedLyrics').isString().notEmpty().withMessage('translatedLyrics is required'),
+    body('moderatorNote').optional().isString(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const requestId = req.params.id;
+      const moderatorId = req.user!.id;
+      const { translatedLyrics, moderatorNote } = req.body as { translatedLyrics: string; moderatorNote?: string };
+
+      const request = await prisma.translationRequest.findUnique({
+        where: { id: requestId },
+        include: {
+          song: {
+            select: {
+              id: true,
+              title: true,
+              lyrics: { orderBy: { createdAt: 'desc' }, take: 1, select: { content: true } },
+            },
+          },
+        },
+      });
+
+      if (!request) throw new ApiError('Translation request not found', 'NOT_FOUND', 404);
+      if (request.status !== 'PENDING') throw new ApiError('Translation request is not in PENDING status', 'CONFLICT', 409);
+
+      const originalLyrics = request.song.lyrics[0]?.content ?? '';
+
+      const translation = await prisma.$transaction(async (tx) => {
+        const saved = await tx.translation.upsert({
+          where: {
+            songId_userId_sourceLang_targetLang: {
+              songId: request.songId,
+              userId: request.userId,
+              sourceLang: request.sourceLang,
+              targetLang: request.targetLang,
+            },
+          },
+          create: {
+            songId: request.songId,
+            userId: request.userId,
+            originalLyrics,
+            translatedLyrics,
+            sourceLang: request.sourceLang,
+            targetLang: request.targetLang,
+            status: 'APPROVED',
+            approvedById: moderatorId,
+            approvedAt: new Date(),
+            reviewedById: moderatorId,
+            reviewedAt: new Date(),
+          },
+          update: {
+            originalLyrics,
+            translatedLyrics,
+            status: 'APPROVED',
+            approvedById: moderatorId,
+            approvedAt: new Date(),
+            reviewedById: moderatorId,
+            reviewedAt: new Date(),
+            rejectionReason: null,
+            updatedAt: new Date(),
+          },
+        });
+
+        await tx.translationRequest.update({
+          where: { id: requestId },
+          data: {
+            status: 'COMPLETED',
+            notes: moderatorNote
+              ? (request.notes ? `${request.notes}\n\nModerator: ${moderatorNote}` : moderatorNote)
+              : request.notes,
+          },
+        });
+
+        return saved;
+      });
+
+      await queueReward(moderatorId, 3, 'Translation request resolved', 'MODERATOR_ACTION', `translation-request-resolve:${requestId}:${moderatorId}`);
+      await queueReward(request.userId, 5, 'Translation request fulfilled', 'TRANSLATION_REQUEST_FULFILLED', `translation-request-fulfilled:${requestId}`);
+
+      await prisma.notification.create({
+        data: {
+          userId: request.userId,
+          title: 'Translation Request Completed',
+          message: `Your translation request for "${request.song.title}" has been reviewed by a moderator and is now available.`,
+          type: 'TRANSLATION',
+        },
+      });
+
+      logger.info({ requestId, moderatorId, translationId: translation.id }, 'Translation request resolved');
+
+      res.json({ id: requestId, status: 'COMPLETED', translation: { id: translation.id, status: translation.status } });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminModerationRouter.patch(
+  '/moderation/translation-requests/:id/reject',
+  [
+    param('id').isString().notEmpty(),
+    body('moderatorNote').optional().isString(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const requestId = req.params.id;
+      const moderatorId = req.user!.id;
+      const { moderatorNote } = req.body as { moderatorNote?: string };
+
+      const request = await prisma.translationRequest.findUnique({
+        where: { id: requestId },
+        select: { id: true, status: true, userId: true, song: { select: { title: true } } },
+      });
+
+      if (!request) throw new ApiError('Translation request not found', 'NOT_FOUND', 404);
+      if (request.status !== 'PENDING') throw new ApiError('Translation request is not in PENDING status', 'CONFLICT', 409);
+
+      await prisma.translationRequest.update({
+        where: { id: requestId },
+        data: { status: 'REJECTED', notes: moderatorNote ?? null },
+      });
+
+      await prisma.notification.create({
+        data: {
+          userId: request.userId,
+          title: 'Translation Request Not Approved',
+          message: `Your translation request for "${request.song.title}" was not approved.${moderatorNote ? ` Reason: ${moderatorNote}` : ''}`,
+          type: 'MODERATION',
+        },
+      });
+
+      logger.info({ requestId, moderatorId }, 'Translation request rejected');
+
+      res.json({ id: requestId, status: 'REJECTED' });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─── 1.8 Moderator stats endpoint ─────────────────────────────────────────────
 
 adminModerationRouter.get(
   '/moderation/moderator/:id/stats',

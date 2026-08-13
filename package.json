@@ -14,6 +14,7 @@
     "test:schema": "tsx scripts/test-schema.ts",
     "test:translations": "tsx scripts/translation-acceptance-test.ts",
     "test:lyrics-enrichment": "tsx scripts/lyrics-enrichment-acceptance-test.ts",
+    "test:release-publish": "tsx scripts/release-publish-acceptance-test.ts",
     "test:community": "tsx scripts/community-acceptance-test.ts",
     "search:index": "tsx scripts/indexExistingSongs.ts",
     "spotify:backfill": "tsx scripts/backfillSpotifyIds.ts",

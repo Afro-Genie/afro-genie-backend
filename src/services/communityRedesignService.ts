@@ -70,6 +70,7 @@ class CommunityRedesignService {
     const limit = Math.min(params.limit || 20, 50);
     const where: Prisma.TopicWhereInput = {
       forumCategoryId: params.categoryId || undefined,
+      softDeleted: false,
       title: params.search
         ? { contains: params.search, mode: 'insensitive' }
         : undefined,
@@ -129,7 +130,7 @@ class CommunityRedesignService {
     const limit = Math.min(params.limit || 20, 50);
 
     const topics = await prisma.topic.findMany({
-      where: { isLocked: false },
+      where: { isLocked: false, softDeleted: false },
       include: {
         author: { select: { id: true, displayName: true, photoUrl: true, role: true } },
         forumCategory: { select: { id: true, name: true } },
@@ -186,7 +187,7 @@ class CommunityRedesignService {
   async getModeratorPicks(params: PaginationParams, userId?: string) {
     const page = params.page || 1;
     const limit = Math.min(params.limit || 20, 50);
-    const where: Prisma.TopicWhereInput = { isModeratorOnly: true };
+    const where: Prisma.TopicWhereInput = { isModeratorOnly: true, softDeleted: false };
 
     const [topics, total] = await Promise.all([
       prisma.topic.findMany({
@@ -251,6 +252,7 @@ class CommunityRedesignService {
 
     const where: Prisma.TopicWhereInput = {
       isLocked: false,
+      softDeleted: false,
       OR: [
         ...(prefs.genreIds.length > 0
           ? [{ song: { genres: { some: { genreId: { in: prefs.genreIds } } } } }]
@@ -489,7 +491,7 @@ class CommunityRedesignService {
   // ── Record Topic View ──────────────────────────────────────
   async recordTopicView(topicId: string, userId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id: topicId } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 

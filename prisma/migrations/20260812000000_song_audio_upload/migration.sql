@@ -1,0 +1,8 @@
+-- AlterTable: Song
+ALTER TABLE "Song" ADD COLUMN IF NOT EXISTS "audioUrl" TEXT;
+ALTER TABLE "Song" ADD COLUMN IF NOT EXISTS "audioMimeType" TEXT;
+ALTER TABLE "Song" ADD COLUMN IF NOT EXISTS "audioSize" INTEGER;
+ALTER TABLE "Song" ADD COLUMN IF NOT EXISTS "released" BOOLEAN NOT NULL DEFAULT false;
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "Song_released_idx" ON "Song"("released");

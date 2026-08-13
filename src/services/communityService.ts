@@ -42,7 +42,7 @@ class CommunityService {
       include: {
         _count: {
           select: {
-            topics: true,
+            topics: { where: { softDeleted: false } },
             memberships: true,
           },
         },
@@ -91,6 +91,7 @@ class CommunityService {
     const limit = Math.min(params.limit || 20, 50);
     const where: Prisma.TopicWhereInput = {
       forumCategoryId: params.categoryId || undefined,
+      softDeleted: false,
       title: params.search
         ? { contains: params.search, mode: 'insensitive' }
         : undefined,
@@ -203,7 +204,7 @@ class CommunityService {
       },
     });
 
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
@@ -254,7 +255,7 @@ class CommunityService {
 
   async createComment(data: CreateCommentData, userId: string) {
     const topic = await prisma.topic.findUnique({ where: { id: data.topicId } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
     if (topic.isLocked) {
@@ -299,7 +300,7 @@ class CommunityService {
   // ── Topic Shares ─────────────────────────────────────────────
   async shareTopic(topicId: string, userId: string) {
     const topic = await prisma.topic.findUnique({ where: { id: topicId } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
@@ -315,7 +316,7 @@ class CommunityService {
 
   // ── Voting ──────────────────────────────────────────────────
   async voteOnTopic(userId: string, topicId: string, voteType: VoteType) {    const topic = await prisma.topic.findUnique({ where: { id: topicId } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
@@ -504,7 +505,7 @@ class CommunityService {
 
   async pinTopic(id: string, moderatorId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
@@ -523,7 +524,7 @@ class CommunityService {
 
   async lockTopic(id: string, moderatorId?: string) {
     const topic = await prisma.topic.findUnique({ where: { id } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
@@ -548,7 +549,7 @@ class CommunityService {
 
     await prisma.topic.update({
       where: { id },
-      data: { title: '[deleted]', content: '[deleted]' },
+      data: { title: '[deleted]', content: '[deleted]', softDeleted: true },
     });
 
     await this.logAction('TOPIC_DELETED', moderatorId, id);
@@ -560,7 +561,7 @@ class CommunityService {
   // ── Topic Updates ────────────────────────────────────────────
   async updateTopic(id: string, data: { title?: string; content?: string }) {
     const topic = await prisma.topic.findUnique({ where: { id } });
-    if (!topic) {
+    if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 

@@ -110,7 +110,14 @@ const getActiveSongIdSet = async (songIds: string[]): Promise<Set<string>> => {
 
   try {
     const rows = await prisma.song.findMany({
-      where: { id: { in: songIds }, softDeleted: false },
+      where: {
+        id: { in: songIds },
+        softDeleted: false,
+        OR: [
+          { audioUrl: null },
+          { released: true },
+        ],
+      },
       select: { id: true },
     });
     return new Set(rows.map((row) => row.id));
