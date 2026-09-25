@@ -6,6 +6,7 @@ import { redis, scanKeys } from './lib/redis';
 import { syncQueue, syncPopularTracksQueue } from './lib/queue';
 import { catalogService } from './services/catalogService';
 import { bulkIndex } from './services/searchService';
+import { LIBRARY_ENRICHMENT_JOB_NAME } from './jobs/libraryEnrichmentJob';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -29,41 +30,33 @@ const scheduleSyncJobs = async () => {
     }
   );
 
-  // Monday 3am — new releases (light, check fresh Spotify drops)
+  // 1st & 15th 3am — new releases (bi-weekly, light check for fresh drops)
   await syncQueue.add(
     'sync-new-releases',
     { type: 'sync-new-releases' },
     {
-      repeat: { pattern: '0 3 * * 1' },
-      jobId: 'sync-new-releases-monday',
+      repeat: { pattern: '0 3 1,15 * *' },
+      jobId: 'sync-new-releases-biweekly',
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
 
-  // Wednesday 2am — full artist sync (mid-week refresh)
+  // Monthly 1st 2am — full artist sync (heavy; daily caps protect the budget)
   await syncQueue.add(
     'sync-all',
     { type: 'sync-all' },
     {
-      repeat: { pattern: '0 2 * * 3' },
-      jobId: 'sync-all-wednesday',
+      repeat: { pattern: '0 2 1 * *' },
+      jobId: 'sync-all-monthly',
       removeOnComplete: 100,
       removeOnFail: 50,
     }
   );
 
-  // Friday 2am — genre discovery (supplementary terms)
-  await syncQueue.add(
-    'sync-genre-discovery',
-    { type: 'sync-genre-discovery' },
-    {
-      repeat: { pattern: '0 2 * * 5' },
-      jobId: 'sync-genre-discovery-friday',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
+  // Genre discovery has no scheduled cron anymore (was Friday 2am). Reliance on
+  // artist sync + new releases keeps coverage; the worker and the admin manual
+  // trigger (/api/admin/sync) remain available when a targeted run is wanted.
 
   // Daily 4am — incremental metadata refresh (quick stale-artist scan)
   await syncQueue.add(
@@ -89,7 +82,19 @@ const scheduleSyncJobs = async () => {
     }
   );
 
-  logger.info('Sync cron jobs scheduled: Mon 2am popular + 3am new releases, Wed 2am full sync, Fri 2am genre discovery, daily 4am refresh stale, daily 5am lyrics backfill');
+  // Tuesday/Thursday 3am — YouTube library enrichment (max 500 unmatched songs/day)
+  await syncQueue.add(
+    LIBRARY_ENRICHMENT_JOB_NAME,
+    { type: LIBRARY_ENRICHMENT_JOB_NAME },
+    {
+      repeat: { pattern: '0 3 * * 2,4' },
+      jobId: 'library-enrichment-tue-thu',
+      removeOnComplete: 100,
+      removeOnFail: 50,
+    }
+  );
+
+  logger.info('Sync cron jobs scheduled: Mon 2am popular, 1st&15th 3am new releases, monthly 1st 2am full sync, daily 4am refresh stale, daily 5am lyrics backfill, Tue/Thu 3am library enrichment');
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +105,7 @@ const verifyRepeatJobs = async () => {
     syncQueue.getJob('refresh-stale-daily'),
     syncPopularTracksQueue.getJob('sync-popular-tracks-monday'),
     syncQueue.getJob('backfill-lyrics-daily'),
+    syncQueue.getJob('library-enrichment-tue-thu'),
   ]);
 
   const missing = coreJobs.some((j) => !j);

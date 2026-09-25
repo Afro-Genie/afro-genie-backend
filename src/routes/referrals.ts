@@ -42,7 +42,7 @@ referralsRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { code } = req.body as { code: string };
-      const result = await applyReferral(code, req.user!.id);
+      const result = await applyReferral(code, req.user!.id, req.ip);
       if (!result.success) {
         throw new ApiError(result.message, 'REFERRAL_FAILED', 400);
       }

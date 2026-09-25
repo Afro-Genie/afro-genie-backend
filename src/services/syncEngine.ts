@@ -8,6 +8,7 @@ import { getSpotifyToken } from './spotifyService';
 import { selectBestSpotifyImage } from './imageService';
 import { fetchLastFmArtist } from './lastfmService';
 import { syncQueue, lyricsEnrichmentQueue } from '../lib/queue';
+import { dedupFetch } from '../lib/requestDedup';
 
 const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
 const LAST_SYNC_KEY_PREFIX = 'sync:lastSync:';
@@ -15,6 +16,39 @@ const SYNC_DURATION_KEY_PREFIX = 'sync:duration:';
 const SYNC_STATS_KEY = 'sync:stats';
 const POPULAR_TRACKS_CACHE_KEY = 'catalog:popularTracks';
 const POPULAR_TRACKS_SYNC_KEY = 'sync:lastSync:popularTracks';
+
+// ---------------------------------------------------------------------------
+// Daily sync caps (Phase 6 / 7.1.3) — bound outbound API/egress per calendar
+// day. Counts are tracked in Redis as `sync:daily:<name>:<YYYY-MM-DD>`, so any
+// accidental re-run within the same day is throttled too.
+// ---------------------------------------------------------------------------
+export const POPULAR_TRACKS_DAILY_CAP = 500;
+export const ARTIST_SYNC_DAILY_CAP = 100;
+
+const DAILY_CAP_KEY_PREFIX = 'sync:daily:';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const todayKey = (now = new Date()): string => now.toISOString().slice(0, 10);
+
+const getDailyRemaining = async (name: string, cap: number): Promise<number> => {
+  try {
+    const raw = await redis.get(`${DAILY_CAP_KEY_PREFIX}${name}:${todayKey()}`);
+    const used = raw ? parseInt(raw, 10) : 0;
+    return Math.max(0, cap - used);
+  } catch {
+    // Cap unavailable — never block sync on a Redis hiccup.
+    return cap;
+  }
+};
+
+const consumeDailyBudget = async (name: string, amount = 1): Promise<void> => {
+  try {
+    await redis.incrby(`${DAILY_CAP_KEY_PREFIX}${name}:${todayKey()}`, amount);
+    await redis.expire(`${DAILY_CAP_KEY_PREFIX}${name}:${todayKey()}`, DAY_MS / 1000 + 300);
+  } catch {
+    // Non-fatal — never block sync on a Redis hiccup.
+  }
+};
 
 interface SpotifyArtistResponse {
   id: string;
@@ -97,6 +131,10 @@ export interface SyncDashboard {
 // Adaptive rate limiting — respects Spotify Retry-After headers
 // ---------------------------------------------------------------------------
 async function spotifyFetchWithRetry<T>(path: string, retries = 3): Promise<T> {
+  return dedupFetch(`spotify-engine:${path}`, () => spotifyFetchWithRetryInner<T>(path, retries));
+}
+
+async function spotifyFetchWithRetryInner<T>(path: string, retries = 3): Promise<T> {
   const token = await getSpotifyToken();
 
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -128,6 +166,53 @@ async function spotifyFetchWithRetry<T>(path: string, retries = 3): Promise<T> {
   }
 
   throw new Error(`Spotify API error: rate limit exceeded after ${retries} retries for ${path}`);
+}
+
+// ---------------------------------------------------------------------------
+// Cached Spotify fetch (Phase 6 / 7.2.2) — Redis-backed response cache keyed by
+// request path. The heavy sync paths (artist metadata, albums, new releases)
+// are cached for 24–48h; search results for 10min. Only relative `/v1/...`
+// paths are cached (pagination `next` URLs are absolute and skipped).
+// ---------------------------------------------------------------------------
+const SPOTIFY_ENGINE_CACHE_PREFIX = 'spotify:engine:';
+
+const spotifyCacheTtlSeconds = (path: string): number | null => {
+  if (path.startsWith('/artists/') && path.includes('/top-tracks')) return 60 * 60 * 24;
+  if (path.startsWith('/artists/')) return 60 * 60 * 24;
+  if (path.startsWith('/artists?ids=')) return 60 * 60 * 24;
+  if (path.startsWith('/albums/')) return 60 * 60 * 48;
+  if (path.startsWith('/browse/new-releases')) return 60 * 60 * 24;
+  if (path.startsWith('/search')) return 60 * 10;
+  return null;
+};
+
+async function cachedSpotifyFetch<T>(path: string, retries = 3): Promise<T> {
+  const ttlSeconds = spotifyCacheTtlSeconds(path);
+
+  if (ttlSeconds) {
+    const cacheKey = `${SPOTIFY_ENGINE_CACHE_PREFIX}${path}`;
+    try {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return JSON.parse(cached) as T;
+      }
+    } catch {
+      // Cache unavailable — fetch live
+    }
+
+    const data = await spotifyFetchWithRetry<T>(path, retries);
+
+    try {
+      await redis.set(cacheKey, JSON.stringify(data), 'EX', ttlSeconds);
+    } catch {
+      // Non-fatal when cache is unavailable
+    }
+
+    return data;
+  }
+
+  // Uncacheable path (e.g. absolute pagination `next` URL) — always live
+  return spotifyFetchWithRetry<T>(path, retries);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -335,7 +420,7 @@ export const syncArtistMetadata = async (artistId: string): Promise<{ updated: b
   }
 
   try {
-    const spotifyArtist = await spotifyFetchWithRetry<SpotifyArtistResponse>(
+    const spotifyArtist = await cachedSpotifyFetch<SpotifyArtistResponse>(
       `/artists/${encodeURIComponent(artist.spotifyId)}`
     );
 
@@ -369,7 +454,7 @@ export const syncArtistMetadata = async (artistId: string): Promise<{ updated: b
 // ---------------------------------------------------------------------------
 const syncArtistPreviewUrls = async (spotifyArtistId: string): Promise<void> => {
   try {
-    const topTracks = await spotifyFetchWithRetry<SpotifyTopTracksResponse>(
+    const topTracks = await cachedSpotifyFetch<SpotifyTopTracksResponse>(
       `/artists/${encodeURIComponent(spotifyArtistId)}/top-tracks?market=US`
     );
 
@@ -453,7 +538,9 @@ export const syncArtistAlbums = async (artistId: string): Promise<{ albumsSynced
 
   try {
     while (url) {
-      const response: SpotifyAlbumsResponse = await spotifyFetchWithRetry<SpotifyAlbumsResponse>(url);
+      const response: SpotifyAlbumsResponse = url.startsWith('/')
+        ? await cachedSpotifyFetch<SpotifyAlbumsResponse>(url)
+        : await spotifyFetchWithRetry<SpotifyAlbumsResponse>(url);
       allAlbums.push(...response.items);
       url = response.next;
       if (url) await sleep(200);
@@ -577,18 +664,39 @@ export const syncAllArtists = async (
       take: env.SYNC_MAX_BATCH,
     });
 
-    logger.info({ total: artists.length }, 'Starting full artist sync');
+    // Daily cap — each artist costs Spotify API calls + downstream egress.
+    const dailyBudget = await getDailyRemaining('artistSync', ARTIST_SYNC_DAILY_CAP);
+    if (dailyBudget <= 0) {
+      logger.warn(
+        { date: todayKey(), dailyCap: ARTIST_SYNC_DAILY_CAP },
+        'Artist sync daily cap reached — skipping run',
+      );
+      await setLastSyncTimestamp('syncAll');
+      return { synced: 0, failed: 0 };
+    }
+
+    logger.info(
+      { total: artists.length, dailyBudget, dailyCap: ARTIST_SYNC_DAILY_CAP },
+      'Starting full artist sync',
+    );
 
     let synced = 0;
     let failed = 0;
+    let processed = 0;
 
     for (let i = 0; i < artists.length; i++) {
+      if (processed >= dailyBudget) {
+        logger.warn({ processed, dailyCap: ARTIST_SYNC_DAILY_CAP }, 'Artist sync daily cap reached — stopping');
+        break;
+      }
       try {
         await syncArtistMetadata(artists[i].id);
         synced++;
       } catch {
         failed++;
       }
+      processed++;
+      await consumeDailyBudget('artistSync');
       onProgress?.(i + 1, artists.length);
       if (i < artists.length - 1) await sleep(200);
     }
@@ -633,16 +741,33 @@ export const refreshStaleArtists = async (
       'Refreshing stale artists',
     );
 
+    // Daily cap — each refresh costs Spotify API calls + downstream egress.
+    const dailyBudget = await getDailyRemaining('artistSync', ARTIST_SYNC_DAILY_CAP);
+    if (dailyBudget <= 0) {
+      logger.warn(
+        { date: todayKey(), dailyCap: ARTIST_SYNC_DAILY_CAP },
+        'Artist sync daily cap reached — skipping stale refresh',
+      );
+      return { refreshed: 0, skipped: 0 };
+    }
+
     let refreshed = 0;
     let skipped = 0;
+    let processed = 0;
 
     for (let i = 0; i < staleArtists.length; i++) {
+      if (processed >= dailyBudget) {
+        logger.warn({ processed, dailyCap: ARTIST_SYNC_DAILY_CAP }, 'Artist sync daily cap reached — stopping');
+        break;
+      }
       try {
         await syncArtistMetadata(staleArtists[i].id);
         refreshed++;
       } catch {
         skipped++;
       }
+      processed++;
+      await consumeDailyBudget('artistSync');
       onProgress?.(i + 1, staleArtists.length);
       if (i < staleArtists.length - 1) await sleep(200);
     }
@@ -758,14 +883,36 @@ export const syncPopularTracks = async (
     let totalSynced = 0;
     let totalFailed = 0;
 
-    logger.info({ queries: SEARCH_QUERIES.length, tracksPerQuery: TRACKS_PER_QUERY }, 'Starting popular tracks sync');
+    // Daily cap — bounds downstream lyrics/Last.fm dequeue load + worker egress.
+    const dailyBudget = await getDailyRemaining('popularTracks', POPULAR_TRACKS_DAILY_CAP);
+    if (dailyBudget <= 0) {
+      logger.warn(
+        { date: todayKey(), dailyCap: POPULAR_TRACKS_DAILY_CAP },
+        'Popular tracks daily cap reached — skipping run',
+      );
+      await setLastSyncTimestamp('popularTracks');
+      return { synced: 0, failed: 0, queries: 0 };
+    }
+
+    logger.info(
+      { queries: SEARCH_QUERIES.length, tracksPerQuery: TRACKS_PER_QUERY, dailyBudget, dailyCap: POPULAR_TRACKS_DAILY_CAP },
+      'Starting popular tracks sync',
+    );
+
+    let capped = false;
+    let processed = 0;
 
     for (let i = 0; i < SEARCH_QUERIES.length; i++) {
+      if (processed >= dailyBudget) {
+        logger.warn({ processed, dailyCap: POPULAR_TRACKS_DAILY_CAP }, 'Popular tracks daily cap reached — stopping');
+        capped = true;
+        break;
+      }
       const query = SEARCH_QUERIES[i];
       const isGenreQuery = GENRE_KEYWORDS.has(query);
 
       try {
-        const searchResult = await spotifyFetchWithRetry<SpotifySearchTracksResponse>(
+        const searchResult = await cachedSpotifyFetch<SpotifySearchTracksResponse>(
           `/search?q=${encodeURIComponent(query)}&type=track&limit=${TRACKS_PER_QUERY}&market=US`
         );
 
@@ -776,6 +923,11 @@ export const syncPopularTracks = async (
         let queryFailed = 0;
 
         for (const track of tracks) {
+          if (processed >= dailyBudget) {
+            logger.warn({ processed, dailyCap: POPULAR_TRACKS_DAILY_CAP }, 'Popular tracks daily cap reached — stopping');
+            capped = true;
+            break;
+          }
           try {
             const artistName = track.artists?.[0]?.name || 'Unknown';
             const spotifyArtistId = track.artists?.[0]?.id || null;
@@ -861,11 +1013,14 @@ export const syncPopularTracks = async (
             queryFailed++;
             logger.debug({ trackId: track.id, query, err }, 'Failed to upsert popular track');
           }
+
+          processed++;
+          await consumeDailyBudget('popularTracks');
         }
 
         totalSynced += querySynced;
         totalFailed += queryFailed;
-        logger.info({ query, synced: querySynced, failed: queryFailed }, 'Query popular tracks synced');
+        logger.info({ query, synced: querySynced, failed: queryFailed, capped }, 'Query popular tracks synced');
 
         // Small delay between queries to respect rate limits
         if (i < SEARCH_QUERIES.length - 1) {
@@ -1012,7 +1167,7 @@ export const syncNewReleases = async (): Promise<void> => {
 
   const start = Date.now();
 
-  const res = await spotifyFetchWithRetry<SpotifyNewReleasesResponse>(
+  const res = await cachedSpotifyFetch<SpotifyNewReleasesResponse>(
     `/browse/new-releases?limit=30&country=US`,
   );
 
@@ -1028,7 +1183,7 @@ export const syncNewReleases = async (): Promise<void> => {
   const artistGenreMap = new Map<string, string[]>();
   for (let i = 0; i < allArtistIds.length; i += 50) {
     const batch = allArtistIds.slice(i, i + 50);
-    const artistRes = await spotifyFetchWithRetry<{ artists: SpotifyArtistResponse[] }>(
+    const artistRes = await cachedSpotifyFetch<{ artists: SpotifyArtistResponse[] }>(
       `/artists?ids=${batch.join(',')}`,
     );
     for (const artist of artistRes?.artists ?? []) {
@@ -1052,7 +1207,7 @@ export const syncNewReleases = async (): Promise<void> => {
   let syncedCount = 0;
 
   for (const album of filteredAlbums) {
-    const tracksRes = await spotifyFetchWithRetry<SpotifyAlbumTracksResponse>(
+    const tracksRes = await cachedSpotifyFetch<SpotifyAlbumTracksResponse>(
       `/albums/${album.id}/tracks?limit=50`,
     );
 
@@ -1142,7 +1297,7 @@ export const syncGenreDiscovery = async (): Promise<void> => {
 
   for (const query of SUPPLEMENTARY_GENRE_QUERIES) {
     try {
-      const searchRes = await spotifyFetchWithRetry<SpotifySearchTracksResponse>(
+      const searchRes = await cachedSpotifyFetch<SpotifySearchTracksResponse>(
         `/search?q=${encodeURIComponent(query)}&type=track&limit=20&market=US`,
       );
 
@@ -1153,7 +1308,7 @@ export const syncGenreDiscovery = async (): Promise<void> => {
       const genreMap = new Map<string, string[]>();
       for (let i = 0; i < artistIds.length; i += 50) {
         const batch = artistIds.slice(i, i + 50);
-        const artistRes = await spotifyFetchWithRetry<{ artists: SpotifyArtistResponse[] }>(
+        const artistRes = await cachedSpotifyFetch<{ artists: SpotifyArtistResponse[] }>(
           `/artists?ids=${batch.join(',')}`,
         );
         for (const artist of artistRes?.artists ?? []) {

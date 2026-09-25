@@ -27,9 +27,21 @@ import {
   scheduleReconciliation,
 } from './reconciliationJob';
 import {
+  processAbuseDetectionJob,
+  scheduleAbuseDetection,
+} from './abuseDetectionJob';
+import {
+  processChallengeRotationJob,
+  scheduleChallengeRotation,
+} from './challengeRotationJob';
+import {
   processOverturnRateAlertJob,
   scheduleOverturnRateAlert,
 } from './overturnRateAlertJob';
+import {
+  processPassRevocationJob,
+  schedulePassRevocation,
+} from './passRevocationJob';
 import type { TranslationJobData } from '../types/translation';
 import type { RewardJobData } from './rewardJob';
 import type { SyncJobData } from './syncWorker';
@@ -237,7 +249,17 @@ async function startWorkers(): Promise<void> {
 
   const reconciliationWorker = new Worker(
     'reconciliationQueue',
-    async () => {
+    async (job) => {
+      if (job.name === 'abuse-detect') {
+        logger.info('Processing abuse detection job');
+        await processAbuseDetectionJob();
+        return;
+      }
+      if (job.name === 'challenge-rotation') {
+        logger.info('Processing weekly challenge rotation job');
+        await processChallengeRotationJob();
+        return;
+      }
       logger.info('Processing wallet/ledger reconciliation job');
       await processReconciliationJob();
     },
@@ -253,7 +275,20 @@ async function startWorkers(): Promise<void> {
     { connection, concurrency: 1 }
   );
 
-  logger.info('All 15 workers started successfully');
+  const passRevocationWorker = new Worker(
+    'passRevocationQueue',
+    async () => {
+      logger.info('Processing premium pass revocation job');
+      await processPassRevocationJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  passRevocationWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, err }, 'Premium pass revocation job failed');
+  });
+
+  logger.info('All 16 workers started successfully');
 
   await scheduleViewCountFlush();
   await scheduleAnalyticsRollup();
@@ -261,7 +296,10 @@ async function startWorkers(): Promise<void> {
   await scheduleModPoolDistribution();
   await scheduleSeasonSnapshot();
   await scheduleReconciliation();
+  await scheduleAbuseDetection();
+  await scheduleChallengeRotation();
   await scheduleOverturnRateAlert();
+  await schedulePassRevocation();
 }
 
 startWorkers().catch((err) => {

@@ -33,11 +33,25 @@ const envSchema = z.object({
   AI_TRANSLATION_PROVIDER: z.string().default('gemini'),
   TRANSLATION_RATE_LIMIT_PER_DAY: z.coerce.number().int().positive().default(20),
   TRANSLATION_DAILY_BUDGET_USD: z.coerce.number().positive().default(5.0),
-  SYNC_STALE_THRESHOLD_HOURS: z.coerce.number().int().positive().default(72),
+  SYNC_STALE_THRESHOLD_HOURS: z.coerce.number().int().positive().default(168),
   SYNC_MAX_BATCH: z.coerce.number().int().positive().default(50),
   SYNC_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(60),
   APP_VERSION: z.string().default('1.0.0'),
-  ENABLE_WORKERS: z.string().default('true').transform((v) => v === 'true' || v === '1')
+  ENABLE_WORKERS: z.string().default('true').transform((v) => v === 'true' || v === '1'),
+  // GT payments (Phase 2). Optional so the app boots without payment keys;
+  // payment routes return 503 PAYMENTS_NOT_CONFIGURED until they are set.
+  PAYSTACK_SECRET_KEY: z.string().optional(),
+  PAYSTACK_PUBLIC_KEY: z.string().optional(),
+  PAYSTACK_CALLBACK_URL: z.string().url().optional(),
+  // YouTube Data API v3 (Phase 3 playback fallback). Optional so the app boots
+  // without it; YouTube matching/playback degrades to preview source.
+  YOUTUBE_API_KEY: z.string().optional(),
+  // Phase 4 playback rollout flag. OFF by default (legacy Spotify player + no
+  // library enrichment) until the YouTube tier is validated per environment.
+  FLAG_PLAYBACK_YOUTUBE: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 const parsed = envSchema.safeParse(process.env);

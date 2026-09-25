@@ -104,3 +104,49 @@ export async function cachedFetchLyrics(
 
   return content;
 }
+
+// ---------------------------------------------------------------------------
+// LRCLIB returns plain + synced (LRC) lyrics in a single call. Cache both so
+// the persister can round-trip without re-hitting the provider on re-runs.
+// ---------------------------------------------------------------------------
+
+interface SyncedLyricsProviderLike {
+  name: string;
+  fetchLyricsWithSync(trackId: string): Promise<{ plain: string | null; synced: string | null }>;
+}
+
+const EMPTY_SYNCED_MARKER = '__EMPTY_SYNCED__';
+
+export async function cachedFetchLyricsWithSync(
+  provider: SyncedLyricsProviderLike,
+  trackId: string,
+): Promise<{ plain: string | null; synced: string | null }> {
+  const cacheKey = `${CACHE_KEY_PREFIX}synced:${provider.name}:${trackId}`;
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      if (cached === EMPTY_SYNCED_MARKER) {
+        return { plain: null, synced: null };
+      }
+      return JSON.parse(cached) as { plain: string | null; synced: string | null };
+    }
+  } catch (err) {
+    logger.warn({ err, provider: provider.name }, 'Lyrics synced cache read failed');
+  }
+
+  const result = await provider.fetchLyricsWithSync(trackId);
+
+  try {
+    if (result.plain || result.synced) {
+      await redis.set(cacheKey, JSON.stringify(result), 'EX', CACHE_TTL_SECONDS);
+    } else {
+      // Cache empty result to avoid repeated API calls
+      await redis.set(cacheKey, EMPTY_SYNCED_MARKER, 'EX', NEGATIVE_CACHE_TTL_SECONDS);
+    }
+  } catch (err) {
+    logger.warn({ err, provider: provider.name }, 'Lyrics synced cache write failed');
+  }
+
+  return result;
+}

@@ -296,7 +296,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
   };
 
   try {
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60);
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60 * 24);
   } catch {
     // Non-fatal when cache write is unavailable.
   }

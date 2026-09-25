@@ -12,6 +12,7 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts'
   },
   datasource: {
-    url: parsedUrl.toString()
+    url: parsedUrl.toString(),
+    shadowDatabaseUrl: 'postgresql://neondb_owner:npg_Li12PMrIHnZC@ep-old-rice-ataoe41y-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
   }
 });

@@ -14,8 +14,9 @@ import {
   backfillArtistLastFm,
   enrichArtistLastFm,
 } from '../services/syncEngine';
+import { processLibraryEnrichmentJob } from './libraryEnrichmentJob';
 
-export type SyncJobType = 'artist' | 'artist-albums' | 'artist-full' | 'sync-all' | 'refresh-stale' | 'sync-genres' | 'sync-popular-tracks' | 'sync-new-releases' | 'sync-genre-discovery' | 'curated-playlists' | 'backfill-lyrics' | 'backfill-artists-lastfm' | 'enrich-artist-lastfm';
+export type SyncJobType = 'artist' | 'artist-albums' | 'artist-full' | 'sync-all' | 'refresh-stale' | 'sync-genres' | 'sync-popular-tracks' | 'sync-new-releases' | 'sync-genre-discovery' | 'curated-playlists' | 'backfill-lyrics' | 'backfill-artists-lastfm' | 'enrich-artist-lastfm' | 'library-enrichment';
 
 export interface SyncJobData {
   type: SyncJobType;
@@ -108,6 +109,9 @@ export const processSyncJob = async (job: Job<SyncJobData>): Promise<unknown> =>
       const result = await enrichArtistLastFm(artistId);
       await job.updateProgress({ stage: 'enrich-artist-lastfm', current: 1, total: 1 });
       return result;
+    }
+    case 'library-enrichment': {
+      return processLibraryEnrichmentJob(job);
     }
     default: {
       throw new Error(`Unknown sync job type: ${String(type)}`);

@@ -35,6 +35,20 @@ enum PurchaseStatus {
   REFUNDED
 }
 
+enum GtPurchaseStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PassType {
+  SEVEN_DAY_PREMIUM
+  TRANSLATION_PACK_10
+  TRANSLATION_PACK_50
+}
+
 enum ModerationAction {
   TOPIC_PINNED
   TOPIC_LOCKED
@@ -133,6 +147,14 @@ enum TokenTransactionType {
   ADMIN_ADJUST
 }
 
+enum ChallengeType {
+  TRANSLATE_N_SONGS
+  EARN_N_GT
+  ACHIEVE_N_APPROVALS
+  STREAK_7_DAYS
+  INVITE_3_FRIENDS
+}
+
 enum TierName {
   LISTENER
   SCRIBE
@@ -166,34 +188,37 @@ enum ReleaseStatus {
 }
 
 model User {
-  id                         String                    @id @default(cuid())
-  email                      String                    @unique
+  id                         String                            @id @default(cuid())
+  email                      String                            @unique
   passwordHash               String?
-  googleId                   String?                   @unique
-  spotifyId                  String?                   @unique
+  googleId                   String?                           @unique
+  spotifyId                  String?                           @unique
   spotifyProduct             String?
   displayName                String?
   photoUrl                   String?
-  role                       UserRole                  @default(USER)
-  schemaVersion              Int                       @default(1)
-  referralCode               String?                   @unique
+  bio                        String?
+  preferredLanguages         String[]
+  role                       UserRole                          @default(USER)
+  schemaVersion              Int                               @default(1)
+  profileCompleted           Boolean                           @default(false)
+  referralCode               String?                           @unique
   referredByUserId           String?
-  createdAt                  DateTime                  @default(now())
-  updatedAt                  DateTime                  @updatedAt
+  createdAt                  DateTime                          @default(now())
+  updatedAt                  DateTime                          @updatedAt
   lastLoginAt                DateTime?
   moderatorPinnedAt          DateTime?
   translations               Translation[]
-  translationsApproved       Translation[]              @relation("TranslationApprovedBy")
-  translationsReviewed       Translation[]              @relation("TranslationReviewedBy")
+  translationsApproved       Translation[]                     @relation("TranslationApprovedBy")
+  translationsReviewed       Translation[]                     @relation("TranslationReviewedBy")
   translationVotes           TranslationVote[]
   corrections                TranslationCorrection[]
-  correctionsReviewed        TranslationCorrection[]    @relation("CorrectionReviewedBy")
+  correctionsReviewed        TranslationCorrection[]           @relation("CorrectionReviewedBy")
   translationRequests        TranslationRequest[]
   correctionRequests         CorrectionRequest[]
-  resolvedCorrectionRequests CorrectionRequest[]        @relation("CorrectionRequestResolver")
+  resolvedCorrectionRequests CorrectionRequest[]               @relation("CorrectionRequestResolver")
   songRequests               SongRequest[]
   topics                     Topic[]
-  topicComments              TopicComment[]             @relation("TopicCommentAuthor")
+  topicComments              TopicComment[]                    @relation("TopicCommentAuthor")
   topicVotes                 TopicVote[]
   topicCommentVotes          TopicCommentVote[]
   topicViews                 TopicView[]
@@ -205,7 +230,7 @@ model User {
   tier                       UserTier?
   streak                     UserStreak?
   artistApplications         ArtistApplication[]
-  reviewedArtistApplications ArtistApplication[]        @relation("ReviewedByUser")
+  reviewedArtistApplications ArtistApplication[]               @relation("ReviewedByUser")
   roleRequests               RoleRequest[]
   communityMemberships       UserCommunityMembership[]
   artist                     Artist?
@@ -215,19 +240,22 @@ model User {
   listeningPreference        UserListeningPreference?
   playlists                  Playlist[]
   playlistLikes              PlaylistLike[]
-  referredUsers              User[]                     @relation("ReferralChain")
-  referrer                   User?                      @relation("ReferralChain", fields: [referredByUserId], references: [id], onDelete: SetNull)
-  referralsSent              Referral[]                 @relation("Referrer")
-  referredBy                 Referral?                  @relation("Referred")
+  referredUsers              User[]                            @relation("ReferralChain")
+  referrer                   User?                             @relation("ReferralChain", fields: [referredByUserId], references: [id], onDelete: SetNull)
+  referralsSent              Referral[]                        @relation("Referrer")
+  referredBy                 Referral?                         @relation("Referred")
   purchases                  StorePurchase[]
   entitlements               UserEntitlement[]
-  contentReports             ContentReport[]            @relation("ContentReport_reporter")
-  moderatedReports           ContentReport[]            @relation("ContentReport_moderator")
+  gtPurchases                GtPurchase[]
+  premiumPasses              PremiumPass[]
+  contentReports             ContentReport[]                   @relation("ContentReport_reporter")
+  moderatedReports           ContentReport[]                   @relation("ContentReport_moderator")
   modActionLogs              ModActionLog[]
   moderationLogs             ModerationLog[]
   guidelineEdits             Guideline[]
   recommendations            ArtistApplicationRecommendation[]
-  correctedTranslations      Translation[]              @relation("CorrectedTranslations")
+  correctedTranslations      Translation[]                     @relation("CorrectedTranslations")
+  abuseFlags                 AbuseFlag[]
 
   @@index([role])
   @@index([lastLoginAt])
@@ -309,6 +337,8 @@ model Song {
   spotifyId           String?              @unique
   spotifyPreviewUrl   String?
   previewAvailable    Boolean?
+  youtubeVideoId      String?
+  youtubeMatchedAt    DateTime?
   durationMs          Int?
   trackNumber         Int?
   views               Int                  @default(0)
@@ -342,6 +372,7 @@ model Song {
   @@index([previewAvailable])
   @@index([released])
   @@index([createdAt])
+  @@index([youtubeVideoId])
 }
 
 model SongLanguage {
@@ -387,39 +418,39 @@ model Language {
 }
 
 model Translation {
-  id               String                  @id @default(cuid())
-  songId           String
-  userId           String
-  originalLyrics   String                  @db.Text
-  translatedLyrics String                  @db.Text
-  culturalContext  String?                 @db.Text
-  sourceLang       String
-  targetLang       String
-  status           TranslationStatus       @default(PENDING)
-  upvotes          Int                     @default(0)
-  downvotes        Int                     @default(0)
-  aiModel          String?
-  promptVersion    String?
-  approvedById     String?
-  approvedAt       DateTime?
-  reviewedById     String?
-  reviewedAt       DateTime?
-  rejectionReason  String?                 @db.Text
-  schemaVersion    Int                     @default(1)
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
-  song             Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
-  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  approvedBy       User?                   @relation("TranslationApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  reviewedBy       User?                   @relation("TranslationReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
-  votes            TranslationVote[]
-  corrections      TranslationCorrection[]
-  correctionRequests      CorrectionRequest[]         @relation("TranslationCorrectionRequests")
-  correctedById           String?                     @map("corrected_by_id")
-  correctedBy             User?                       @relation("CorrectedTranslations", fields: [correctedById], references: [id], onDelete: SetNull)
-  correctionRequestId     String?                    @unique
-  correctionRequest       CorrectionRequest?          @relation("TranslationResolvedByRequest", fields: [correctionRequestId], references: [id], onDelete: SetNull)
-  correctedAt             DateTime?
+  id                  String                  @id @default(cuid())
+  songId              String
+  userId              String
+  originalLyrics      String                  @db.Text
+  translatedLyrics    String                  @db.Text
+  culturalContext     String?                 @db.Text
+  sourceLang          String
+  targetLang          String
+  status              TranslationStatus       @default(PENDING)
+  upvotes             Int                     @default(0)
+  downvotes           Int                     @default(0)
+  aiModel             String?
+  promptVersion       String?
+  approvedById        String?
+  approvedAt          DateTime?
+  reviewedById        String?
+  reviewedAt          DateTime?
+  rejectionReason     String?                 @db.Text
+  schemaVersion       Int                     @default(1)
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  song                Song                    @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy          User?                   @relation("TranslationApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  reviewedBy          User?                   @relation("TranslationReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  votes               TranslationVote[]
+  corrections         TranslationCorrection[]
+  correctionRequests  CorrectionRequest[]     @relation("TranslationCorrectionRequests")
+  correctedById       String?                 @map("corrected_by_id")
+  correctedBy         User?                   @relation("CorrectedTranslations", fields: [correctedById], references: [id], onDelete: SetNull)
+  correctionRequestId String?                 @unique
+  correctionRequest   CorrectionRequest?      @relation("TranslationResolvedByRequest", fields: [correctionRequestId], references: [id], onDelete: SetNull)
+  correctedAt         DateTime?
 
   @@unique([songId, userId, sourceLang, targetLang])
   @@index([songId])
@@ -479,8 +510,8 @@ model TranslationRequest {
   sourceLang String        @default("en")
   targetLang String        @default("en")
   createdAt  DateTime      @default(now())
-  song      Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song       Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([songId])
   @@index([userId])
@@ -489,22 +520,22 @@ model TranslationRequest {
 }
 
 model CorrectionRequest {
-  id             String           @id @default(cuid())
-  songId         String
-  translationId  String?
-  userId         String
-  title          String
-  description    String           @db.Text
-  status         CorrectionStatus @default(PENDING)
-  resolvedById   String?
-  resolvedAt     DateTime?
-  moderatorNote  String?          @db.Text
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id            String           @id @default(cuid())
+  songId        String
+  translationId String?
+  userId        String
+  title         String
+  description   String           @db.Text
+  status        CorrectionStatus @default(PENDING)
+  resolvedById  String?
+  resolvedAt    DateTime?
+  moderatorNote String?          @db.Text
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
-  song         Song        @relation(fields: [songId], references: [id], onDelete: Cascade)
-  translation  Translation? @relation("TranslationCorrectionRequests", fields: [translationId], references: [id], onDelete: SetNull)
-  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song                Song         @relation(fields: [songId], references: [id], onDelete: Cascade)
+  translation         Translation? @relation("TranslationCorrectionRequests", fields: [translationId], references: [id], onDelete: SetNull)
+  user                User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   resolvedBy          User?        @relation("CorrectionRequestResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
   resolvedTranslation Translation? @relation("TranslationResolvedByRequest")
 
@@ -658,12 +689,12 @@ model TopicVote {
 }
 
 model TopicView {
-  id        String   @id @default(cuid())
-  topicId   String
-  userId    String?
-  viewedAt  DateTime @default(now())
-  topic     Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  id       String   @id @default(cuid())
+  topicId  String
+  userId   String?
+  viewedAt DateTime @default(now())
+  topic    Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([topicId])
   @@index([userId])
@@ -771,13 +802,13 @@ model UserBadge {
 }
 
 model TokenReward {
-  id              String   @id @default(cuid())
-  userId          String
-  amount          Int
-  reason          String
-  idempotencyKey  String?
-  createdAt       DateTime @default(now())
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  userId         String
+  amount         Int
+  reason         String
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([idempotencyKey])
   @@index([userId])
@@ -786,7 +817,7 @@ model TokenReward {
 }
 
 model ArtistApplication {
-  id               String                  @id @default(cuid())
+  id               String                            @id @default(cuid())
   userId           String
   stageName        String
   genre            String
@@ -794,14 +825,14 @@ model ArtistApplication {
   socialLinks      Json
   imageUrl         String?
   spotifyArtistId  String?
-  status           ArtistApplicationStatus @default(PENDING)
+  status           ArtistApplicationStatus           @default(PENDING)
   rejectionReason  String?
   reviewedByUserId String?
   reviewedAt       DateTime?
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
-  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reviewedBy       User?                   @relation("ReviewedByUser", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime                          @default(now())
+  updatedAt        DateTime                          @updatedAt
+  user             User                              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy       User?                             @relation("ReviewedByUser", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
   recommendations  ArtistApplicationRecommendation[]
 
   @@index([userId])
@@ -923,15 +954,15 @@ model Favorite {
 }
 
 model SyncRun {
-  id          String   @id @default(cuid())
-  type        String
-  startedAt   DateTime
-  completedAt DateTime
-  songsAdded  Int      @default(0)
-  artistsUpdated Int   @default(0)
-  errors      Int      @default(0)
-  durationMs  Int
-  createdAt   DateTime @default(now())
+  id             String   @id @default(cuid())
+  type           String
+  startedAt      DateTime
+  completedAt    DateTime
+  songsAdded     Int      @default(0)
+  artistsUpdated Int      @default(0)
+  errors         Int      @default(0)
+  durationMs     Int
+  createdAt      DateTime @default(now())
 
   @@index([type])
   @@index([startedAt])
@@ -965,7 +996,7 @@ model TokenLedger {
   id             String               @id @default(cuid())
   userId         String
   type           TokenTransactionType
-  amount         Int                  // signed: +earn / -spend / -penalty / -tax
+  amount         Int // signed: +earn / -spend / -penalty / -tax
   balanceAfter   Int
   reason         String
   sourceType     String?
@@ -1004,12 +1035,12 @@ model UserStreak {
 }
 
 model LeaderboardSnapshot {
-  id         String   @id @default(cuid())
-  period     String
-  startDate  DateTime
-  endDate    DateTime
-  data       Json
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  period    String
+  startDate DateTime
+  endDate   DateTime
+  data      Json
+  createdAt DateTime @default(now())
 
   @@unique([period, startDate])
   @@index([period])
@@ -1017,15 +1048,15 @@ model LeaderboardSnapshot {
 }
 
 model ModActionLog {
-  id            String   @id @default(cuid())
-  moderatorId   String?
-  actionType    String
-  targetId      String
-  targetType    String
-  details       String?
-  createdAt     DateTime @default(now())
+  id          String   @id @default(cuid())
+  moderatorId String?
+  actionType  String
+  targetId    String
+  targetType  String
+  details     String?
+  createdAt   DateTime @default(now())
 
-  moderator     User?    @relation(fields: [moderatorId], references: [id], onDelete: SetNull)
+  moderator User? @relation(fields: [moderatorId], references: [id], onDelete: SetNull)
 
   @@index([moderatorId])
   @@index([actionType])
@@ -1072,11 +1103,11 @@ model ModPool {
 }
 
 model Guideline {
-  id           String    @id @default(cuid())
-  content      String    @db.Text
-  version      Int       @default(1)
-  updatedBy    String
-  updatedAt    DateTime  @updatedAt
+  id            String   @id @default(cuid())
+  content       String   @db.Text
+  version       Int      @default(1)
+  updatedBy     String
+  updatedAt     DateTime @updatedAt
   updatedByUser User     @relation(fields: [updatedBy], references: [id], onDelete: Restrict)
 
   @@index([updatedBy])
@@ -1091,9 +1122,9 @@ model ArtistApplicationRecommendation {
   application   ArtistApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   moderator     User              @relation(fields: [moderatorId], references: [id], onDelete: Cascade)
 
+  @@unique([applicationId, moderatorId])
   @@index([applicationId])
   @@index([moderatorId])
-  @@unique([applicationId, moderatorId])
 }
 
 model ModerationLog {
@@ -1113,19 +1144,29 @@ model ModerationLog {
 }
 
 model StoreItem {
-  id          String          @id @default(cuid())
-  name        String
-  description String?
-  tokenCost   Int
-  category    String
-  metadata    Json?
-  active      Boolean         @default(true)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  purchases   StorePurchase[]
+  id              String          @id @default(cuid())
+  name            String
+  description     String?
+  tokenCost       Int
+  category        String
+  metadata        Json?
+  active          Boolean         @default(true)
+  featured        Boolean         @default(false)
+  limitedTime     Boolean         @default(false)
+  originalPrice   Int?
+  discountedPrice Int?
+  discountPercent Int?
+  promoStartsAt   DateTime?
+  promoEndsAt     DateTime?
+  sortOrder       Int             @default(0)
+  stock           Int?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  purchases       StorePurchase[]
 
   @@index([category])
   @@index([active])
+  @@index([featured])
 }
 
 model StorePurchase {
@@ -1157,17 +1198,74 @@ model UserEntitlement {
   @@index([userId])
 }
 
+model GtBundle {
+  id           String       @id @default(cuid())
+  name         String
+  gtAmount     Int
+  priceKobo    Int
+  currency     String       @default("NGN")
+  badge        String?
+  bonusPercent Int          @default(0)
+  sortOrder    Int          @default(0)
+  active       Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  purchases    GtPurchase[]
+
+  @@index([active])
+  @@index([sortOrder])
+}
+
+model GtPurchase {
+  id             String           @id @default(cuid())
+  userId         String
+  bundleId       String
+  bundleName     String
+  gtAmount       Int
+  amountKobo     Int
+  currency       String           @default("NGN")
+  status         GtPurchaseStatus @default(PENDING)
+  paystackRef    String?          @unique
+  paystackAccess String?
+  paidAt         DateTime?
+  creditedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bundle         GtBundle         @relation(fields: [bundleId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([paystackRef])
+  @@index([status])
+  @@index([bundleId])
+}
+
+model PremiumPass {
+  id          String   @id @default(cuid())
+  userId      String
+  type        PassType
+  purchasedAt DateTime @default(now())
+  expiresAt   DateTime
+  gtCost      Int
+  active      Boolean  @default(true)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, active])
+  @@index([expiresAt])
+}
+
 model Referral {
-  id              String   @id @default(cuid())
-  referrerId      String
-  referredUserId  String   @unique
-  code            String
-  createdAt       DateTime @default(now())
-  referrer        User     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
-  referred        User     @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  referrerId     String
+  referredUserId String   @unique
+  code           String
+  ip             String?
+  createdAt      DateTime @default(now())
+  referrer       User     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred       User     @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade)
 
   @@index([referrerId])
   @@index([code])
+  @@index([ip, createdAt])
 }
 
 model SeasonalSnapshot {
@@ -1179,4 +1277,53 @@ model SeasonalSnapshot {
   createdAt DateTime @default(now())
 
   @@index([period])
+}
+
+model EconomyConfig {
+  id               String   @id @default(cuid())
+  key              String   @unique
+  value            Json
+  description      String?
+  lastModifiedBy   String?
+  lastModifiedAt   DateTime @default(now()) @updatedAt
+
+  @@index([lastModifiedAt])
+}
+
+model AbuseFlag {
+  id            String    @id @default(cuid())
+  userId        String
+  rule          String
+  severity      String    @default("MEDIUM")
+  reason        String?
+  metadata      Json?
+  pausedRewards Boolean   @default(false)
+  reviewed      Boolean   @default(false)
+  reviewedById  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, rule])
+  @@index([rule])
+  @@index([pausedRewards, reviewed])
+  @@index([createdAt])
+}
+
+model Challenge {
+  id          String        @id @default(cuid())
+  title       String
+  description String?
+  type        ChallengeType
+  targetValue Int
+  gtReward    Int
+  startsAt    DateTime
+  expiresAt   DateTime
+  active      Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([type, startsAt])
+  @@index([active, expiresAt])
 }

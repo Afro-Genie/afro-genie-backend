@@ -47,6 +47,8 @@
     "seed:full": "tsx scripts/scheduled-seed.ts",
     "seed:artist-portal": "tsx scripts/seed-artist-portal.ts",
     "seed:rewards": "tsx prisma/seed-rewards.ts",
+    "seed:gt-bundles": "tsx prisma/seedGtBundles.ts",
+    "seed:challenges": "tsx prisma/seed-challenges.ts",
     "test:integration": "tsx src/__tests__/integration/artist-management-checklist.test.ts",
     "test:regression": "tsx src/__tests__/integration/regression-checklist.test.ts",
     "test:code-verify": "tsx src/__tests__/integration/code-verification.test.ts",

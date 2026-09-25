@@ -235,56 +235,6 @@ adminModerationRouter.get(
   },
 );
 
-adminModerationRouter.patch(
-  '/moderation/translations/:id/approve',
-  [param('id').isString().notEmpty(), validateRequest],
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const translationId = req.params.id;
-      const moderatorId = req.user!.id;
-
-      const translation = await prisma.translation.findUnique({
-        where: { id: translationId },
-        select: { id: true, userId: true, status: true, songId: true },
-      });
-
-      if (!translation) throw new ApiError('Translation not found', 'NOT_FOUND', 404);
-      if (translation.status !== 'PENDING') {
-        throw new ApiError('Translation is not in PENDING status', 'CONFLICT', 409);
-      }
-
-      await prisma.translation.update({
-        where: { id: translationId },
-        data: { status: 'APPROVED', updatedAt: new Date() },
-      });
-
-      await queueReward(translation.userId, 5, 'Translation approved', 'TRANSLATION_APPROVED', `translation-approve:${translationId}`);
-
-      await prisma.notification.create({
-        data: {
-          userId: translation.userId,
-          title: 'Translation Approved',
-          message: 'Your translation has been approved by a moderator.',
-          type: 'REWARD',
-        },
-      });
-
-      await logModAction({
-        moderatorId,
-        actionType: 'TRANSLATION_APPROVE',
-        targetId: translationId,
-        targetType: 'translation',
-      });
-
-      logger.info({ translationId, moderatorId }, 'Translation approved');
-
-      res.json({ id: translationId, status: 'APPROVED' as const });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
 // ─── 1.3 Correction listing endpoint ──────────────────────────────────────────
 
 adminModerationRouter.get(

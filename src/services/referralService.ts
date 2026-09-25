@@ -1,8 +1,8 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { getRewardConfig } from '../config/rewards';
 import { queueReward } from './rewardService';
 
-const REFERRAL_REWARD = 20;
 const REFERRED_REWARD = 10;
 
 function generateCode(): string {
@@ -30,7 +30,7 @@ export async function getOrCreateReferralCode(userId: string): Promise<string> {
   return fallbackCode;
 }
 
-export async function applyReferral(referralCode: string, newUserId: string): Promise<{ success: boolean; message: string }> {
+export async function applyReferral(referralCode: string, newUserId: string, ip?: string | null): Promise<{ success: boolean; message: string }> {
   const referrer = await prisma.user.findFirst({ where: { referralCode }, select: { id: true, displayName: true } });
   if (!referrer) {
     return { success: false, message: 'Invalid referral code' };
@@ -47,13 +47,47 @@ export async function applyReferral(referralCode: string, newUserId: string): Pr
 
   await prisma.user.update({ where: { id: newUserId }, data: { referredByUserId: referrer.id } });
 
+  // Record the referral edge (idempotent by referredUserId) so abuse detection
+  // can spot shared-IP / mutual referral rings.
+  await prisma.referral
+    .upsert({
+      where: { referredUserId: newUserId },
+      update: {},
+      create: {
+        referrerId: referrer.id,
+        referredUserId: newUserId,
+        code: referralCode,
+        ip: ip ?? null,
+      },
+    })
+    .catch((err) => logger.warn({ err, newUserId }, 'Failed to record referral edge'));
+
   // Award tokens to both parties asynchronously via queue
-  await queueReward(referrer.id, REFERRAL_REWARD, `Referral bonus: ${newUserId.substring(0, 8)}`, 'REFERRAL_REWARD', `referral:${referrer.id}:${newUserId}`);
+  const referralReward = (await getRewardConfig()).REFERRAL_REWARD;
+  await queueReward(referrer.id, referralReward, `Referral bonus: ${newUserId.substring(0, 8)}`, 'REFERRAL_REWARD', `referral:${referrer.id}:${newUserId}`);
   await queueReward(newUserId, REFERRED_REWARD, `Welcome bonus via referral`, 'REFERRAL_BONUS', `referral-welcome:${newUserId}`);
 
   logger.info({ referrerId: referrer.id, newUserId }, 'Referral completed');
 
-  return { success: true, message: `Referral applied! You earned ${REFERRAL_REWARD} tokens.` };
+  return { success: true, message: `Referral applied! You earned ${referralReward} tokens.` };
+}
+
+/**
+ * True when the two users referred each other (A→B→A). Referral commissions
+ * must be blocked for such rings.
+ */
+export async function hasMutualReferral(userId: string, referrerId: string): Promise<boolean> {
+  const [userRefersReferrer, referrerRefersUser] = await Promise.all([
+    prisma.referral.findFirst({
+      where: { referrerId: userId, referredUserId: referrerId },
+      select: { id: true },
+    }),
+    prisma.referral.findFirst({
+      where: { referrerId, referredUserId: userId },
+      select: { id: true },
+    }),
+  ]);
+  return Boolean(userRefersReferrer && referrerRefersUser);
 }
 
 export async function getMyReferrals(userId: string) {

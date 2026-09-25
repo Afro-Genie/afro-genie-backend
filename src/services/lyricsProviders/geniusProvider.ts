@@ -150,11 +150,18 @@ export class GeniusProvider implements LyricsProvider {
         return null;
       }
 
-      // Fetch the song page and extract lyrics from the embedded JSON
+      // Fetch the song page and extract lyrics from the embedded JSON.
+      // Search + song metadata already come from the official Genius API
+      // (`/search`, `/songs/:id`) — only the lyrics text needs the page. Ask
+      // for compressed bodies (gzip cuts the 50-200KB page to ~20KB); fetch()
+      // decompresses transparently.
       const pageResponse = await fetch(songUrl, {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; AfroGenie/1.0)',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Language': 'en-US,en;q=0.9',
         },
       });
 

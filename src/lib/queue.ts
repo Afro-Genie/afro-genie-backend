@@ -46,6 +46,7 @@ export const modPoolDistributionQueue = createQueue('modPoolDistributionQueue');
 export const seasonSnapshotQueue = createQueue('seasonSnapshotQueue');
 export const reconciliationQueue = createQueue('reconciliationQueue');
 export const overturnRateAlertQueue = createQueue('overturnRateAlertQueue');
+export const passRevocationQueue = createQueue('passRevocationQueue');
 
 // Export shared connection for workers to reuse (1 connection total, not 17)
 export { sharedConnection };

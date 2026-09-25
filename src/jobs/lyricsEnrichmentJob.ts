@@ -8,7 +8,7 @@ import { MusicMatchProvider, MusicMatchRateLimitError } from '../services/lyrics
 import { LyricFindProvider } from '../services/lyricsProviders/lyricFindProvider';
 import { GeniusProvider } from '../services/lyricsProviders/geniusProvider';
 import { LrcLibProvider } from '../services/lyricsProviders/lrclibProvider';
-import { cachedSearch, cachedFetchLyrics } from '../services/lyricsProviders/lyricsCache';
+import { cachedSearch, cachedFetchLyrics, cachedFetchLyricsWithSync } from '../services/lyricsProviders/lyricsCache';
 import type { LyricsProvider } from '../services/lyricsProviders/lyricsProvider';
 import { logAICall } from '../services/translationService';
 import { parseLrcTimestamps } from '../services/lyricsService';
@@ -55,7 +55,7 @@ async function tryProvider(
         return null;
       }
 
-      const { plain, synced } = await provider.fetchLyricsWithSync(results[0].trackId);
+      const { plain, synced } = await cachedFetchLyricsWithSync(provider, results[0].trackId);
       if (!plain && !synced) {
         logger.info({ songId, provider: providerLabel }, 'No lyrics content from provider');
         return null;

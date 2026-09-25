@@ -79,9 +79,11 @@ export const getHealthStatus = async (): Promise<HealthStatus> => {
   const rewards = await getRewardQueueStats();
 
   let status: HealthStatus['status'];
-  if (database === 'error' || redisStatus === 'error') {
+  if (database === 'error') {
     status = 'error';
-  } else if (population.status === 'empty' || population.status === 'degraded') {
+  } else if (redisStatus === 'error' || population.status === 'empty' || population.status === 'degraded') {
+    // A Redis outage (or an unpopulated DB) degrades the experience but the
+    // API itself remains available — only a DB failure returns HTTP 503.
     status = 'degraded';
   } else {
     status = 'ok';

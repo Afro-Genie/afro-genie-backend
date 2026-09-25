@@ -2,7 +2,7 @@ import { ModerationAction } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { clawbackTokens, forcePenalizeTokens } from './tokenService';
 import { recomputeTier } from './tierService';
 import { createNotification } from './notificationService';
@@ -76,10 +76,11 @@ export async function overturnApproval(
   if (result.applied) {
     if (result.reviewerId) {
       try {
+        const config = await getRewardConfig();
         // Reverse the reward that was paid out for the approval.
         await clawbackTokens({
           userId: result.reviewerId,
-          amount: -REWARD_CONFIG.TRANSLATION_APPROVED_AMOUNT,
+          amount: -config.TRANSLATION_APPROVED_AMOUNT,
           reason: 'Reward clawed back after approval overturned',
           sourceType: 'OVERTURN_CLAWBACK',
           sourceId: translationId,
@@ -90,7 +91,7 @@ export async function overturnApproval(
         // moderator's balance is already spent).
         await forcePenalizeTokens({
           userId: result.reviewerId,
-          amount: -REWARD_CONFIG.OVERTURN_PENALTY_AMOUNT,
+          amount: -config.OVERTURN_PENALTY_AMOUNT,
           reason: 'Approval overturned by arbiter',
           sourceType: 'OVERTURN_PENALTY',
           sourceId: translationId,
@@ -100,7 +101,7 @@ export async function overturnApproval(
         await createNotification({
           userId: result.reviewerId,
           title: 'Approval overturned',
-          message: `An approval you made was overturned by an arbiter. The reward was revoked and a ${REWARD_CONFIG.OVERTURN_PENALTY_AMOUNT}-token penalty was applied.`,
+          message: `An approval you made was overturned by an arbiter. The reward was revoked and a ${config.OVERTURN_PENALTY_AMOUNT}-token penalty was applied.`,
           type: 'MODERATION',
         });
       } catch (err) {

@@ -3,6 +3,7 @@ import { redis } from '../lib/redis';
 import { rewardQueue } from '../lib/queue';
 import { logger } from '../lib/logger';
 import { awardTokens, getBalance } from './tokenService';
+import { isRewardPaused } from './abuseService';
 
 const TOKEN_CACHE_TTL = 3600;
 const LEADERBOARD_CACHE_TTL = 900;
@@ -267,17 +268,36 @@ export async function getUserRank(userId: string, period: LeaderboardPeriod = 'a
 
 export async function getRewardQueueStats() {
   try {
-    const [waiting, active, completed, failed] = await Promise.all([
-      rewardQueue.getWaitingCount(),
-      rewardQueue.getActiveCount(),
-      rewardQueue.getCompletedCount(),
-      rewardQueue.getFailedCount(),
-    ]);
+    const [waiting, active, completed, failed] = await withQueueTimeout(
+      Promise.all([
+        rewardQueue.getWaitingCount(),
+        rewardQueue.getActiveCount(),
+        rewardQueue.getCompletedCount(),
+        rewardQueue.getFailedCount(),
+      ]),
+      5000,
+    );
 
     return { waiting, active, completed, failed, status: 'ok' as const };
   } catch (err) {
     logger.warn({ err }, 'Failed to get reward queue stats');
     return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'error' as const };
+  }
+}
+
+// BullMQ queue ops wait on the Redis offline queue while the connection is
+// down; bound them so health checks and tests never hang on a Redis outage.
+async function withQueueTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Redis queue operation timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
 
@@ -288,6 +308,12 @@ export async function queueReward(
   event?: string,
   idempotencyKey?: string,
 ): Promise<void> {
+  // Auto-pause: HIGH-severity abuse flags suspend earning until reviewed.
+  if (await isRewardPaused(userId)) {
+    logMetric('reward_skipped_paused', { userId, amount, reason });
+    return;
+  }
+
   await rewardQueue.add(`${reason.toLowerCase().replace(/\s+/g, '-')}`, {
     userId,
     amount,

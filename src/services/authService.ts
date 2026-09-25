@@ -13,6 +13,7 @@ import nodemailer from 'nodemailer';
 import { sendEmail, getSmtpDebugInfo } from './emailService';
 import { recordLogin } from './streakService';
 import { awardFirstProfileBadge, awardArtistSpotlightBadge } from './badgeService';
+import { awardWelcomeBonus } from './gtBonusService';
 
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '7d';
@@ -188,6 +189,8 @@ export const registerArtist = async (
   await awardFirstProfileBadge(user.id);
   await awardArtistSpotlightBadge(user.id);
 
+  await awardWelcomeBonus(user.id);
+
   return buildAuthResult(user);
 };
 
@@ -219,6 +222,8 @@ export const register = async (email: string, password: string, displayName: str
   });
 
   await awardFirstProfileBadge(user.id);
+
+  await awardWelcomeBonus(user.id);
 
   return buildAuthResult(user);
 };
@@ -455,6 +460,7 @@ export const configureGoogleStrategy = () => {
             });
 
             await awardFirstProfileBadge(user.id);
+            await awardWelcomeBonus(user.id);
           } else {
             user = await prisma.user.update({
               where: { id: user.id },
@@ -537,6 +543,7 @@ export const signInWithSpotify = async (accessToken: string): Promise<AuthResult
     });
 
     await awardFirstProfileBadge(user.id);
+    await awardWelcomeBonus(user.id);
   } else {
     user = await prisma.user.update({
       where: { id: user.id },

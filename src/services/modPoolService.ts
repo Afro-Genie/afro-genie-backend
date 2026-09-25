@@ -1,7 +1,7 @@
 import { ModerationAction } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { applyTax, awardTokens } from './tokenService';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,8 @@ export async function contributeTax(params: {
   rewardAmount: number;
   sourceId: string;
 }): Promise<void> {
-  const taxAmount = Math.max(1, Math.round(params.rewardAmount * REWARD_CONFIG.MOD_POOL_TAX_PERCENT));
+  const config = await getRewardConfig();
+  const taxAmount = Math.max(1, Math.round(params.rewardAmount * config.MOD_POOL_TAX_PERCENT));
   if (taxAmount <= 0) return;
 
   const ledger = await applyTax({
@@ -73,10 +74,11 @@ export async function distributeWeekly(now = new Date()): Promise<{
   recipients: number;
 }> {
   const poolBalance = await getBalance();
+  const config = await getRewardConfig();
 
-  if (poolBalance < REWARD_CONFIG.MOD_POOL_DISTRIBUTE_MIN) {
+  if (poolBalance < config.MOD_POOL_DISTRIBUTE_MIN) {
     logger.info(
-      { poolBalance, minimum: REWARD_CONFIG.MOD_POOL_DISTRIBUTE_MIN },
+      { poolBalance, minimum: config.MOD_POOL_DISTRIBUTE_MIN },
       'mod pool below distribution threshold, skipping',
     );
     return { distributed: 0, recipients: 0 };

@@ -5,8 +5,10 @@ import { validateRequest } from '../middleware/validateRequest';
 import { authenticate } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { getUserTokenBalance, getUserTokenHistory } from '../services/rewardService';
+import { getUserTokenBalance } from '../services/rewardService';
+import { getLedger } from '../services/tokenService';
 import { getUserBadges } from '../services/badgeService';
+import { awardProfileBonus, isProfileCompleted } from '../services/gtBonusService';
 
 const FAVORITES_LIMIT = 5;
 const HISTORY_LIMIT = 5;
@@ -333,13 +335,16 @@ usersRouter.get(
 
 // ── Token History ─────────────────────────────────────────
 
-// GET /api/users/me/tokens — paginated token reward history
+// GET /api/users/me/tokens — paginated token ledger with optional type filter
+// and earned/spent/penalized summary. Also served via the tokens router; this
+// registration wins because usersRouter is mounted first.
 usersRouter.get(
   '/users/me/tokens',
   authenticate,
   [
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 50 }).toInt(),
+    query('type').optional().isString().withMessage('type must be a transaction type'),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
@@ -347,9 +352,92 @@ usersRouter.get(
       const userId = (req.user as any).id;
       const page = (req.query.page as any) || 1;
       const limit = (req.query.limit as any) || 20;
+      const type = typeof req.query.type === 'string' ? req.query.type : undefined;
 
-      const result = await getUserTokenHistory(userId, page, limit);
+      const result = await getLedger(userId, page, limit, type?.toUpperCase());
       res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ── Profile Completion Bonus ───────────────────────────────
+
+// POST /api/users/me/complete-profile — marks the profile completed and pays
+// the one-time PROFILE_BONUS (idempotent). Provides the GT on-ramp for new
+// users alongside the welcome bonus.
+usersRouter.post(
+  '/users/me/complete-profile',
+  authenticate,
+  [
+    body('displayName')
+      .isString()
+      .trim()
+      .isLength({ min: 3, max: 60 })
+      .withMessage('displayName is required and must be 3-60 characters'),
+    body('photoUrl').optional().isURL().withMessage('photoUrl must be a valid URL'),
+    body('bio').optional().isString().trim().isLength({ min: 1, max: 500 }).withMessage('bio must be 1-500 characters'),
+    body('preferredLanguages').optional().custom(async (value: unknown) => {
+      if (value === undefined || value === null) return true;
+      if (!Array.isArray(value)) {
+        throw new Error('preferredLanguages must be an array of language codes');
+      }
+      if (value.length === 0) {
+        throw new Error('preferredLanguages must be a non-empty array');
+      }
+      const codes = value.map((v) => String(v).toLowerCase());
+      if (!codes.every((code) => /^[a-z]{2,3}(-[a-z0-9]{2,8})?$/.test(code))) {
+        throw new Error('preferredLanguages must contain valid language codes');
+      }
+      const known = await prisma.language.findMany({
+        where: { code: { in: codes } },
+        select: { code: true },
+      });
+      const knownSet = new Set(known.map((l) => l.code));
+      const unknown = codes.filter((code) => !knownSet.has(code));
+      if (unknown.length > 0) {
+        throw new Error(`Unknown language code(s): ${unknown.join(', ')}`);
+      }
+      return true;
+    }),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req.user as any).id;
+      const { displayName, photoUrl, bio, preferredLanguages } = req.body;
+
+      const alreadyCompleted = await isProfileCompleted(userId);
+
+      const data: Record<string, any> = {
+        profileCompleted: true,
+        displayName: String(displayName).trim(),
+      };
+      if (photoUrl !== undefined) data.photoUrl = photoUrl;
+      if (bio !== undefined) data.bio = String(bio).trim();
+      if (preferredLanguages !== undefined) {
+        data.preferredLanguages = [...new Set(preferredLanguages.map((l: string) => l.toLowerCase()))];
+      }
+
+      const user = await prisma.user.update({
+        where: { id: userId },
+        data,
+        select: {
+          id: true,
+          displayName: true,
+          photoUrl: true,
+          bio: true,
+          preferredLanguages: true,
+          profileCompleted: true,
+        },
+      });
+
+      if (!alreadyCompleted) {
+        await awardProfileBonus(userId);
+      }
+
+      res.status(200).json({ ...user, bonusAwarded: !alreadyCompleted });
     } catch (error) {
       next(error);
     }

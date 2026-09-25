@@ -1,8 +1,9 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { evaluateStreakBadge } from './badgeService';
+import { isRewardPaused } from './abuseService';
 
 // ---------------------------------------------------------------------------
 // Streak service (Phase 1).
@@ -53,11 +54,20 @@ export async function recordLogin(userId: string) {
       },
     });
 
+    // Auto-pause: keep the streak current but skip earning while flagged.
+    if (await isRewardPaused(userId)) {
+      logger.warn({ userId }, 'Login rewards paused by abuse flag');
+      await evaluateStreakBadge(userId);
+      return updated;
+    }
+
+    const config = await getRewardConfig();
+
     // Daily login base (+1), once per user per day.
     await awardTokens({
       userId,
       type: 'EARN',
-      amount: REWARD_CONFIG.DAILY_LOGIN_AMOUNT,
+      amount: config.DAILY_LOGIN_AMOUNT,
       reason: 'Daily login',
       sourceType: 'LOGIN',
       sourceId: todayKey,
@@ -66,8 +76,8 @@ export async function recordLogin(userId: string) {
 
     // Streak bonus: +5 × (streak − 1), capped at 50.
     const bonus = Math.min(
-      REWARD_CONFIG.STREAK_BONUS_PER_DAY * (currentStreak - 1),
-      REWARD_CONFIG.STREAK_BONUS_CAP,
+      config.STREAK_BONUS_PER_DAY * (currentStreak - 1),
+      config.STREAK_BONUS_CAP,
     );
     if (bonus > 0) {
       await awardTokens({

@@ -17,6 +17,7 @@ import {
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { lyricsEnrichmentQueue } from '../src/lib/queue';
+import { seedGtBundles } from './seedGtBundles';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL
@@ -896,6 +897,9 @@ async function main() {
     }
   }
 
+  // ── GT bundles (Phase 2) ────────────────────────────────────
+  const gtBundleResult = await seedGtBundles(prisma);
+
   // ── Summary ──
   const finalSongCount = await prisma.song.count();
   const finalArtistCount = await prisma.artist.count();
@@ -906,6 +910,7 @@ async function main() {
   console.log(`   Albums: ${finalAlbumCount}`);
   console.log(`   Languages: ${languageSeed.length}`);
   console.log(`   Genres: ${genreSeed.length}`);
+  console.log(`   GT bundles: ${gtBundleResult.created} created, ${gtBundleResult.updated} updated`);
 }
 
 main()

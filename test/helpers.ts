@@ -1,6 +1,19 @@
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
+import { after } from 'node:test';
 import { prisma } from '../src/lib/prisma';
+import { redis } from '../src/lib/redis';
+
+// Every service under test may lazily open a Redis connection (e.g. the ledger
+// summary cache invalidation). node:test won't exit while the socket is open,
+// so make sure it is closed once the file's tests finish.
+after(async () => {
+  try {
+    await redis.quit();
+  } catch {
+    // already closed
+  }
+});
 
 let counter = 0;
 
