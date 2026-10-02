@@ -39,6 +39,41 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction) =
 
 export const requireAuth = authenticate;
 
+/**
+ * Auth variant for Server-Sent Events. EventSource cannot set an
+ * Authorization header, so the JWT is accepted via ?token= query param
+ * (or the standard Bearer header when available). Only use for long-lived
+ * read streams tied to the signed-in user.
+ */
+export const authenticateStream = (req: Request, _res: Response, next: NextFunction) => {
+  const token =
+    extractBearerToken(req.headers.authorization) ??
+    (typeof req.query.token === 'string' ? req.query.token : null);
+
+  if (!token) {
+    return next(new ApiError('Authentication required', 'UNAUTHORIZED', 401));
+  }
+
+  try {
+    const claims = jwt.verify(token, env.JWT_SECRET) as JwtClaims;
+    const userId = claims.userId ?? claims.sub;
+
+    if (!userId || !claims.email || !claims.role) {
+      return next(new ApiError('Invalid token claims', 'INVALID_TOKEN', 401));
+    }
+
+    req.user = {
+      id: userId,
+      email: claims.email,
+      role: claims.role,
+    };
+
+    return next();
+  } catch {
+    return next(new ApiError('Invalid or expired token', 'UNAUTHORIZED', 401));
+  }
+};
+
 export const optionalAuth = (req: Request, _res: Response, next: NextFunction) => {
   const token = extractBearerToken(req.headers.authorization);
 

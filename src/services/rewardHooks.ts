@@ -1,11 +1,12 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { getMultiplier, recomputeTier } from './tierService';
 import { createNotification } from './notificationService';
 import { contributeTax } from './modPoolService';
 import { evaluateTranslationBadges } from './badgeService';
+import { isRewardPaused } from './abuseService';
 
 // ---------------------------------------------------------------------------
 // Reward event hooks (Phase 1).
@@ -63,20 +64,44 @@ const countToday = async (userId: string, sourceType: string): Promise<number> =
     where: { userId, sourceType, createdAt: { gte: startOfDayUtc() } },
   });
 
-/** Moderator +10 (flat) for an approval; contributor tier recompute. */
+/** Moderator +10 (flat) for an approval; contributor +10 for approved work. */
 export async function onTranslationApproved(event: TranslationApprovedEvent): Promise<void> {
   try {
+    const config = await getRewardConfig();
     await recomputeTier(event.userId);
 
-    await awardTokens({
-      userId: event.reviewerId,
-      type: 'EARN',
-      amount: REWARD_CONFIG.TRANSLATION_APPROVED_AMOUNT,
-      reason: 'Translation approved',
-      sourceType: 'TRANSLATION_APPROVED',
-      sourceId: event.translationId,
-      idempotencyKey: `translation-approved:${event.translationId}:${event.reviewerId}`,
-    });
+    const [reviewerPaused, contributorPaused] = await Promise.all([
+      isRewardPaused(event.reviewerId),
+      isRewardPaused(event.userId),
+    ]);
+
+    if (!reviewerPaused) {
+      await awardTokens({
+        userId: event.reviewerId,
+        type: 'EARN',
+        amount: config.TRANSLATION_APPROVED_AMOUNT,
+        reason: 'Translation approved',
+        sourceType: 'TRANSLATION_APPROVED',
+        sourceId: event.translationId,
+        idempotencyKey: `translation-approved:${event.translationId}:${event.reviewerId}`,
+      });
+
+      await createNotification({
+        userId: event.reviewerId,
+        title: 'Review reward',
+        message: `You earned +${config.TRANSLATION_APPROVED_AMOUNT} tokens for approving a translation.`,
+        type: 'REWARD',
+      });
+
+      // 10% of the reviewer reward flows into the moderation pool.
+      await contributeTax({
+        userId: event.reviewerId,
+        rewardAmount: config.TRANSLATION_APPROVED_AMOUNT,
+        sourceId: event.translationId,
+      });
+    } else {
+      logger.warn({ event }, 'reward hook onTranslationApproved skipped reviewer reward — reviewer paused');
+    }
 
     await createNotification({
       userId: event.userId,
@@ -84,19 +109,28 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
       message: 'Your translation was approved by a moderator.',
       type: 'TRANSLATION',
     });
-    await createNotification({
-      userId: event.reviewerId,
-      title: 'Review reward',
-      message: `You earned +${REWARD_CONFIG.TRANSLATION_APPROVED_AMOUNT} tokens for approving a translation.`,
-      type: 'REWARD',
-    });
 
-    // 10% of the reviewer reward flows into the moderation pool.
-    await contributeTax({
-      userId: event.reviewerId,
-      rewardAmount: REWARD_CONFIG.TRANSLATION_APPROVED_AMOUNT,
-      sourceId: event.translationId,
-    });
+    // Contributor (translator) GT for approved work (Phase 1, 2.2.3).
+    if (!contributorPaused) {
+      await awardTokens({
+        userId: event.userId,
+        type: 'EARN',
+        amount: config.TRANSLATOR_APPROVED_AMOUNT,
+        reason: 'Translation approved',
+        sourceType: 'TRANSLATION_APPROVED',
+        sourceId: event.translationId,
+        idempotencyKey: `translation-contributor:${event.translationId}`,
+      });
+
+      await createNotification({
+        userId: event.userId,
+        title: 'Tokens earned',
+        message: `Your translation was approved. You earned +${config.TRANSLATOR_APPROVED_AMOUNT} tokens.`,
+        type: 'REWARD',
+      });
+    } else {
+      logger.warn({ event }, 'reward hook onTranslationApproved skipped contributor reward — contributor paused');
+    }
 
     // Phase 4: EARLY_ADOPTER / TOP_TRANSLATOR / CULTURE_CURATOR thresholds.
     await evaluateTranslationBadges(event.userId);
@@ -122,12 +156,18 @@ export async function onTranslationRejected(event: TranslationRejectedEvent): Pr
 /** Contributor +20 (×tier) for an applied correction. */
 export async function onCorrectionApproved(event: CorrectionApprovedEvent): Promise<void> {
   try {
-    if (await countToday(event.userId, 'CORRECTION') >= REWARD_CONFIG.CORRECTION_DAILY_CAP) {
+    if (await isRewardPaused(event.userId)) {
+      logger.warn({ event }, 'reward hook onCorrectionApproved skipped — user paused');
+      return;
+    }
+
+    const config = await getRewardConfig();
+    if (await countToday(event.userId, 'CORRECTION') >= config.CORRECTION_DAILY_CAP) {
       return;
     }
 
     const multiplier = await getMultiplier(event.userId);
-    const amount = Math.round(REWARD_CONFIG.CORRECTION_APPROVED_AMOUNT * multiplier);
+    const amount = Math.round(config.CORRECTION_APPROVED_AMOUNT * multiplier);
 
     await awardTokens({
       userId: event.userId,
@@ -167,12 +207,18 @@ export async function onCorrectionRejected(event: CorrectionRejectedEvent): Prom
 /** +2 (×tier) when an AI translation job actually generates content. */
 export async function onAiTranslationCompleted(event: AiTranslationCompletedEvent): Promise<void> {
   try {
-    if (await countToday(event.userId, 'AI_TRANSLATION') >= REWARD_CONFIG.AI_TRANSLATION_DAILY_CAP) {
+    if (await isRewardPaused(event.userId)) {
+      logger.warn({ event }, 'reward hook onAiTranslationCompleted skipped — user paused');
+      return;
+    }
+
+    const config = await getRewardConfig();
+    if (await countToday(event.userId, 'AI_TRANSLATION') >= config.AI_TRANSLATION_DAILY_CAP) {
       return;
     }
 
     const multiplier = await getMultiplier(event.userId);
-    const amount = Math.round(REWARD_CONFIG.AI_TRANSLATION_AMOUNT * multiplier);
+    const amount = Math.round(config.AI_TRANSLATION_AMOUNT * multiplier);
 
     await awardTokens({
       userId: event.userId,
@@ -198,14 +244,20 @@ export async function onAiTranslationCompleted(event: AiTranslationCompletedEven
 /** +2 for sharing a topic. */
 export async function onTopicShare(event: TopicShareEvent): Promise<void> {
   try {
-    if (await countToday(event.userId, 'SHARE') >= REWARD_CONFIG.TOPIC_SHARE_DAILY_CAP) {
+    if (await isRewardPaused(event.userId)) {
+      logger.warn({ event }, 'reward hook onTopicShare skipped — user paused');
+      return;
+    }
+
+    const config = await getRewardConfig();
+    if (await countToday(event.userId, 'SHARE') >= config.TOPIC_SHARE_DAILY_CAP) {
       return;
     }
 
     await awardTokens({
       userId: event.userId,
       type: 'EARN',
-      amount: REWARD_CONFIG.TOPIC_SHARE_AMOUNT,
+      amount: config.TOPIC_SHARE_AMOUNT,
       reason: 'Topic shared',
       sourceType: 'SHARE',
       sourceId: event.topicId,
@@ -215,7 +267,7 @@ export async function onTopicShare(event: TopicShareEvent): Promise<void> {
     await createNotification({
       userId: event.userId,
       title: 'Tokens earned',
-      message: `You earned +${REWARD_CONFIG.TOPIC_SHARE_AMOUNT} tokens for sharing a topic.`,
+      message: `You earned +${config.TOPIC_SHARE_AMOUNT} tokens for sharing a topic.`,
       type: 'REWARD',
     });
   } catch (err) {

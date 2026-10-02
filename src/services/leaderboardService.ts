@@ -7,6 +7,14 @@ import { prisma } from '../lib/prisma';
 // Ranking is computed from the TokenLedger: "total earned" sums positive
 // EARN + ADMIN_ADJUST amounts in the period; rewardCount counts those rows.
 // Balance is server-computed only — the client never does local math.
+//
+// Stage 6.2 — every ranking query here excludes `User.isTestAccount`. Ranking is
+// a groupBy over TokenLedger, so the filter has to be expressed as a relation
+// predicate (`user: { isTestAccount: false }`) rather than a column that does not
+// exist on TokenLedger. It is applied at the *grouping* stage, not after: a
+// post-filter would still let a test account consume one of the `take` slots and
+// then be dropped, so the board would render 99 entries instead of 100 and a
+// real user at rank 101 would be dropped off the bottom of the list.
 // ---------------------------------------------------------------------------
 
 export type LeaderboardPeriod = 'all' | 'week' | 'month';
@@ -46,6 +54,18 @@ const earningWhereBetween = (
 
 const DEFAULT_TOP = 100;
 
+/**
+ * Stage 6.2 — the single definition of "is this account eligible to rank".
+ *
+ * Exported so the leaderboard, the abuse dashboard and any future ranking
+ * surface cannot drift apart on what counts as a real account. Applied inside
+ * the groupBy `where` so an archived account never consumes a `take` slot.
+ */
+export const RANKED_USER_FILTER = { isTestAccount: false } as const;
+
+/** Stage 6.2 — relation predicate excluding archived test accounts. */
+const rankedUserRelation = () => ({ user: RANKED_USER_FILTER });
+
 const tokenEntry = (group: {
   userId: string;
   _sum: { amount: number | null } | null | undefined;
@@ -75,7 +95,11 @@ export async function getLeaderboard(
   if (scope === 'quality') {
     const quality = await prisma.translation.groupBy({
       by: ['userId'],
-      where: { status: 'APPROVED', approvedAt: { gte: periodStart(period) } },
+      where: {
+        status: 'APPROVED',
+        approvedAt: { gte: periodStart(period) },
+        ...rankedUserRelation(),
+      },
       _count: { _all: true },
       orderBy: { _count: { userId: 'desc' } },
       take,
@@ -85,7 +109,7 @@ export async function getLeaderboard(
   } else {
     const tokenGroups = await prisma.tokenLedger.groupBy({
       by: ['userId'],
-      where: earningWhere(period),
+      where: { ...earningWhere(period), ...rankedUserRelation() },
       _sum: { amount: true },
       _count: { _all: true },
       orderBy: { _sum: { amount: 'desc' } },
@@ -126,7 +150,7 @@ export async function getLeaderboardBetween(start: Date, end: Date, limit = DEFA
 
   const groups = await prisma.tokenLedger.groupBy({
     by: ['userId'],
-    where: earningWhereBetween(start, end),
+    where: { ...earningWhereBetween(start, end), ...rankedUserRelation() },
     _sum: { amount: true },
     _count: { _all: true },
     orderBy: { _sum: { amount: 'desc' } },
@@ -162,7 +186,11 @@ export async function getMyRank(
 ) {  if (scope === 'quality') {
     const groups = await prisma.translation.groupBy({
       by: ['userId'],
-      where: { status: 'APPROVED', approvedAt: { gte: periodStart(period) } },
+      where: {
+        status: 'APPROVED',
+        approvedAt: { gte: periodStart(period) },
+        ...rankedUserRelation(),
+      },
       _count: { _all: true },
       orderBy: { _count: { userId: 'desc' } },
     });
@@ -181,7 +209,7 @@ export async function getMyRank(
 
   const groups = await prisma.tokenLedger.groupBy({
     by: ['userId'],
-    where: earningWhere(period),
+    where: { ...earningWhere(period), ...rankedUserRelation() },
     _sum: { amount: true },
     _count: { _all: true },
     orderBy: { _sum: { amount: 'desc' } },

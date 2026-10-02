@@ -1,6 +1,28 @@
+/**
+ * Ad-hoc Redis memory/connection inspection.
+ *
+ * The connection string was previously hard-coded, which put a live Redis Cloud
+ * password in tracked source. It now comes from the environment like every
+ * other client in this repo (`src/lib/redis.ts` reads `env.REDIS_URL`).
+ *
+ * Usage:
+ *   $env:REDIS_URL="redis://default:password@host:port"; npx tsx scripts/check-redis3.ts
+ */
 import IORedis from 'ioredis';
 
-const redis = new IORedis('redis://default:xpEjJKmd1mR80cjuwp1S0SLQGMOXIiwL@hair-macrofast-microfine-29120.db.redis.io:14995', {
+const url = process.env.REDIS_URL || '';
+if (!url) {
+  console.error(
+    '\nREFUSING TO RUN: REDIS_URL is not set.\n\n' +
+      '  This script used to carry a live Redis Cloud credential in its source.\n' +
+      '  That credential has been removed from the repository and should be\n' +
+      '  rotated in the Redis Cloud console.\n\n' +
+      '  Set REDIS_URL in .env.local (git-ignored) and re-run.\n\n',
+  );
+  process.exit(2);
+}
+
+const redis = new IORedis(url, {
   connectTimeout: 10000, commandTimeout: 5000, lazyConnect: true,
 });
 async function main() {

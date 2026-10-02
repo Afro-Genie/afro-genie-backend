@@ -11,7 +11,7 @@ export const adminSyncRouter = Router();
 
 adminSyncRouter.use(authenticate, requireRole('ADMIN'));
 
-const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks', 'sync-new-releases', 'sync-genre-discovery', 'curated-playlists', 'backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm'];
+const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks', 'sync-new-releases', 'sync-genre-discovery', 'curated-playlists', 'backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm', 'library-enrichment'];
 
 const syncRunLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -86,7 +86,9 @@ adminSyncRouter.post(
                       ? 'backfill-artists-lastfm'
                       : type === 'enrich-artist-lastfm'
                         ? 'enrich-artist-lastfm'
-                        : `sync-${type}-${artistId}`;
+                        : type === 'library-enrichment'
+                          ? 'library-enrichment'
+                          : `sync-${type}-${artistId}`;
 
       const targetQueue = type === 'sync-popular-tracks' ? syncPopularTracksQueue : syncQueue;
 

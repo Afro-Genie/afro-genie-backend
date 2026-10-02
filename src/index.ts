@@ -1,11 +1,14 @@
 import { app } from './app';
-import { env } from './lib/env';
+import { env, missingPaymentKeys } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis, scanKeys } from './lib/redis';
-import { syncQueue, syncPopularTracksQueue } from './lib/queue';
+import { syncPopularTracksQueue } from './lib/queue';
 import { catalogService } from './services/catalogService';
 import { bulkIndex } from './services/searchService';
+import { shutdownBandwidthMonitor } from './lib/bandwidthMonitor';
+import { scheduleSyncJobs } from './jobs/syncCron';
+import { startSelfHeal } from './jobs/selfHeal';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
 
@@ -15,101 +18,6 @@ if (env.ENABLE_WORKERS) {
 } else {
   logger.info('Background workers disabled for this process');
 }
-
-const scheduleSyncJobs = async () => {
-  // Monday 2am — popular tracks (heavy weekly discovery)
-  await syncPopularTracksQueue.add(
-    'sync-popular-tracks',
-    {},
-    {
-      repeat: { pattern: '0 2 * * 1' },
-      jobId: 'sync-popular-tracks-monday',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  // Monday 3am — new releases (light, check fresh Spotify drops)
-  await syncQueue.add(
-    'sync-new-releases',
-    { type: 'sync-new-releases' },
-    {
-      repeat: { pattern: '0 3 * * 1' },
-      jobId: 'sync-new-releases-monday',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  // Wednesday 2am — full artist sync (mid-week refresh)
-  await syncQueue.add(
-    'sync-all',
-    { type: 'sync-all' },
-    {
-      repeat: { pattern: '0 2 * * 3' },
-      jobId: 'sync-all-wednesday',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  // Friday 2am — genre discovery (supplementary terms)
-  await syncQueue.add(
-    'sync-genre-discovery',
-    { type: 'sync-genre-discovery' },
-    {
-      repeat: { pattern: '0 2 * * 5' },
-      jobId: 'sync-genre-discovery-friday',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  // Daily 4am — incremental metadata refresh (quick stale-artist scan)
-  await syncQueue.add(
-    'refresh-stale',
-    { type: 'refresh-stale' },
-    {
-      repeat: { pattern: '0 4 * * *' },
-      jobId: 'refresh-stale-daily',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  // Daily 5am — lyrics backfill sweep for songs that were missed
-  await syncQueue.add(
-    'backfill-lyrics',
-    { type: 'backfill-lyrics' },
-    {
-      repeat: { pattern: '0 5 * * *' },
-      jobId: 'backfill-lyrics-daily',
-      removeOnComplete: 100,
-      removeOnFail: 50,
-    }
-  );
-
-  logger.info('Sync cron jobs scheduled: Mon 2am popular + 3am new releases, Wed 2am full sync, Fri 2am genre discovery, daily 4am refresh stale, daily 5am lyrics backfill');
-};
-
-// ---------------------------------------------------------------------------
-// Self-healing repeat job verification — re-registers if Redis lost the jobs
-// ---------------------------------------------------------------------------
-const verifyRepeatJobs = async () => {
-  const coreJobs = await Promise.all([
-    syncQueue.getJob('refresh-stale-daily'),
-    syncPopularTracksQueue.getJob('sync-popular-tracks-monday'),
-    syncQueue.getJob('backfill-lyrics-daily'),
-  ]);
-
-  const missing = coreJobs.some((j) => !j);
-  if (missing) {
-    logger.warn('Core repeat jobs missing from Redis — re-registering all sync jobs');
-    await scheduleSyncJobs();
-  } else {
-    logger.info('Core repeat jobs confirmed present in Redis');
-  }
-};
 
 const FALLBACK_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -152,6 +60,39 @@ const invalidateStaleCaches = async () => {
   }
 };
 
+/**
+ * Payment readiness self-check (task 1.9).
+ *
+ * Runs before the listener opens so the warning is in the deploy log even if a
+ * later startup step hangs. Skipped under NODE_ENV=test, where keys are
+ * deliberately absent and the 503 path is what we are testing.
+ *
+ * In production this cannot warn: env.ts already threw for missing keys. So a
+ * warning here means an instance booted with a partial/blank-but-present config.
+ */
+function checkPaymentConfiguration(): void {
+  if (env.NODE_ENV === 'test') return;
+
+  const missing = missingPaymentKeys();
+  if (missing.length === 0) {
+    logger.info(
+      { webhookPath: '/api/payments/webhook' },
+      'GT payments configured — Paystack enabled',
+    );
+    return;
+  }
+
+  logger.warn(
+    { missing, nodeEnv: env.NODE_ENV },
+    'GT PAYMENTS ARE DISABLED: ' +
+      `${missing.join(', ')} not set. ` +
+      'GET /api/payments/bundles still works, but POST /api/payments/initialize ' +
+      'and GET /api/payments/verify/:reference will return 503 ' +
+      'PAYMENTS_NOT_CONFIGURED, and the webhook will reject events with 503. ' +
+      'Users cannot buy GT on this instance.',
+  );
+}
+
 async function checkDatabasePopulation(): Promise<void> {
   try {
     const [artistCount, songCount, genreCount, languageCount] = await Promise.all([
@@ -191,6 +132,8 @@ async function checkDatabasePopulation(): Promise<void> {
   }
 }
 
+checkPaymentConfiguration();
+
 const server = app.listen(env.PORT, async () => {
   logger.info({ port: env.PORT }, 'Server started');
 
@@ -209,10 +152,14 @@ const server = app.listen(env.PORT, async () => {
   if (env.ENABLE_WORKERS) {
     try {
       await scheduleSyncJobs();
-      await verifyRepeatJobs();
     } catch (err) {
       logger.error({ err }, 'Failed to schedule sync jobs');
     }
+
+    // Periodic verification that every repeat registration is still present in
+    // Redis, re-registering any that vanished (2.6). Replaces a boot-only check
+    // that covered 4 of 14 repeatable jobs and could not repair them.
+    startSelfHeal();
 
     startFallbackSyncTimer();
   }
@@ -237,6 +184,10 @@ const gracefulShutdown = async (signal: string) => {
 
   server.close(async () => {
     try {
+      // Drain buffered bandwidth counters BEFORE closing Redis, otherwise up to
+      // one flush interval of egress accounting is lost on every deploy/restart
+      // (2.10).
+      await shutdownBandwidthMonitor();
       await prisma.$disconnect();
       await redis.quit();
       logger.info('Shutdown complete');

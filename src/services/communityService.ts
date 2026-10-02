@@ -2,13 +2,14 @@ import type { ModerationAction, Prisma, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { contributeTax } from './modPoolService';
 import { createNotification } from './notificationService';
 import { onTopicShare } from './rewardHooks';
 import { evaluateCommunityHelperBadge, evaluateVoterBadges } from './badgeService';
 import { queueReward } from './rewardService';
+import { isRewardPaused } from './abuseService';
 
 interface ListTopicsParams {
   categoryId?: string;
@@ -474,7 +475,11 @@ class CommunityService {
     id: string,
   ) {
     if (!moderatorId) return;
-    const amount = REWARD_CONFIG.COMMUNITY_MODERATION_REWARD;
+    if (await isRewardPaused(moderatorId)) {
+      logger.warn({ moderatorId, action }, 'Community moderation reward skipped — moderator paused');
+      return;
+    }
+    const amount = (await getRewardConfig()).COMMUNITY_MODERATION_REWARD;
     try {
       await awardTokens({
         userId: moderatorId,

@@ -2,10 +2,11 @@ import { Prisma, ReportStatus, ReportTargetType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { REWARD_CONFIG } from '../config/rewards';
+import { getRewardConfig } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { contributeTax } from './modPoolService';
 import { evaluateGuardianBadge } from './badgeService';
+import { isRewardPaused } from './abuseService';
 
 // ---------------------------------------------------------------------------
 // Content reports (Phase 2 governance).
@@ -136,10 +137,16 @@ export async function resolveReport(id: string, moderatorId: string) {
 
   if (result.applied) {
     try {
+      if (await isRewardPaused(moderatorId)) {
+        logger.warn({ reportId: id, moderatorId }, 'Report resolve reward skipped — moderator paused');
+        return { id: result.id, status: result.status };
+      }
+
+      const config = await getRewardConfig();
       await awardTokens({
         userId: moderatorId,
         type: 'EARN',
-        amount: REWARD_CONFIG.REPORT_RESOLVED_AMOUNT,
+        amount: config.REPORT_RESOLVED_AMOUNT,
         reason: 'Report resolved',
         sourceType: 'REPORT_RESOLVED',
         sourceId: id,
@@ -148,7 +155,7 @@ export async function resolveReport(id: string, moderatorId: string) {
 
       await contributeTax({
         userId: moderatorId,
-        rewardAmount: REWARD_CONFIG.REPORT_RESOLVED_AMOUNT,
+        rewardAmount: config.REPORT_RESOLVED_AMOUNT,
         sourceId: id,
       });
 

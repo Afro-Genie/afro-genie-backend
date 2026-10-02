@@ -6,7 +6,7 @@ import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../middleware/errorHandler';
-import { fulfillPurchase } from '../../services/storeService';
+import { applyDiscount, clearDiscount, fulfillPurchase } from '../../services/storeService';
 
 export const adminStoreRouter = Router();
 
@@ -52,18 +52,27 @@ adminStoreRouter.post(
     body('category').isString().isLength({ min: 1, max: 60 }).withMessage('category is required'),
     body('metadata').optional().isObject(),
     body('active').optional().isBoolean(),
+    body('featured').optional().isBoolean(),
+    body('limitedTime').optional().isBoolean(),
+    body('sortOrder').optional().isInt({ min: 0 }),
+    body('stock').optional({ nullable: true }).isInt({ min: 0 }),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, description, tokenCost, category, metadata, active } = req.body as {
-        name: string;
-        description?: string;
-        tokenCost: number;
-        category: string;
-        metadata?: Record<string, unknown>;
-        active?: boolean;
-      };
+      const { name, description, tokenCost, category, metadata, active, featured, limitedTime, sortOrder, stock } =
+        req.body as {
+          name: string;
+          description?: string;
+          tokenCost: number;
+          category: string;
+          metadata?: Record<string, unknown>;
+          active?: boolean;
+          featured?: boolean;
+          limitedTime?: boolean;
+          sortOrder?: number;
+          stock?: number | null;
+        };
 
       const item = await prisma.storeItem.create({
         data: {
@@ -73,6 +82,10 @@ adminStoreRouter.post(
           category,
           metadata: metadata as Prisma.InputJsonValue | undefined,
           active: active ?? true,
+          featured: featured ?? false,
+          limitedTime: limitedTime ?? false,
+          sortOrder: sortOrder ?? 0,
+          stock: stock ?? null,
         },
       });
 
@@ -97,18 +110,27 @@ adminStoreRouter.patch(
     body('category').optional().isString().isLength({ min: 1, max: 60 }),
     body('metadata').optional(),
     body('active').optional().isBoolean(),
+    body('featured').optional().isBoolean(),
+    body('limitedTime').optional().isBoolean(),
+    body('sortOrder').optional().isInt({ min: 0 }),
+    body('stock').optional({ nullable: true }).isInt({ min: 0 }),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, description, tokenCost, category, metadata, active } = req.body as {
-        name?: string;
-        description?: string | null;
-        tokenCost?: number;
-        category?: string;
-        metadata?: Record<string, unknown> | null;
-        active?: boolean;
-      };
+      const { name, description, tokenCost, category, metadata, active, featured, limitedTime, sortOrder, stock } =
+        req.body as {
+          name?: string;
+          description?: string | null;
+          tokenCost?: number;
+          category?: string;
+          metadata?: Record<string, unknown> | null;
+          active?: boolean;
+          featured?: boolean;
+          limitedTime?: boolean;
+          sortOrder?: number;
+          stock?: number | null;
+        };
 
       const existing = await prisma.storeItem.findUnique({ where: { id: req.params.id } });
       if (!existing) {
@@ -126,6 +148,10 @@ adminStoreRouter.patch(
             ? { metadata: metadata === null ? Prisma.DbNull : (metadata as Prisma.InputJsonValue) }
             : {}),
           ...(active !== undefined ? { active } : {}),
+          ...(featured !== undefined ? { featured } : {}),
+          ...(limitedTime !== undefined ? { limitedTime } : {}),
+          ...(sortOrder !== undefined ? { sortOrder } : {}),
+          ...(stock !== undefined ? { stock } : {}),
         },
       });
 
@@ -156,6 +182,53 @@ adminStoreRouter.delete(
       });
 
       return res.status(200).json({ success: true });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/store/items/:id/discount
+// Body { discountPercent, promoEndsAt? } — put an item on a limited-time sale.
+// ---------------------------------------------------------------------------
+adminStoreRouter.post(
+  '/store/items/:id/discount',
+  [
+    param('id').isString().notEmpty().withMessage('Item id is required'),
+    body('discountPercent').isInt({ min: 1, max: 99 }).withMessage('discountPercent must be 1-99'),
+    body('promoEndsAt').optional({ nullable: true }).isISO8601().withMessage('promoEndsAt must be an ISO date'),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { discountPercent, promoEndsAt } = req.body as {
+        discountPercent: number;
+        promoEndsAt?: string | null;
+      };
+      const item = await applyDiscount(
+        req.params.id,
+        discountPercent,
+        promoEndsAt ? new Date(promoEndsAt) : null,
+      );
+      return res.status(200).json(item);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /api/admin/store/items/:id/discount
+// Clears an active promotion and restores the base token cost.
+// ---------------------------------------------------------------------------
+adminStoreRouter.delete(
+  '/store/items/:id/discount',
+  [param('id').isString().notEmpty().withMessage('Item id is required'), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const item = await clearDiscount(req.params.id);
+      return res.status(200).json(item);
     } catch (err) {
       return next(err);
     }

@@ -1,10 +1,14 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
-import { param, query } from 'express-validator';
-import { authenticate, optionalAuth } from '../middleware/auth';
+import { body, param, query } from 'express-validator';
+import { authenticate, authenticateStream, optionalAuth } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import { ApiError } from '../middleware/errorHandler';
 import { getBalance, getLedger, getProfile } from '../services/tokenService';
+import { getActivePass, getPassCatalog, isPassType, purchasePass } from '../services/passService';
+import { registerBalanceClient } from '../lib/balanceSse';
+import { prisma } from '../lib/prisma';
+import { logger } from '../lib/logger';
 import {
   getLeaderboard,
   getMyRank,
@@ -41,8 +45,61 @@ tokensRouter.get(
 );
 
 // ---------------------------------------------------------------------------
-// GET /api/users/me/tokens?page=&limit=
-// Authenticated. Paginated ledger for the signed-in user.
+// GET /api/users/me/balance
+// Authenticated. Live token balance + translation credits for the signed-in user.
+// ---------------------------------------------------------------------------
+tokensRouter.get(
+  '/users/me/balance',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const [balance, userRow] = await Promise.all([
+        getBalance(user.id),
+        prisma.user.findUnique({ where: { id: user.id }, select: { translationCredits: true } }),
+      ]);
+      return res.status(200).json({ balance, translationCredits: userRow?.translationCredits ?? 0 });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/users/me/balance/stream
+// Authenticated (SSE: ?token= JWT query param — EventSource can't set headers).
+// Server-Sent Events stream that pushes a `balance` event on every committed
+// ledger transaction. Heartbeat comment every 30s keeps the connection alive.
+// ---------------------------------------------------------------------------
+tokensRouter.get(
+  '/users/me/balance/stream',
+  authenticateStream,
+  (req: Request, res: Response) => {
+    const user = req.user as AuthUser;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    res.write(`retry: 3000\n\n`);
+
+    const cleanup = registerBalanceClient(user.id, res);
+
+    const onClose = () => cleanup();
+    req.on('close', onClose);
+    res.on('close', onClose);
+    res.on('error', () => cleanup());
+
+    logger.debug({ userId: user.id }, 'balance stream connected');
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/users/me/tokens?page=&limit=&type=
+// Authenticated. Paginated ledger for the signed-in user, optionally filtered
+// by transaction type.
 // ---------------------------------------------------------------------------
 tokensRouter.get(
   '/users/me/tokens',
@@ -50,6 +107,7 @@ tokensRouter.get(
   [
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 50 }).toInt(),
+    query('type').optional().isString().withMessage('type must be a transaction type'),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
@@ -57,8 +115,65 @@ tokensRouter.get(
       const user = req.user as AuthUser;
       const page = Number(req.query.page) || 1;
       const limit = Number(req.query.limit) || 20;
-      const result = await getLedger(user.id, page, limit);
+      const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+      const result = await getLedger(user.id, page, limit, type?.toUpperCase());
       return res.status(200).json(result);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/tokens/passes
+// Public. Catalog of purchasable passes with their GT costs.
+// ---------------------------------------------------------------------------
+tokensRouter.get(
+  '/tokens/passes',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      return res.status(200).json(getPassCatalog());
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/tokens/purchase-pass
+// Authenticated. Spends GT to buy a premium pass / translation pack.
+// ---------------------------------------------------------------------------
+tokensRouter.post(
+  '/tokens/purchase-pass',
+  authenticate,
+  [body('passType').isString().notEmpty().withMessage('passType is required'), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const { passType } = req.body as { passType: string };
+      if (!isPassType(passType)) {
+        throw new ApiError('Unknown pass type', 'VALIDATION_ERROR', 400);
+      }
+      const result = await purchasePass(user.id, passType);
+      return res.status(200).json(result);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/tokens/active-pass
+// Authenticated. The signed-in user's current active pass, or null.
+// ---------------------------------------------------------------------------
+tokensRouter.get(
+  '/tokens/active-pass',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = req.user as AuthUser;
+      const pass = await getActivePass(user.id);
+      return res.status(200).json(pass);
     } catch (err) {
       return next(err);
     }

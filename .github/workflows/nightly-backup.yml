@@ -1,0 +1,73 @@
+name: Nightly DB Backup & Integrity
+
+# Runs every day at 02:17 UTC (can also be triggered manually).
+# Requires a repo secret named DATABASE_URL pointing at your live database
+# (the .env.production connection string, NOT a pooler if possible).
+#
+# - "backup" job: full logical dump of every table (pg_dump if present on the
+#   runner, else per-table JSONL+gzip), uploaded as a workflow artifact and
+#   retained for 30 days.
+# - "integrity" job: compares live row counts against scripts/db-integrity.baseline.json
+#   and fails the workflow if any critical table lost data — this is the alert.
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: Full DB backup
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pg_dump (postgresql client)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run full backup
+        run: node scripts/backup-db.cjs
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup
+          path: backups/full/
+          if-no-files-found: error
+          retention-days: 30
+
+  integrity:
+    name: Data integrity check
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run integrity check
+        run: node scripts/db-integrity.cjs

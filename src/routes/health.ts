@@ -10,6 +10,8 @@ healthRouter.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const health = await getHealthStatus();
+      // 503 only when the database is unreachable; a Redis or population
+      // issue reports HTTP 200 with status "degraded" — the API still serves.
       const httpStatus = health.status === 'error' ? 503 : 200;
       res.status(httpStatus).json(health);
     } catch (error) {

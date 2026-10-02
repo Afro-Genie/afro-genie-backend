@@ -3,8 +3,41 @@ name: CI
 on:
   pull_request:
     branches: [main, master]
+  push:
+    branches: [main, master, staging]
 
 jobs:
+  # Phase 0.5 — credential containment.
+  #
+  # Runs FIRST and as its own job so a leaked credential fails the build
+  # immediately, before lint and tests spend minutes on it, and so the failure
+  # names the problem rather than surfacing as a confusing downstream error.
+  #
+  # It needs no dependencies, no database, and no secrets — which is the point.
+  # A check that requires the full environment to run is a check that gets
+  # skipped exactly when the environment is broken.
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the scanner can be pointed at past commits, and so a
+          # later `git filter-repo` run has the objects it needs locally.
+          fetch-depth: 0
+
+      - name: Scan tracked files for credentials
+        run: npm run secrets:scan
+
+      - name: Verify the scanner still detects credentials
+        # A scanner nobody has watched catch anything is a scanner nobody can
+        # trust to pass. This runs the self-test, which plants known credential
+        # shapes in a throwaway repo and asserts each is caught.
+        run: node --import tsx --test test/secretScan.test.ts
+
   ci:
     runs-on: ubuntu-latest
 

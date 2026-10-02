@@ -36,8 +36,27 @@ const LIMIT = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) || 273 : 273;
 
 // ── Last.fm config ──────────────────────────────────────────────────────────
 const LASTFM_API_BASE = 'https://ws.audioscrobbler.com/2.0/';
-// Public Last.fm demo key — works for basic artist lookups
-const LASTFM_API_KEY = 'b25b959554ed76058ac220b7b2e0a026';
+// Read from the environment rather than hard-coded. The value used here was
+// Last.fm's published demo key, which is intentionally public and needs no
+// rotation — but a credential-shaped literal in tracked source is exactly what
+// scripts/scan-secrets.cjs exists to reject, and `src/services/lastfmService.ts`
+// already reads the same variable from env. Register your own key at
+// https://www.last.fm/api/account/create for anything beyond basic lookups.
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY || '';
+
+// Fail loudly rather than sending `api_key=` empty to Last.fm, which answers 403
+// and surfaces as "artist not found" for every row — a silent, total failure.
+if (!LASTFM_API_KEY) {
+  console.error(
+    '\nREFUSING TO RUN: LASTFM_API_KEY is not set.\n\n' +
+      '  This script used to carry a Last.fm key in its source. That literal has\n' +
+      '  been removed from the repository; the key now comes from the environment.\n\n' +
+      '  Set it in .env.local (git-ignored):\n' +
+      '    LASTFM_API_KEY=your_key\n\n' +
+      '  Register a key at https://www.last.fm/api/account/create\n\n',
+  );
+  process.exit(2);
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 interface LastFmData {

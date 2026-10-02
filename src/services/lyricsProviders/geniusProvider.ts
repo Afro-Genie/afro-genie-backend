@@ -5,6 +5,27 @@ import type { LyricsProvider, LyricsSearchResult } from './lyricsProvider';
 const GENIUS_API_BASE = 'https://api.genius.com';
 const REQUEST_TIMEOUT_MS = 4500;
 
+/**
+ * Audit-log port (2.13).
+ *
+ * `logAICall` writes a row via Prisma (`prisma.aICallLog.create`). Hard-coding
+ * that call made the provider's happy path un-testable without a database,
+ * and the three HTML extractors below had zero runtime coverage (§15.5). The
+ * logger is now constructed in and defaults to the real `logAICall`, so
+ * production behaviour is unchanged — but tests can inject a no-op port and
+ * exercise the extractors against fixture HTML with no DB and no network.
+ */
+export type AICallLogPort = (params: {
+  provider: string;
+  model: string;
+  promptVersion: string;
+  tokensInput: number;
+  tokensOutput: number;
+  estimatedCostUsd: number;
+  songId?: string | null;
+  userId?: string | null;
+}) => Promise<void>;
+
 interface GeniusSearchHit {
   result: {
     id: number;
@@ -53,7 +74,10 @@ interface GeniusLyricsResponse {
 export class GeniusProvider implements LyricsProvider {
   public readonly name = 'genius';
 
-  constructor(private readonly songId?: string) {}
+  constructor(
+    private readonly songId?: string,
+    private readonly auditLog: AICallLogPort = logAICall,
+  ) {}
 
   private getAccessToken(): string {
     const token = process.env.GENIUS_ACCESS_TOKEN || process.env.GENIUS_API_KEY;
@@ -104,7 +128,7 @@ export class GeniusProvider implements LyricsProvider {
       'Genius API call completed',
     );
 
-    await logAICall({
+    await this.auditLog({
       provider: 'GENIUS',
       model: `api:${path}`,
       promptVersion: `v1:status:${statusCode}:rt:${responseTimeMs}`,
@@ -150,11 +174,18 @@ export class GeniusProvider implements LyricsProvider {
         return null;
       }
 
-      // Fetch the song page and extract lyrics from the embedded JSON
+      // Fetch the song page and extract lyrics from the embedded JSON.
+      // Search + song metadata already come from the official Genius API
+      // (`/search`, `/songs/:id`) — only the lyrics text needs the page. Ask
+      // for compressed bodies (gzip cuts the 50-200KB page to ~20KB); fetch()
+      // decompresses transparently.
       const pageResponse = await fetch(songUrl, {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; AfroGenie/1.0)',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Language': 'en-US,en;q=0.9',
         },
       });
 
@@ -164,39 +195,21 @@ export class GeniusProvider implements LyricsProvider {
 
       const html = await pageResponse.text();
 
-      // Reject login/CAPTCHA walls
-      if (html.includes('captcha') || html.includes('Sign In')) {
-        logger.warn({ provider: 'GENIUS', trackId }, 'Genius page returned login/CAPTCHA wall');
+      // Reject bot walls — but ONLY actual walls. Every genuine Genius page
+      // embeds reCAPTCHA v3 config (`recaptcha_v3_site_key`,
+      // `grecaptcha-badge`) and renders a footer "Sign In" link, so substring
+      // checks for "captcha"/"Sign In" match ALL real pages and silently killed
+      // the Genius lyrics path (confirmed against a live page 2026-09-29).
+      // A real Cloudflare wall has a distinct <title> and no lyric markup.
+      const pageTitle = html.match(/<title>([^<]*)<\/title>/i)?.[1] ?? '';
+      const hasLyricMarkup = /data-lyrics-container="true"|Lyrics__Container|__PRELOADED_STATE__/.test(html);
+      const isCloudflareWall = /just a moment|access denied|verify you are human/i.test(pageTitle);
+      if (isCloudflareWall || (!hasLyricMarkup && /g-recaptcha|challenge-platform/.test(html))) {
+        logger.warn({ provider: 'GENIUS', trackId }, 'Genius page returned a bot wall');
         return null;
       }
 
-      // Method 1: data-lyrics-container div (current Genius embed)
-      const lyricsMatch = html.match(/data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/);
-      if (lyricsMatch) {
-        const decoded = decodeHtmlEntities(stripTags(lyricsMatch[1]));
-        if (decoded) return decoded;
-      }
-
-      // Method 2: Lyrics__Container (older Genius markup)
-      const altMatch = html.match(/class="Lyrics__Container[^"]*"[^>]*>([\s\S]*?)<\/div>/);
-      if (altMatch) {
-        const decoded = decodeHtmlEntities(stripTags(altMatch[1]));
-        if (decoded) return decoded;
-      }
-
-      // Method 3: window.__PRELOADED_STATE__
-      const stateMatch = html.match(/window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
-      if (stateMatch) {
-        try {
-          const state = JSON.parse(stateMatch[1]);
-          const lyrics = state?.songPage?.lyrics?.plain;
-          if (lyrics) return lyrics.trim();
-        } catch {
-          // JSON parse failed, continue
-        }
-      }
-
-      return null;
+      return extractLyricsFromHtml(html);
     } catch (error) {
       logger.error(
         { provider: 'GENIUS', trackId, err: error },
@@ -224,4 +237,62 @@ function decodeHtmlEntities(html: string): string {
 
 function stripTags(html: string): string {
   return html.replace(/<br\s*\/?>/g, '\n').replace(/<[^>]+>/g, '');
+}
+
+// ---------------------------------------------------------------------------
+// HTML extractors (2.13)
+//
+// Pure, exported, and deliberately independent of the network and the audit
+// log: fixture-HTML tests can call them directly with no DB and no fetch. The
+// order here matches the way Genius markup has evolved: try the newest embed
+// container first, fall back to the legacy container, then the embedded JSON.
+// ---------------------------------------------------------------------------
+
+/** Method 1 — current Genius embed: `<div data-lyrics-container="true">`. */
+export function extractLyricsFromDataContainerHtml(html: string): string | null {
+  const matches = [...html.matchAll(/data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/g)];
+  let best: string | null = null;
+  for (const match of matches) {
+    const decoded = decodeHtmlEntities(stripTags(match[1]));
+    if (decoded && decoded.length > 40 && (!best || decoded.length > best.length)) {
+      best = decoded;
+    }
+  }
+  return best;
+}
+
+/** Method 2 — older Genius markup: `class="Lyrics__Container ..."`. */
+export function extractLyricsFromLegacyContainerHtml(html: string): string | null {
+  const matches = [...html.matchAll(/class="Lyrics__Container[^"]*"[^>]*>([\s\S]*?)<\/div>/g)];
+  let best: string | null = null;
+  for (const match of matches) {
+    const decoded = decodeHtmlEntities(stripTags(match[1]));
+    if (decoded && decoded.length > 40 && (!best || decoded.length > best.length)) {
+      best = decoded;
+    }
+  }
+  return best;
+}
+
+/** Method 3 — the `window.__PRELOADED_STATE__` JSON embedded by Genius. */
+export function extractLyricsFromPreloadedState(html: string): string | null {
+  const match = html.match(/window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+  if (!match) return null;
+  try {
+    const state = JSON.parse(match[1]);
+    const lyrics = state?.songPage?.lyrics?.plain;
+    if (lyrics) return lyrics.trim();
+  } catch {
+    // JSON parse failed, continue
+  }
+  return null;
+}
+
+/** Tries the three extractors in markup-evolution order; first hit wins. */
+export function extractLyricsFromHtml(html: string): string | null {
+  return (
+    extractLyricsFromDataContainerHtml(html) ??
+    extractLyricsFromLegacyContainerHtml(html) ??
+    extractLyricsFromPreloadedState(html)
+  );
 }

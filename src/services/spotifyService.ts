@@ -96,6 +96,12 @@ export interface SimplifiedSpotifyTrack {
 const tokenCacheKey = 'spotify:token';
 const spotifyFallbackEnabled = process.env.SPOTIFY_TEST_FALLBACK === 'true';
 
+/** Search-result cache TTLs (2.11). */
+const ARTIST_SEARCH_CACHE_TTL_SECONDS = 60 * 60 * 24; // 24h — artist results are stable
+const SEARCH_CACHE_TTL_SECONDS = 60 * 10; // 10min — track/album results move fast
+/** Single-track metadata is immutable. */
+const TRACK_CACHE_TTL_SECONDS = 60 * 60 * 24;
+
 // Dedupe concurrent identical Spotify API requests to avoid thundering herd on cold cache.
 const inflightRequests = new Map<string, Promise<unknown>>();
 
@@ -296,7 +302,7 @@ export const getTrack = async (trackId: string): Promise<SimplifiedSpotifyTrack>
   };
 
   try {
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', 60 * 60);
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', TRACK_CACHE_TTL_SECONDS);
   } catch {
     // Non-fatal when cache write is unavailable.
   }
@@ -334,7 +340,13 @@ export const searchSpotify = async (
     }
   }
 
-  const ttlSeconds = type === 'artist' ? 60 * 60 * 6 : 60 * 10;
+  // TTL by result type (2.11). Artist search results are near-immutable — a
+  // search for an artist name returns the same handful of artists for weeks —
+  // so the previous 6h TTL spent 4 cache misses per artist per day re-fetching
+  // identical data. 24h matches the artist TTL already used by
+  // `syncEngine.cachedSpotifyFetch`. Track/album search is genuinely volatile,
+  // so it keeps the short 10min TTL.
+  const ttlSeconds = type === 'artist' ? ARTIST_SEARCH_CACHE_TTL_SECONDS : SEARCH_CACHE_TTL_SECONDS;
 
   try {
     await redis.set(cacheKey, JSON.stringify(result), 'EX', ttlSeconds);

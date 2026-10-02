@@ -182,16 +182,26 @@ translationsRouter.post(
       };
       const userId = req.user!.id;
 
-      // Per-user daily rate limit
-      const rateLimit = await checkUserRateLimit(userId);
-      if (!rateLimit.allowed) {
-        return next(
-          new ApiError(
-            `Daily translation limit reached. Try again after ${rateLimit.resetAt.toISOString()}.`,
-            'RATE_LIMITED',
-            429,
-          ),
-        );
+      // Translation credits bypass the per-user daily rate limit (soft spending
+      // model — not a hard paywall, and the global daily budget still applies).
+      const creditUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { translationCredits: true },
+      });
+      const hasCredits = (creditUser?.translationCredits ?? 0) > 0;
+
+      if (!hasCredits) {
+        // Per-user daily rate limit
+        const rateLimit = await checkUserRateLimit(userId);
+        if (!rateLimit.allowed) {
+          return next(
+            new ApiError(
+              `Daily translation limit reached. Try again after ${rateLimit.resetAt.toISOString()}.`,
+              'RATE_LIMITED',
+              429,
+            ),
+          );
+        }
       }
 
       // Daily budget guard
@@ -282,6 +292,17 @@ translationsRouter.post(
             where: { id: translation.id },
             data: { status: 'APPROVED' },
           });
+
+          // Consume one translation credit for the newly generated translation
+          // (only if the user had credits available; otherwise they were governed
+          // by the daily rate limit and nothing is spent here).
+          if (hasCredits) {
+            await prisma.user.updateMany({
+              where: { id: userId, translationCredits: { gt: 0 } },
+              data: { translationCredits: { decrement: 1 } },
+            });
+          }
+
           return res.status(200).json({ status: 'completed', translation: approved });
         }
       } catch (inlineErr: any) {

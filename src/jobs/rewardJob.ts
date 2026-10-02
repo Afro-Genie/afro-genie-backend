@@ -3,6 +3,8 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { creditTokens, dedupeCreditTokens } from '../services/rewardService';
 import { checkAndAwardBadges } from '../services/badgeService';
+import { isRewardPaused } from '../services/abuseService';
+import { hasMutualReferral } from '../services/referralService';
 
 const REFERRAL_COMMISSION_RATE = 0.1;
 
@@ -21,6 +23,12 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
   logger.info({ jobId: job.id, userId, amount, reason, event, idempotencyKey }, 'Processing reward job');
 
   try {
+    // Auto-pause: HIGH-severity abuse flags suspend earning until reviewed.
+    if (await isRewardPaused(userId)) {
+      logger.warn({ jobId: job.id, userId, reason }, 'Reward skipped — earning paused by abuse flag');
+      return;
+    }
+
     // 1.5× artist bonus for verified artists on translation rewards
     const artist = await prisma.artist.findFirst({
       where: { userId, verified: true },
@@ -66,25 +74,31 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
         select: { referredByUserId: true },
       });
       if (user?.referredByUserId) {
-        const commissionAmount = Math.max(1, Math.floor(amount * REFERRAL_COMMISSION_RATE));
-        const commissionKey = idempotencyKey ? `${idempotencyKey}:commission` : undefined;
-        if (commissionKey) {
-          await dedupeCreditTokens(commissionKey, user.referredByUserId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+        const referrerId = user.referredByUserId;
+        if (await hasMutualReferral(userId, referrerId)) {
+          // Self-referral ring (A→B→A) — block the commission.
+          logger.warn({ jobId: job.id, userId, referrerId }, 'Referral commission blocked — mutual referral detected');
         } else {
-          await creditTokens(user.referredByUserId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+          const commissionAmount = Math.max(1, Math.floor(amount * REFERRAL_COMMISSION_RATE));
+          const commissionKey = idempotencyKey ? `${idempotencyKey}:commission` : undefined;
+          if (commissionKey) {
+            await dedupeCreditTokens(commissionKey, referrerId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+          } else {
+            await creditTokens(referrerId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+          }
+          await prisma.notification.create({
+            data: {
+              userId: referrerId,
+              title: 'Referral Commission',
+              message: `You earned ${commissionAmount} tokens from a referred user's reward.`,
+              type: 'REWARD',
+            },
+          });
+          logger.info(
+            { jobId: job.id, referrerId, commissionAmount, originalUserId: userId },
+            'Referral commission credited',
+          );
         }
-        await prisma.notification.create({
-          data: {
-            userId: user.referredByUserId,
-            title: 'Referral Commission',
-            message: `You earned ${commissionAmount} tokens from a referred user's reward.`,
-            type: 'REWARD',
-          },
-        });
-        logger.info(
-          { jobId: job.id, referrerId: user.referredByUserId, commissionAmount, originalUserId: userId },
-          'Referral commission credited',
-        );
       }
     }
 
