@@ -21,6 +21,7 @@ import { adminStoreRouter } from './routes/admin/store';
 import { adminYoutubeRouter } from './routes/admin/youtube';
 import { adminEconomyRouter } from './routes/admin/economy';
 import { adminBandwidthRouter } from './routes/admin/bandwidth';
+import { adminFeatureFlagsRouter } from './routes/admin/featureFlags';
 import { artistPortalRouter } from './routes/artistPortal';
 import { roleRequestsRouter } from './routes/roleRequests';
 import { artistsRouter } from './routes/artists';
@@ -110,7 +111,23 @@ app.use(
   }),
 );
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(path.resolve(__dirname, '../uploads')));
+// Uploaded audio is first-party content served under a content-addressed /
+// versioned name and never mutated in place, so it is safe to cache
+// aggressively (Phase 6 / 7.3.2). Without an explicit header, `express.static`
+// falls back to no Cache-Control at all: every play re-validated the file with
+// the origin, which was the single largest avoidable egress line item.
+// `immutable` is only safe because a replaced upload gets a new filename —
+// see `routes/upload.ts` for the write path.
+app.use(
+  '/uploads',
+  express.static(path.resolve(__dirname, '../uploads'), {
+    maxAge: '365d',
+    immutable: true,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    },
+  })
+);
 app.use(passport.initialize());
 app.use('/api', apiLimiter);
 
@@ -159,6 +176,7 @@ app.use('/api/admin', adminRewardsRouter);
 app.use('/api/admin', adminYoutubeRouter);
 app.use('/api/admin', adminEconomyRouter);
 app.use('/api/admin', adminBandwidthRouter);
+app.use('/api/admin', adminFeatureFlagsRouter);
 app.use('/api', spotifyRouter);
 app.use('/api/roles', roleRequestsRouter);
 

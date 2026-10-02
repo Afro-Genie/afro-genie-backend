@@ -1,9 +1,14 @@
 const { Client } = require('pg');
+const { requireUrls } = require('./scripts/require-db-urls.cjs');
 
 (async () => {
+  const urls = requireUrls({
+    VIOLET: 'VIOLET_DATABASE_URL',
+    RICE: 'RICE_DATABASE_URL',
+  });
   const configs = [
-    { label: 'VIOLET', url: 'postgresql://neondb_owner:npg_WSt4wEh2mfNi@ep-old-violet-aq9pxmi0-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require' },
-    { label: 'RICE', url: 'postgresql://neondb_owner:npg_Li12PMrIHnZC@ep-old-rice-ataoe41y-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require' }
+    { label: 'VIOLET', url: urls.VIOLET },
+    { label: 'RICE', url: urls.RICE },
   ];
   const checks = ['Translation','TranslationVote','TranslationCorrection','Lyric','Favorite','UserHistory','SongPlay','Playlist','PlaylistLike','StoreItem','StorePurchase','Referral','SeasonalSnapshot','ContentReport','ModerationLog','Challenge','RoleRequest','TokenLedger','UserWallet','UserTier','UserStreak','ModPool','AICallLog','SyncRun','User','Topic','TopicComment','TopicVote','TopicCommentVote','ForumCategory','UserBadge','Notification','ArtistApplication','SongRequest','Genre','Language','Album','Artist','Song','SongGenre'];
   for (const cfg of configs) {

@@ -4,9 +4,9 @@ import rateLimit from 'express-rate-limit';
 import { body, param } from 'express-validator';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
-import { redis } from '../../lib/redis';
-import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
+import { createRedisRateLimitStore } from '../../lib/rateLimitStore';
+import { invalidatePlaybackSourceCache } from '../../lib/playbackCache';
 import { ApiError } from '../../middleware/errorHandler';
 import { youtubeService } from '../../services/youtubeService';
 import { enqueueLibraryEnrichment } from '../../jobs/libraryEnrichmentJob';
@@ -15,24 +15,19 @@ export const adminYoutubeRouter = Router();
 
 adminYoutubeRouter.use(authenticate, requireRole('ADMIN'));
 
+// G-3 (2.16 adj.) — this limiter used the default in-process MemoryStore, so the
+// effective cap was 5/min x instanceCount with nothing in the response to say so.
+// Shared via Redis so the cap is a real control. Keyed on the admin's user id,
+// not their IP, so it cannot be sidestepped by an admin behind NAT.
 const matchAllLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisRateLimitStore('admin-youtube-match'),
   message: { error: 'Too many match requests. Please wait.', code: 'RATE_LIMITED' },
   keyGenerator: (req) => req.user?.id ?? req.ip ?? 'unknown',
 });
-
-const playbackSourceCacheKey = (songId: string) => `playback:source:${songId}`;
-
-const invalidatePlaybackCache = async (songId: string) => {
-  try {
-    await redis.del(playbackSourceCacheKey(songId));
-  } catch (err) {
-    logger.warn({ err, songId }, 'Failed to invalidate playback source cache');
-  }
-};
 
 // ---------------------------------------------------------------------------
 // POST /api/admin/youtube/match
@@ -51,7 +46,7 @@ adminYoutubeRouter.post(
         if (!match) {
           throw new ApiError('No YouTube match found for song', 'NO_MATCH', 404);
         }
-        await invalidatePlaybackCache(songId);
+        await invalidatePlaybackSourceCache(songId);
         return res.status(200).json({ matched: 1, failed: 0, match });
       }
 
@@ -114,7 +109,7 @@ adminYoutubeRouter.post(
       if (!match) {
         return res.status(200).json({ match: null });
       }
-      await invalidatePlaybackCache(songId);
+      await invalidatePlaybackSourceCache(songId);
       return res.status(200).json({ match });
     } catch (err) {
       return next(err);

@@ -4,6 +4,7 @@ import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob
 import { lyricsEnrichmentQueue } from '../lib/queue';
 import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
+import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
 import { ApiError } from '../middleware/errorHandler';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
 import { getTrack } from './spotifyService';
@@ -642,6 +643,10 @@ export const updateSong = async (songId: string, payload: Partial<SongMutationIn
 
   await enqueueIndexSong(songId);
 
+  // 2.18 — the cached playback payload embeds the song's title/artist/cover, so
+  // an edit leaves stale metadata in `playback:source:<id>` for up to an hour.
+  await invalidatePlaybackSourceCache(songId);
+
   return getSongById(songId, { incrementViewCount: false });
 };
 
@@ -659,6 +664,11 @@ export const softDeleteSong = async (songId: string) => {
   await takedownLyrics(songId);
 
   await enqueueIndexSong(songId);
+
+  // 2.18/2.17 — must evict, not just rely on the `softDeleted: false` guard in
+  // `getPlaybackSource()`: a live cache entry would keep serving a song that is
+  // supposed to be hidden.
+  await invalidatePlaybackSourceCache(songId);
 
   return { success: true, songId };
 };

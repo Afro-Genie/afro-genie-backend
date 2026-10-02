@@ -1,7 +1,9 @@
 const { Client } = require('pg');
+const { requireUrls } = require('./scripts/require-db-urls.cjs');
 
 (async () => {
-  const c = new Client({ connectionString: 'postgresql://neondb_owner:npg_WSt4wEh2mfNi@ep-old-violet-aq9pxmi0-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require' });
+  const { VIOLET: url } = requireUrls({ VIOLET: 'VIOLET_DATABASE_URL' });
+  const c = new Client({ connectionString: url });
   await c.connect();
 
   const r1 = await c.query('SELECT COUNT(*)::int AS n FROM "User" WHERE "referredByUserId" IS NOT NULL');

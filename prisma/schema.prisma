@@ -198,9 +198,14 @@ model User {
   photoUrl                   String?
   bio                        String?
   preferredLanguages         String[]
+  translationCredits         Int                               @default(0)
   role                       UserRole                          @default(USER)
   schemaVersion              Int                               @default(1)
   profileCompleted           Boolean                           @default(false)
+  // Stage 6.2 — §3.5 archive, never delete. Marks an account as non-production
+  // so leaderboard, abuse and economy statistics can exclude it reversibly.
+  // @default(false) means every pre-existing row is a real account.
+  isTestAccount              Boolean                           @default(false)
   referralCode               String?                           @unique
   referredByUserId           String?
   createdAt                  DateTime                          @default(now())
@@ -259,6 +264,8 @@ model User {
 
   @@index([role])
   @@index([lastLoginAt])
+  // Stage 6.2 — every leaderboard / abuse query filters on this column.
+  @@index([isTestAccount])
 }
 
 model Artist {
@@ -339,6 +346,11 @@ model Song {
   previewAvailable    Boolean?
   youtubeVideoId      String?
   youtubeMatchedAt    DateTime?
+  // Stage 6.1 — consecutive enrichment attempts that found no match. Incremented
+  // on failure, reset to 0 on success, compared against MAX_MATCH_ATTEMPTS to
+  // dead-letter a song YouTube will never return. Without it the job re-queued
+  // the same unmatchable songs daily, each retry spending real quota.
+  youtubeMatchAttempts Int                 @default(0)
   durationMs          Int?
   trackNumber         Int?
   views               Int                  @default(0)
@@ -373,6 +385,10 @@ model Song {
   @@index([released])
   @@index([createdAt])
   @@index([youtubeVideoId])
+  // Stage 6.1 — the enrichment selection query filters on
+  // (softDeleted, youtubeVideoId IS NULL, youtubeMatchAttempts < MAX), so an
+  // index on the dead-letter counter keeps that scan off a sequential pass.
+  @@index([youtubeMatchAttempts])
 }
 
 model SongLanguage {
@@ -455,6 +471,10 @@ model Translation {
   @@unique([songId, userId, sourceLang, targetLang])
   @@index([songId])
   @@index([userId])
+  // Stage 6.3 (M-10) — challenge progress reads userId + a createdAt window.
+  // Single-column indexes made Postgres scan Translation_createdAt_idx and
+  // filter userId per row; this composite serves the equality then the range.
+  @@index([userId, createdAt])
   @@index([status])
   @@index([approvedById])
   @@index([reviewedById])

@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "set -e && prisma migrate deploy 2>&1 && prisma generate 2>&1 && node dist/index.js 2>&1"
+startCommand = "set -e && node scripts/railway-preflight.cjs 2>&1 && prisma migrate deploy 2>&1 && prisma generate 2>&1 && node dist/index.js 2>&1"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"

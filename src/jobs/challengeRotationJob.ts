@@ -1,6 +1,6 @@
 import type { RepeatOptions } from 'bullmq';
 import type { ChallengeType } from '@prisma/client';
-import { reconciliationQueue } from '../lib/queue';
+import { challengeRotationQueue } from '../lib/queue';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -21,6 +21,23 @@ export interface ChallengeTemplate {
   gtReward: number;
 }
 
+/**
+ * The weekly challenge lineup.
+ *
+ * `ACHIEVE_N_APPROVALS` was previously missing here even though the Prisma enum,
+ * the progress counter (`challengeService.countApprovals`) and the reward path
+ * all supported it — so that branch of `computeProgress` was unreachable dead
+ * code. Two options existed: add the template, or delete the branch. Adding it
+ * is the better of the two: the branch is correct, tested logic, and the type
+ * exists in the schema precisely because this challenge was intended.
+ *
+ * It is also the most on-brand challenge available — every other template
+ * rewards an indirect activity, while this one rewards the platform's core loop
+ * (a translator getting work approved), which is the Phase 1.2.3 reward gap.
+ *
+ * NOTE FOR STAGE 4: this list is now 5 templates, so `runChallengeRotation()`
+ * upserts 5 rows per week, not 4. Stage 4's post-check must expect 5.
+ */
 export const CHALLENGE_TEMPLATES: readonly ChallengeTemplate[] = [
   {
     type: 'TRANSLATE_N_SONGS',
@@ -35,6 +52,13 @@ export const CHALLENGE_TEMPLATES: readonly ChallengeTemplate[] = [
     description: 'Earn 100 GT from any activity this week.',
     targetValue: 100,
     gtReward: 50,
+  },
+  {
+    type: 'ACHIEVE_N_APPROVALS',
+    title: 'Get 3 Translations Approved',
+    description: 'Have 3 of your translations approved this week.',
+    targetValue: 3,
+    gtReward: 30,
   },
   {
     type: 'STREAK_7_DAYS',
@@ -114,7 +138,9 @@ const CHALLENGE_ROTATION_JOB_OPTIONS = {
 };
 
 export const scheduleChallengeRotation = async () => {
-  await reconciliationQueue.add(
+  // Own queue (2.6) — see `lib/queue.ts`. A long reconciliation pass used to
+  // head-of-line block this weekly job indefinitely.
+  await challengeRotationQueue.add(
     'challenge-rotation',
     {},
     { ...CHALLENGE_ROTATION_JOB_OPTIONS, jobId: 'challenge-rotation-weekly' },

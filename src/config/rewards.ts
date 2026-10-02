@@ -87,6 +87,14 @@ export const REWARD_CONFIG = {
     TRANSLATION_PACK_50: '50 Translation Credits',
   } as const,
 
+  // Translation credits granted per pass. SEVEN_DAY_PREMIUM is the time-boxed
+  // premium pass and grants no credits; the packs grant their named counts.
+  PREMIUM_PASS_TRANSLATION_CREDITS: {
+    SEVEN_DAY_PREMIUM: 0,
+    TRANSLATION_PACK_10: 10,
+    TRANSLATION_PACK_50: 50,
+  } as const,
+
   // Referrals required to earn the REFERRAL_STAR badge.
   REFERRAL_STAR_THRESHOLD: 3,
 

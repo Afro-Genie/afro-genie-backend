@@ -47,6 +47,7 @@ export interface PurchasePassResult {
   label: string;
   expiresAt: Date;
   newBalance: number;
+  translationCredits: number;
 }
 
 export async function purchasePass(userId: string, passType: PassType): Promise<PurchasePassResult> {
@@ -56,6 +57,7 @@ export async function purchasePass(userId: string, passType: PassType): Promise<
 
   const gtCost = REWARD_CONFIG.PREMIUM_PASS_COSTS[passType];
   const label = REWARD_CONFIG.PREMIUM_PASS_LABELS[passType];
+  const credits = REWARD_CONFIG.PREMIUM_PASS_TRANSLATION_CREDITS[passType];
   const expiresAt = expiryFor(passType);
 
   const pass = await prisma.premiumPass.create({
@@ -73,7 +75,35 @@ export async function purchasePass(userId: string, passType: PassType): Promise<
       metadata: { passType },
     });
 
-    logger.info({ userId, passId: pass.id, passType, gtCost }, 'Premium pass purchased');
+    // Grant the pack's translation credits once the GT debit has committed.
+    if (credits > 0) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { translationCredits: { increment: credits } },
+      }).catch(async (err) => {
+        // Roll back the pass AND the GT debit if crediting fails, to keep the
+        // ledger and the credit balance consistent.
+        logger.error({ err, userId, passId: pass.id, passType }, 'Failed to grant translation credits; rolling back pass');
+        await spendTokens({
+          userId,
+          amount: gtCost,
+          reason: `Refund: ${label}`,
+          sourceType: 'PREMIUM_PASS',
+          sourceId: `refund-${pass.id}`,
+          idempotencyKey: `premium-pass-refund:${pass.id}`,
+          metadata: { passType },
+        }).catch(() => undefined);
+        await prisma.premiumPass.delete({ where: { id: pass.id } }).catch(() => undefined);
+        throw err;
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { translationCredits: true },
+    }).catch(() => null);
+
+    logger.info({ userId, passId: pass.id, passType, gtCost, credits }, 'Premium pass purchased');
 
     return {
       passId: pass.id,
@@ -81,6 +111,7 @@ export async function purchasePass(userId: string, passType: PassType): Promise<
       label,
       expiresAt,
       newBalance: ledger.balanceAfter,
+      translationCredits: user?.translationCredits ?? 0,
     };
   } catch (err) {
     await prisma.premiumPass.delete({ where: { id: pass.id } }).catch(() => undefined);
@@ -88,7 +119,32 @@ export async function purchasePass(userId: string, passType: PassType): Promise<
   }
 }
 
+/**
+ * The user's active PREMIUM pass, or null.
+ *
+ * The `type` filter is load-bearing, not tidiness. Translation packs live in the
+ * same PremiumPass table, so an unfiltered `findFirst` on `active: true` returns
+ * a TRANSLATION_PACK row whenever the user bought the cheaper (50 GT) pack. The
+ * caller then renders — and any entitlement check later built on this reads —
+ * a year-long "premium pass" that the user paid 50 GT for, instead of the
+ * 200 GT seven-day entitlement. Translation packs are consumable credit
+ * balances (User.translationCredits), not entitlements, so they must never be
+ * returned here.
+ */
 export async function getActivePass(userId: string) {
+  return prisma.premiumPass.findFirst({
+    where: {
+      userId,
+      type: PassType.SEVEN_DAY_PREMIUM,
+      active: true,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { expiresAt: 'desc' },
+  });
+}
+
+/** Any still-active pass row, including packs. For history/display only. */
+export async function getAnyActivePass(userId: string) {
   return prisma.premiumPass.findFirst({
     where: { userId, active: true, expiresAt: { gt: new Date() } },
     orderBy: { expiresAt: 'desc' },

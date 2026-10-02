@@ -247,24 +247,46 @@ async function startWorkers(): Promise<void> {
     { connection, concurrency: 1 }
   );
 
+  // 2.6 — three dedicated workers instead of one multiplexed concurrency-1
+  // worker on a shared queue. Each handler is now unambiguous: there is no
+  // `job.name` dispatch, so a mis-named or future job type can no longer fall
+  // through to the reconciliation branch and run a wallet/ledger scan.
   const reconciliationWorker = new Worker(
     'reconciliationQueue',
-    async (job) => {
-      if (job.name === 'abuse-detect') {
-        logger.info('Processing abuse detection job');
-        await processAbuseDetectionJob();
-        return;
-      }
-      if (job.name === 'challenge-rotation') {
-        logger.info('Processing weekly challenge rotation job');
-        await processChallengeRotationJob();
-        return;
-      }
+    async () => {
       logger.info('Processing wallet/ledger reconciliation job');
       await processReconciliationJob();
     },
     { connection, concurrency: 1 }
   );
+
+  const challengeRotationWorker = new Worker(
+    'challengeRotationQueue',
+    async () => {
+      logger.info('Processing weekly challenge rotation job');
+      await processChallengeRotationJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  const abuseDetectionWorker = new Worker(
+    'abuseDetectionQueue',
+    async () => {
+      logger.info('Processing abuse detection job');
+      await processAbuseDetectionJob();
+    },
+    { connection, concurrency: 1 }
+  );
+
+  for (const [name, worker] of [
+    ['reconciliation', reconciliationWorker],
+    ['challenge-rotation', challengeRotationWorker],
+    ['abuse-detection', abuseDetectionWorker],
+  ] as const) {
+    worker.on('failed', (job, err) => {
+      logger.error({ worker: name, jobId: job?.id, err }, 'Job failed');
+    });
+  }
 
   const overturnRateAlertWorker = new Worker(
     'overturnRateAlertQueue',

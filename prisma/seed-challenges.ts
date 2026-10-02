@@ -1,36 +1,36 @@
 /**
  * Seed the current week's challenges.
- * Run: npx tsx prisma/seed-challenges.ts
+ * Run: npx tsx prisma/seed-challenges.ts  (or npm run seed:challenges)
  *
  * Idempotent — upserts by (type, weekStart) and deactivates expired weeks.
+ * Also invoked from the main prisma/seed.ts.
  */
 
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
+import { CHALLENGE_TEMPLATES, getWeekWindow } from '../src/jobs/challengeRotationJob';
 
-const prisma = new PrismaClient();
+/**
+ * The template list and week window are imported from
+ * `src/jobs/challengeRotationJob` rather than duplicated here. This file used to
+ * carry its own 4-entry copy of the list, which is how
+ * `ACHIEVE_N_APPROVALS` ended up supported by the schema and the progress
+ * calculator but absent from both rotation paths (2.2). One list, one source.
+ */
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
-const TEMPLATES = [
-  { type: 'TRANSLATE_N_SONGS', title: 'Translate 3 Songs', description: 'Translate 3 different songs this week.', targetValue: 3, gtReward: 30 },
-  { type: 'EARN_N_GT', title: 'Earn 100 GT this week', description: 'Earn 100 GT from any activity this week.', targetValue: 100, gtReward: 50 },
-  { type: 'STREAK_7_DAYS', title: '7-Day Streak', description: 'Log in for 7 consecutive days.', targetValue: 7, gtReward: 25 },
-  { type: 'INVITE_3_FRIENDS', title: 'Invite 2 Friends', description: 'Invite 2 friends who join this week.', targetValue: 2, gtReward: 20 },
-] as const;
-
-function getWeekWindow(now = new Date()) {
-  const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const daysSinceMonday = (midnight.getUTCDay() + 6) % 7;
-  const startsAt = new Date(midnight.getTime() - daysSinceMonday * 24 * 60 * 60 * 1000);
-  return { startsAt, expiresAt: new Date(startsAt.getTime() + WEEK_MS) };
+export interface ChallengeSeedResult {
+  upserted: number;
+  deactivated: number;
 }
 
-async function main() {
+export async function seedChallenges(prisma: PrismaClient): Promise<ChallengeSeedResult> {
   const { startsAt, expiresAt } = getWeekWindow();
   console.log(`Challenge seed: week ${startsAt.toISOString()} → ${expiresAt.toISOString()}`);
 
   let upserted = 0;
-  for (const template of TEMPLATES) {
+  for (const template of CHALLENGE_TEMPLATES) {
     await prisma.challenge.upsert({
       where: { type_startsAt: { type: template.type, startsAt } },
       update: {
@@ -53,11 +53,24 @@ async function main() {
   });
 
   console.log(`\nDone: ${upserted} challenges upserted, ${count} expired deactivated.`);
+  return { upserted, deactivated: count };
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+async function main() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+
+  try {
+    await seedChallenges(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  main()
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}

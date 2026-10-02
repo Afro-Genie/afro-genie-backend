@@ -34,7 +34,38 @@ export const BANDWIDTH_THRESHOLDS = {
   hourlySpikeBytes: 50 * GB,
 } as const;
 
-const CACHE_TTL_SECONDS = 60 * 60 * 24 * 3; // keep 3 days of granularity
+/**
+ * Maximum query window the admin bandwidth endpoints accept.
+ * MUST match the `isInt({ min: 1, max: 90 })` validator in `routes/admin/bandwidth.ts`.
+ */
+export const BANDWIDTH_MAX_QUERY_DAYS = 90;
+
+/**
+ * Counter retention.
+ *
+ * Was `60 * 60 * 24 * 3` (3 days) while the daily endpoint defaults to a 30-day
+ * window (and allows up to 90). Every bucket older than 3 days was therefore
+ * already gone, so the "last 30 days" chart could only ever contain the last 3
+ * days and silently rendered 27 days of zeroes — the admin could not see the
+ * trend the alert thresholds are defined against.
+ *
+ * Derived from the max query window (+1 day of slack) so the TTL can never
+ * silently fall below the range the UI asks for.
+ */
+const CACHE_TTL_SECONDS = 60 * 60 * 24 * (BANDWIDTH_MAX_QUERY_DAYS + 1);
+
+/**
+ * Counter flush interval (2.10).
+ *
+ * Previously every single response performed 6 Redis round-trips
+ * (3x INCRBY/HINCRBY + 3x EXPIRE) inline on the response path, all awaited
+ * inside `res.end`. At any real request rate that is the dominant per-request
+ * cost of the whole app and it added latency to every response just to keep an
+ * admin chart current. Bytes are now accumulated in-process and flushed on an
+ * interval: 6 ops per *interval* instead of 6 ops per *request*.
+ */
+export const BANDWIDTH_FLUSH_INTERVAL_MS = 10_000;
+
 const ALERT_COOLDOWN_SECONDS = 60 * 60; // one alert per bucket per hour
 const ALERT_LIST_MAX = 100;
 const ALERT_CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -115,29 +146,135 @@ export const bandwidthTrackingMiddleware = (
 // ---------------------------------------------------------------------------
 // Counter writes + throttled alert evaluation
 // ---------------------------------------------------------------------------
-export async function recordBandwidth(bytes: number, group: string): Promise<void> {
+
+// In-process accumulators (2.10). Keyed by the full Redis key so a UTC day/hour
+// rollover naturally starts a new bucket. `pendingGroup` is two-level because
+// the group counters are hashes, not strings.
+const pendingDaily = new Map<string, number>();
+const pendingHourly = new Map<string, number>();
+const pendingGroup = new Map<string, Map<string, number>>();
+
+let flushTimer: NodeJS.Timeout | null = null;
+let flushInFlight: Promise<void> | null = null;
+
+const addToPending = (map: Map<string, number>, key: string, bytes: number): void => {
+  map.set(key, (map.get(key) ?? 0) + bytes);
+};
+
+const ensureFlushTimer = (): void => {
+  if (flushTimer) return;
+  flushTimer = setInterval(() => {
+    void flushBandwidthCounters();
+  }, BANDWIDTH_FLUSH_INTERVAL_MS);
+  // Never hold the process open just to flush a counter.
+  flushTimer.unref?.();
+};
+
+/**
+ * Drain the in-process accumulators into Redis.
+ *
+ * The buffer is swapped out *before* any await, so bytes recorded while the
+ * flush is in flight land in the next batch rather than being lost or counted
+ * twice. Safe to call concurrently — overlapping calls share one flush.
+ * Exported so tests and shutdown can force a synchronous flush.
+ */
+export function flushBandwidthCounters(): Promise<void> {
+  if (flushInFlight) return flushInFlight;
+
+  const daily = new Map(pendingDaily);
+  const hourly = new Map(pendingHourly);
+  const group = new Map(pendingGroup);
+  pendingDaily.clear();
+  pendingHourly.clear();
+  pendingGroup.clear();
+
+  if (daily.size === 0 && hourly.size === 0 && group.size === 0) {
+    return Promise.resolve();
+  }
+
+  flushInFlight = (async () => {
+    const touched = new Set<string>();
+
+    for (const [key, bytes] of daily) {
+      try {
+        await redis.incrby(key, bytes);
+        touched.add(key);
+      } catch {
+        // Non-fatal when Redis is unavailable (or stubbed in tests).
+      }
+    }
+
+    for (const [key, bytes] of hourly) {
+      try {
+        await redis.incrby(key, bytes);
+        touched.add(key);
+      } catch {
+        // Non-fatal.
+      }
+    }
+
+    for (const [key, groups] of group) {
+      try {
+        for (const [group, bytes] of groups) {
+          await redis.hincrby(key, group, bytes);
+        }
+        touched.add(key);
+      } catch {
+        // Non-fatal.
+      }
+    }
+
+    // One EXPIRE per key per flush rather than one per request.
+    for (const key of touched) {
+      try {
+        await redis.expire(key, CACHE_TTL_SECONDS);
+      } catch {
+        // Non-fatal.
+      }
+    }
+  })().finally(() => {
+    flushInFlight = null;
+  });
+
+  return flushInFlight;
+}
+
+/** Stop the interval flush and drain whatever is buffered. */
+export async function shutdownBandwidthMonitor(): Promise<void> {
+  if (flushTimer) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
+  await flushBandwidthCounters();
+}
+
+export function recordBandwidth(bytes: number, group: string): void {
   if (bytes <= 0) return;
 
   const dailyKey = `${DAILY_PREFIX}${utcDay()}`;
   const hourlyKey = `${HOURLY_PREFIX}${utcHour()}`;
   const groupKey = `${GROUP_PREFIX}${utcDay()}`;
 
-  try {
-    await redis.incrby(dailyKey, bytes);
-    await redis.expire(dailyKey, CACHE_TTL_SECONDS);
-    await redis.incrby(hourlyKey, bytes);
-    await redis.expire(hourlyKey, CACHE_TTL_SECONDS);
-    await redis.hincrby(groupKey, group, bytes);
-    await redis.expire(groupKey, CACHE_TTL_SECONDS);
-  } catch {
-    // Non-fatal when Redis is unavailable (or stubbed in tests).
+  addToPending(pendingDaily, dailyKey, bytes);
+  addToPending(pendingHourly, hourlyKey, bytes);
+
+  let groups = pendingGroup.get(groupKey);
+  if (!groups) {
+    groups = new Map<string, number>();
+    pendingGroup.set(groupKey, groups);
   }
+  groups.set(group, (groups.get(group) ?? 0) + bytes);
+
+  ensureFlushTimer();
 
   const now = Date.now();
   if (now - lastAlertCheckAt < ALERT_CHECK_INTERVAL_MS) return;
   lastAlertCheckAt = now;
 
-  void checkBandwidthAlerts(dailyKey, hourlyKey);
+  // Flush first so the alert evaluates against counters that include the bytes
+  // from this response; the flush interval (10s) is far shorter than the alert
+  // cadence (5m) so the buffer is normally empty by now anyway.
+  void flushBandwidthCounters().then(() => checkBandwidthAlerts(dailyKey, hourlyKey));
 }
 
 async function checkBandwidthAlerts(dailyKey: string, hourlyKey: string): Promise<void> {

@@ -4,6 +4,7 @@ import { body, param, query } from 'express-validator';
 import { authenticate, requireRole } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import { prisma } from '../lib/prisma';
+import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
 import { ApiError } from '../middleware/errorHandler';
 import {
   sendArtistApplicationConfirmation,
@@ -546,6 +547,12 @@ artistPortalRouter.put(
           ...(audioDurationMs !== undefined && { durationMs: audioDurationMs }),
         },
       });
+
+      // 2.18 — this is the audio-upload path. Without the eviction an artist
+      // uploaded audio and the song kept playing from the Spotify preview for up
+      // to an hour, because `playback:source:<id>` was already populated with
+      // the SPOTIFY_PREVIEW answer.
+      await invalidatePlaybackSourceCache(song.id);
 
       // Update lyrics
       if (lyrics) {

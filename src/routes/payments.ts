@@ -1,12 +1,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { body, param, query } from 'express-validator';
 import { authenticate } from '../middleware/auth';
 import { validateRequest } from '../middleware/validateRequest';
 import { ApiError } from '../middleware/errorHandler';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
+import { createRedisRateLimitStore } from '../lib/rateLimitStore';
 import { prisma } from '../lib/prisma';
 import {
   getBundles,
@@ -20,6 +22,43 @@ import type { AuthUser } from '../types/auth';
 export const paymentsRouter = Router();
 
 type RequestWithRawBody = Request & { rawBody?: Buffer };
+
+// ---------------------------------------------------------------------------
+// Rate limits on the two endpoints that cost money to serve.
+//
+// The global /api limiter (app.ts) allows 100 req/min/IP and keys on IP, which is
+// the wrong shape for these: `initialize` creates a Paystack transaction AND a
+// GtPurchase row per call, and `verify` spends a Paystack API call (a metered,
+// billable quota) and can mutate the purchase row. Shared-NAT office egress also
+// means one IP can be many users, so the global limit is not a per-user control
+// at all. Both are keyed on user id, so a single account cannot exhaust the
+// provider quota or flood the table, while other buyers are unaffected.
+//
+// The webhook is deliberately NOT rate limited beyond the global /api limiter:
+// Paystack retries on non-2xx, so throttling it would turn a transient blip into
+// a permanently uncredited payment. It is protected by the HMAC signature
+// instead, which is the control that actually limits who can spend our time.
+// ---------------------------------------------------------------------------
+
+const initializeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createRedisRateLimitStore('payments-initialize'),
+  keyGenerator: (req) => (req.user as AuthUser | undefined)?.id ?? req.ip ?? 'unknown',
+  message: { error: 'Too many payment attempts. Please wait.', code: 'RATE_LIMITED' },
+});
+
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createRedisRateLimitStore('payments-verify'),
+  keyGenerator: (req) => (req.user as AuthUser | undefined)?.id ?? req.ip ?? 'unknown',
+  message: { error: 'Too many payment checks. Please wait.', code: 'RATE_LIMITED' },
+});
 
 // ---------------------------------------------------------------------------
 // GET /api/payments/bundles
@@ -69,6 +108,7 @@ paymentsRouter.get(
 paymentsRouter.post(
   '/payments/initialize',
   authenticate,
+  initializeLimiter,
   [body('bundleId').isString().notEmpty().withMessage('bundleId is required'), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -89,6 +129,7 @@ paymentsRouter.post(
 paymentsRouter.get(
   '/payments/verify/:reference',
   authenticate,
+  verifyLimiter,
   [param('reference').isString().notEmpty().withMessage('reference is required'), validateRequest],
   async (req: Request, res: Response, next: NextFunction) => {
     try {

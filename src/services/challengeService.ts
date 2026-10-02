@@ -139,12 +139,25 @@ export async function getCurrentChallenges(userId?: string) {
   );
 }
 
-/** Progress for a single challenge, including whether the reward was claimed. */
+/**
+ * Progress for a single challenge, including whether the reward was claimed.
+ *
+ * The `active` / window guard is deliberately identical to the one
+ * `getCurrentChallenges` applies. Previously this was a bare `findUnique({ id })`,
+ * so a client holding an old challenge id could read live progress — and, for a
+ * not-yet-started challenge, pre-compute progress against a window that had not
+ * opened — for a challenge that is not currently offered to anyone. The claim
+ * path already re-checked `active` + `expiresAt`, so this endpoint was the only
+ * place the two disagreed.
+ */
 export async function getChallengeProgress(
   userId: string,
   challengeId: string,
 ): Promise<ChallengeProgress> {
-  const challenge = await prisma.challenge.findUnique({ where: { id: challengeId } });
+  const now = new Date();
+  const challenge = await prisma.challenge.findFirst({
+    where: { id: challengeId, active: true, startsAt: { lte: now }, expiresAt: { gt: now } },
+  });
   if (!challenge) {
     throw new ApiError('Challenge not found', 'NOT_FOUND', 404);
   }
@@ -186,7 +199,16 @@ export async function claimChallengeReward(
     throw new ApiError('Challenge not found', 'NOT_FOUND', 404);
   }
 
-  if (challenge.expiresAt < new Date()) {
+  // Not-yet-started challenges are not offered by `getCurrentChallenges` and are
+  // now rejected by `getChallengeProgress` too; the claim path has to agree or a
+  // client could complete and cash in a challenge before its window opens.
+  // The expired case below keeps its existing CHALLENGE_EXPIRED (400) contract.
+  const now = new Date();
+  if (challenge.startsAt > now) {
+    throw new ApiError('Challenge has not started yet', 'CHALLENGE_NOT_STARTED', 400);
+  }
+
+  if (challenge.expiresAt < now) {
     throw new ApiError('Challenge has expired', 'CHALLENGE_EXPIRED', 400);
   }
 

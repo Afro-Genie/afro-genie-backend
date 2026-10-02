@@ -18,6 +18,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { lyricsEnrichmentQueue } from '../src/lib/queue';
 import { seedGtBundles } from './seedGtBundles';
+import { seedChallenges } from './seed-challenges';
+import { seedStoreItems } from './seedStore';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL
@@ -704,78 +706,90 @@ async function main() {
   }
 
   // ── Songs: Spotify only (runs in both modes) ──
-  if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
-    throw new Error('SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set for seeding.');
-  }
+  // Spotify credentials are OPTIONAL. Without them the song-catalog sync and
+  // lyrics-enrichment enqueue are skipped (with a warning) and the rest of the
+  // seed continues normally. When credentials are present the existing
+  // idempotent behavior is unchanged — on a populated DB it only adds new
+  // Spotify data and never rewrites or deletes existing rows.
+  const hasSpotifyCreds = Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET);
+  if (!hasSpotifyCreds) {
+    console.warn(
+      '\n⚠️  SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET are not set — skipping the Spotify catalog seed.\n' +
+        '   The rest of the seed (languages, users, wallets, store, GT bundles, challenges) continues normally.\n' +
+        '   Set Spotify credentials and re-run to backfill the song catalog.',
+    );
+  } else {
+    await getSpotifyToken();
+    console.log('🎵 Seeding from Spotify (keyword search across African music)...\n');
 
-  await getSpotifyToken();
-  console.log('🎵 Seeding from Spotify (keyword search across African music)...\n');
+    const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30, shouldUpdate);
+    console.log(
+      `  Search: ${searchResult.songsCreated} songs processed, ${searchResult.artistsCreated} artists processed`,
+    );
 
-  const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30, shouldUpdate);
-  console.log(`  Search: ${searchResult.songsCreated} songs processed, ${searchResult.artistsCreated} artists processed`);
-
-  // ── Enqueue lyrics enrichment for songs missing lyrics ──
-  console.log('\n📝 Checking for songs needing lyrics enrichment...');
-  try {
-    const songsWithoutLyrics = await prisma.song.findMany({
-      where: {
-        spotifyId: { not: null },
-        lyrics: { none: {} },
-      },
-      select: { id: true },
-    });
-
-    if (songsWithoutLyrics.length > 0) {
-      console.log(`  Enqueuing lyrics enrichment for ${songsWithoutLyrics.length} songs...`);
-      let enqueued = 0;
-      for (const song of songsWithoutLyrics) {
-        try {
-          await lyricsEnrichmentQueue.add(
-            `lyrics-enrichment-${song.id}`,
-            { songId: song.id },
-            {
-              jobId: `lyrics-enrichment-${song.id}`,
-              attempts: 3,
-              backoff: { type: 'exponential', delay: 5000 },
-              removeOnComplete: 1000,
-              removeOnFail: 500,
-            }
-          );
-          enqueued++;
-        } catch {
-          // Non-fatal: lyrics enrichment is best-effort during seeding.
-        }
-      }
-      console.log(`  ✅ ${enqueued} lyrics enrichment jobs enqueued`);
-    } else {
-      console.log('  All songs already have lyrics — skipping');
-    }
-
-    await prisma.tokenLedger.createMany({
-      data: [
-        {
-          userId: regularUser.id,
-          type: 'EARN',
-          amount: 100,
-          balanceAfter: 100,
-          reason: 'Published translation contribution',
-          sourceType: 'LEGACY',
-          idempotencyKey: 'legacy:seed-demo-1'
+    // ── Enqueue lyrics enrichment for songs missing lyrics ──
+    console.log('\n📝 Checking for songs needing lyrics enrichment...');
+    try {
+      const songsWithoutLyrics = await prisma.song.findMany({
+        where: {
+          spotifyId: { not: null },
+          lyrics: { none: {} },
         },
-        {
-          userId: regularUser.id,
-          type: 'EARN',
-          amount: 25,
-          balanceAfter: 125,
-          reason: 'Helpful forum participation',
-          sourceType: 'LEGACY',
-          idempotencyKey: 'legacy:seed-demo-2'
+        select: { id: true },
+      });
+
+      if (songsWithoutLyrics.length > 0) {
+        console.log(`  Enqueuing lyrics enrichment for ${songsWithoutLyrics.length} songs...`);
+        let enqueued = 0;
+        for (const song of songsWithoutLyrics) {
+          try {
+            await lyricsEnrichmentQueue.add(
+              `lyrics-enrichment-${song.id}`,
+              { songId: song.id },
+              {
+                jobId: `lyrics-enrichment-${song.id}`,
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 5000 },
+                removeOnComplete: 1000,
+                removeOnFail: 500,
+              },
+            );
+            enqueued++;
+          } catch {
+            // Non-fatal: lyrics enrichment is best-effort during seeding.
+          }
         }
-      ],
-      skipDuplicates: true
-    });
-  } catch (err) {
-    console.warn('  Lyrics enrichment enqueue skipped (non-fatal):', (err as Error).message);
+        console.log(`  ✅ ${enqueued} lyrics enrichment jobs enqueued`);
+      } else {
+        console.log('  All songs already have lyrics — skipping');
+      }
+
+      await prisma.tokenLedger.createMany({
+        data: [
+          {
+            userId: regularUser.id,
+            type: 'EARN',
+            amount: 100,
+            balanceAfter: 100,
+            reason: 'Published translation contribution',
+            sourceType: 'LEGACY',
+            idempotencyKey: 'legacy:seed-demo-1',
+          },
+          {
+            userId: regularUser.id,
+            type: 'EARN',
+            amount: 25,
+            balanceAfter: 125,
+            reason: 'Helpful forum participation',
+            sourceType: 'LEGACY',
+            idempotencyKey: 'legacy:seed-demo-2',
+          },
+        ],
+        skipDuplicates: true,
+      });
+    } catch (err) {
+      console.warn('  Lyrics enrichment enqueue skipped (non-fatal):', (err as Error).message);
+    }
   }
 
   // ── Token economy (Phase 1) ──────────────────────────────────
@@ -809,96 +823,15 @@ async function main() {
   // ── Store (Phase 3) ─────────────────────────────────────────
   // Digital avatar-border / title perks auto-grant a UserEntitlement on
   // purchase; the signed poster is a manual-fulfillment prize. Idempotent:
-  // existing items are updated in place rather than duplicated.
-  const storeItemsSeed = [
-    {
-      name: 'Amber Border',
-      description: 'A warm amber avatar border to show off on your profile.',
-      tokenCost: 40,
-      category: 'avatar',
-      metadata: { digital: true, entitlementType: 'avatar:border:amber' },
-    },
-    {
-      name: 'Sapphire Border',
-      description: 'A cool sapphire avatar border for your profile.',
-      tokenCost: 80,
-      category: 'avatar',
-      metadata: { digital: true, entitlementType: 'avatar:border:sapphire' },
-    },
-    {
-      name: 'Emerald Border',
-      description: 'A vibrant emerald avatar border for your profile.',
-      tokenCost: 120,
-      category: 'avatar',
-      metadata: { digital: true, entitlementType: 'avatar:border:emerald' },
-    },
-    {
-      name: 'Royal Gold Border',
-      description: 'The premium gold avatar border. Reserved for true legends.',
-      tokenCost: 250,
-      category: 'avatar',
-      metadata: { digital: true, entitlementType: 'avatar:border:gold' },
-    },
-    {
-      name: 'Early Adopter Title',
-      description: 'A display title marking you as one of the first on Afro Genie.',
-      tokenCost: 150,
-      category: 'title',
-      metadata: { digital: true, entitlementType: 'title:early-adopter' },
-    },
-    {
-      name: 'Master Translator Title',
-      description: 'A display title for the sharpest translators in the community.',
-      tokenCost: 300,
-      category: 'title',
-      metadata: { digital: true, entitlementType: 'title:master-translator' },
-    },
-    {
-      name: 'Golden Candle',
-      description: 'A digital golden candle to light up your listener profile.',
-      tokenCost: 30,
-      category: 'digital',
-      metadata: { digital: true, entitlementType: 'digital:candle' },
-    },
-    {
-      name: 'Signed Artist Poster',
-      description: 'A physical signed poster from a featured Afrobeats artist. Ships to you!',
-      tokenCost: 500,
-      category: 'merch',
-      metadata: { digital: false },
-    },
-  ] as const;
-
-  const existingStoreItems = await prisma.storeItem.findMany();
-  const storeItemKeys = new Map(
-    existingStoreItems.map((item) => [`${item.name}|${item.category}`, item]),
-  );
-  let storeItemsCreated = 0;
-  let storeItemsUpdated = 0;
-  for (const item of storeItemsSeed) {
-    const key = `${item.name}|${item.category}`;
-    const previous = storeItemKeys.get(key);
-    if (previous) {
-      await prisma.storeItem.update({
-        where: { id: previous.id },
-        data: {
-          name: item.name,
-          description: item.description,
-          tokenCost: item.tokenCost,
-          category: item.category,
-          metadata: item.metadata,
-          active: true,
-        },
-      });
-      storeItemsUpdated += 1;
-    } else {
-      await prisma.storeItem.create({ data: item });
-      storeItemsCreated += 1;
-    }
-  }
+  // existing items are updated in place rather than duplicated. Shared with
+  // the standalone `npm run seed:store` via prisma/seedStore.ts.
+  const storeItemsResult = await seedStoreItems(prisma);
 
   // ── GT bundles (Phase 2) ────────────────────────────────────
   const gtBundleResult = await seedGtBundles(prisma);
+
+  // ── Challenges (weekly templates) ───────────────────────────
+  const challengeResult = await seedChallenges(prisma);
 
   // ── Summary ──
   const finalSongCount = await prisma.song.count();
@@ -911,6 +844,8 @@ async function main() {
   console.log(`   Languages: ${languageSeed.length}`);
   console.log(`   Genres: ${genreSeed.length}`);
   console.log(`   GT bundles: ${gtBundleResult.created} created, ${gtBundleResult.updated} updated`);
+  console.log(`   Store items: ${storeItemsResult.created} created, ${storeItemsResult.updated} updated`);
+  console.log(`   Challenges: ${challengeResult.upserted} upserted, ${challengeResult.deactivated} expired deactivated`);
 }
 
 main()

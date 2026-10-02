@@ -1,4 +1,3 @@
-import * as dns from 'node:dns';
 import IORedis, { type RedisOptions } from 'ioredis';
 import { env } from './env';
 
@@ -6,32 +5,25 @@ const globalForRedis = globalThis as unknown as { redis?: IORedis };
 
 const redisDisabled = process.env.DISABLE_REDIS === 'true';
 
-// ─── DNS resilience ─────────────────────────────────────────────────────────
-// The managed Redis hostname can intermittently fail to resolve (ENOTFOUND)
-// on flaky resolvers, which makes ioredis retry the lookup on every reconnect
-// and leaves callers waiting on the offline queue. To avoid that we resolve
-// the hostname ONCE at boot and connect directly to the IP (with the original
-// hostname passed as the TLS SNI/servername, so Upstash's certificate still
-// validates). If resolution fails at boot we fall back to the hostname and
-// let ioredis retry in the background as before.
-// `dns.lookupSync` exists at runtime (Node ≥ 0.11) but is missing from the
-// installed @types/node — resolve it via a narrow typed cast.
-const dnsLookupSync = (dns as unknown as {
-  lookupSync(hostname: string, options?: { family?: number }): string;
-}).lookupSync;
-
-function resolveHostIp(hostname: string, preferFamily = 4): string | null {
-  try {
-    return dnsLookupSync(hostname, { family: preferFamily });
-  } catch {
-    try {
-      return dnsLookupSync(hostname);
-    } catch {
-      return null;
-    }
-  }
-}
-
+// ─── DNS ────────────────────────────────────────────────────────────────────
+// An earlier version of this file tried to pin the managed-Redis hostname to a
+// resolved IP at boot, to avoid re-resolving on every ioredis reconnect. It
+// claimed `dns.lookupSync` existed at runtime while being "missing from
+// @types/node" and reached it through a cast — but Node has never exposed a
+// synchronous `dns.lookupSync`, so the call always threw, was swallowed by the
+// surrounding `try`, and `resolveHostIp()` always returned null. The whole
+// block was dead code that read as if a working optimisation were in place.
+//
+// It is removed rather than ported to the async `dns.resolve*` family because:
+//   * resolving here bought nothing — ioredis resolves the hostname itself, and
+//     the hostname is stable for a managed instance;
+//   * boot-time IP pinning is actively risky with TLS: the certificate must
+//     still validate against the original hostname via SNI, so an IP-pinned
+//     client can fail TLS in a way hostname-based connection cannot;
+//   * `buildRedisClient()` is called synchronously at import time, so a correct
+//     `dns.resolve*` implementation would force the whole client construction
+//     (and therefore `redis`) to become async.
+// Reconnect behaviour is already bounded by the `retryStrategy` below.
 function buildRedisClient(): IORedis {
   const common: RedisOptions = {
     maxRetriesPerRequest: null,
@@ -49,32 +41,9 @@ function buildRedisClient(): IORedis {
     },
   };
 
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(env.REDIS_URL);
-  } catch {
-    return new IORedis(env.REDIS_URL, common);
-  }
-
-  const hostname = parsedUrl.hostname;
-  const port = parsedUrl.port ? Number(parsedUrl.port) : parsedUrl.protocol === 'rediss:' ? 6380 : 6379;
-  const useTls = parsedUrl.protocol === 'rediss:';
-  const db = parsedUrl.pathname && parsedUrl.pathname !== '/' ? Number(parsedUrl.pathname.slice(1)) || 0 : 0;
-
-  const resolvedIp = hostname ? resolveHostIp(hostname) : null;
-  if (resolvedIp && resolvedIp !== hostname) {
-    // Repeat lookups in ioredis' reconnect loop are skipped entirely.
-    return new IORedis({
-      ...common,
-      host: resolvedIp,
-      port,
-      db,
-      username: parsedUrl.username ? decodeURIComponent(parsedUrl.username) : undefined,
-      password: parsedUrl.password ? decodeURIComponent(parsedUrl.password) : undefined,
-      ...(useTls ? { tls: { servername: hostname } } : {}),
-    });
-  }
-
+  // Connect by URL. ioredis parses the scheme/host/port/db/credentials itself and
+  // resolves the hostname, so no boot-time resolution is needed (see the DNS note
+  // above for why the previous IP-pinning path was removed).
   return new IORedis(env.REDIS_URL, common);
 }
 
@@ -92,6 +61,7 @@ const stubRedis = {
   scan: async () => ['0', []] as [cursor: string, keys: string[]],
   exists: async () => 0,
   ttl: async () => -2,
+  pttl: async () => -1,
   zincrby: async () => 0,
   zrevrange: async () => [],
   zrange: async () => [],

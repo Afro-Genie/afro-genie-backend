@@ -1,6 +1,8 @@
 const { Client } = require('pg');
+const { requireUrls } = require('./scripts/require-db-urls.cjs');
 (async () => {
-  const c = new Client({ connectionString: 'postgresql://neondb_owner:npg_Li12PMrIHnZC@ep-old-rice-ataoe41y-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require' });
+  const { RICE: url } = requireUrls({ RICE: 'RICE_DATABASE_URL' });
+  const c = new Client({ connectionString: url });
   await c.connect();
   const tabs = ['User','ForumCategory','Topic','TopicComment','TopicVote','TopicCommentVote','UserBadge','Notification','ArtistApplication','SongRequest','UserWallet','TokenLedger','UserTier','UserStreak','ContentReport','ModerationLog','RoleRequest','ModPool','SeasonalSnapshot','SyncRun','AICallLog','Challenge','Genre','Language','Artist'];
   for (const t of tabs) {

@@ -7,7 +7,9 @@ import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { redis, scanKeys } from '../../lib/redis';
+import { redis } from '../../lib/redis';
+import { createRedisRateLimitStore } from '../../lib/rateLimitStore';
+import { catalogService } from '../../services/catalogService';
 import { ApiError } from '../../middleware/errorHandler';
 import {
   TUNABLE_REWARD_TYPES,
@@ -32,26 +34,39 @@ export const adminEconomyRouter = Router();
 
 adminEconomyRouter.use(authenticate, requireRole('ADMIN'));
 
+// 2.7 — backed by Redis so the limit is a real control across every instance.
+// The default in-memory store made the effective limit `limit x instanceCount`
+// (30/min per instance) and reset on every deploy.
 const economyWriteLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  store: createRedisRateLimitStore('economy-write'),
   message: { error: 'Too many economy updates. Please wait before retrying.', code: 'RATE_LIMITED' },
   keyGenerator: (req) => req.user?.id ?? req.ip ?? 'unknown',
 });
 
 const ACTIVE_KEY_PREFIX = 'ACTIVE:';
 
+/**
+ * Invalidate the caches that embed store pricing.
+ *
+ * Previously this SCAN+DEL'd `store:*` and `catalog:homepage:*` by hand. Two
+ * problems: (a) no `store:*` key exists anywhere in the codebase — store items
+ * are read straight from Postgres — so that half of the scan matched nothing
+ * while still walking the keyspace; (b) `catalogService` keeps an in-process
+ * `memCache` fallback for when Redis is cold, and a Redis-only DEL cannot reach
+ * it, so on a warm process a price edit stayed invisible for up to an hour
+ * behind the stale in-memory copy.
+ *
+ * `invalidateHomepageCache()` is the purpose-built API: it clears the memCache
+ * *and* the Redis keys. Store pricing is only ever surfaced through the
+ * homepage payload, so that single scoped call is the whole invalidation.
+ */
 async function invalidateStoreCache(): Promise<void> {
   try {
-    const patterns = ['store:*', 'catalog:homepage:*'];
-    for (const pattern of patterns) {
-      const keys = await scanKeys(pattern);
-      if (keys.length > 0) {
-        await redis.del(...keys);
-      }
-    }
+    await catalogService.invalidateHomepageCache();
   } catch (err) {
     logger.warn({ err }, 'Store cache invalidation failed — non-fatal');
   }

@@ -1,5 +1,5 @@
 import type { RepeatOptions } from 'bullmq';
-import { reconciliationQueue } from '../lib/queue';
+import { abuseDetectionQueue } from '../lib/queue';
 import { logger } from '../lib/logger';
 import {
   ABUSE_RULES,
@@ -112,7 +112,9 @@ const ABUSE_DETECTION_JOB_OPTIONS = {
 };
 
 export const scheduleAbuseDetection = async () => {
-  await reconciliationQueue.add(
+  // Own queue (2.6) — previously shared with reconciliation and the weekly
+  // challenge rotation on a single concurrency-1 worker.
+  await abuseDetectionQueue.add(
     'abuse-detect',
     {},
     { ...ABUSE_DETECTION_JOB_OPTIONS, jobId: 'abuse-detection-hourly' },

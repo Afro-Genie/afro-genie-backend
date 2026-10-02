@@ -13,15 +13,26 @@ dist
 # Uploaded files
 uploads/
 
-# Environment files (never commit secrets)
+# Environment files (never commit secrets).
+#
+# ORDER IS LOAD-BEARING. Negations must come AFTER the patterns they override:
+# git applies the last matching rule, so a `!.env.test` placed above `**/.env.*`
+# is silently overridden and the file stays ignored. That regression is why the
+# exclusions are all together at the end of this block.
 .env
 .env.*
-!.env.example
-!.env*.example
-
-# Also ignore env files in subdirectories
 **/.env
 **/.env.*
+
+# `.env.test` is the committed, secret-free isolation contract for the test
+# environment: loopback hosts and literal `test-only-*` values, no credential.
+# It must stay trackable so CI and contributors resolve the same disposable
+# hosts the safety guard expects (Stage 7.2).
+!.env.test
+
+# `.env.example` documents the variable contract, with obviously-fake values.
+!.env.example
+!.env*.example
 
 # Editor/OS artifacts
 .vscode/

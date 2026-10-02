@@ -45,6 +45,15 @@ const buildIdempotencyKey = (
 const isUniqueViolation = (err: unknown): boolean =>
   err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 
+/** Which unique index a P2002 tripped. Postgres reports the index columns. */
+const uniqueViolationTarget = (err: unknown): string => {
+  if (!isUniqueViolation(err)) return '';
+  const target = (err as Prisma.PrismaClientKnownRequestError).meta?.target;
+  if (Array.isArray(target)) return target.join(',');
+  if (typeof target === 'string') return target;
+  return '';
+};
+
 // Ledger summary is cached for 5 minutes; invalidated on every committed
 // ledger write so the header cards never go stale for long.
 const LEDGER_SUMMARY_CACHE_TTL = 5 * 60;
@@ -57,6 +66,22 @@ export async function invalidateLedgerSummaryCache(userId: string): Promise<void
     logger.warn({ err, userId }, 'ledger summary cache invalidation failed');
   }
 }
+
+/**
+ * How many times to re-run the transaction after losing a unique-constraint race
+ * that is NOT the ledger's idempotencyKey.
+ *
+ * `UserWallet.userId` is unique and the row is created by an upsert, so two
+ * transactions for the same user that both see "no wallet" will both try to
+ * INSERT it: one commits, the other gets P2002 on userId. Before this retry the
+ * loser rethrew, which surfaced as a 500 on a legitimately successful payment —
+ * reachable the moment a client verify and the Paystack webhook race on the same
+ * wallet. Two attempts is enough for the realistic fan-in; three gives headroom
+ * without turning a hot row into a retry storm.
+ */
+const UNIQUE_CONFLICT_RETRIES = 3;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 async function applyTransaction(
   params: TokenTransactionParams,
@@ -71,63 +96,81 @@ async function applyTransaction(
   const existing = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
   if (existing) return existing;
 
-  try {
-    const ledger = await prisma.$transaction(async (tx) => {
-      const wallet = await tx.userWallet.upsert({
-        where: { userId: params.userId },
-        update: {},
-        create: { userId: params.userId, balance: 0, version: 1 },
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const ledger = await prisma.$transaction(async (tx) => {
+        const wallet = await tx.userWallet.upsert({
+          where: { userId: params.userId },
+          update: {},
+          create: { userId: params.userId, balance: 0, version: 1 },
+        });
+
+        const balanceAfter = wallet.balance + params.amount;
+
+        if (opts.requireSufficientBalance && balanceAfter < 0) {
+          throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+        }
+
+        const entry = await tx.tokenLedger.create({
+          data: {
+            userId: params.userId,
+            type: params.type,
+            amount: params.amount,
+            balanceAfter,
+            reason: params.reason,
+            sourceType: params.sourceType ?? null,
+            sourceId: params.sourceId ?? null,
+            idempotencyKey,
+            metadata: params.metadata as Prisma.InputJsonValue | undefined,
+          },
+        });
+
+        await tx.userWallet.update({
+          where: { id: wallet.id },
+          data: { balance: balanceAfter, version: { increment: 1 } },
+        });
+
+        return { ...entry, balanceAfter };
       });
 
-      const balanceAfter = wallet.balance + params.amount;
+      // Live balance push — non-blocking. Open SSE streams under
+      // GET /api/users/me/balance/stream pick this up instantly.
+      sendBalanceUpdate(params.userId, {
+        balance: ledger.balanceAfter,
+        delta: params.amount,
+        type: params.type,
+        reason: params.reason,
+        timestamp: ledger.createdAt.toISOString(),
+      });
 
-      if (opts.requireSufficientBalance && balanceAfter < 0) {
-        throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+      // Invalidate the cached ledger summary (fires on every ledger write).
+      await invalidateLedgerSummaryCache(params.userId);
+
+      return ledger;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+
+      // The winner of the idempotency race already recorded this credit. Return
+      // their row so callers observe a stable balanceAfter instead of an error.
+      if (uniqueViolationTarget(err).includes('idempotencyKey')) {
+        const duplicate = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
+        if (duplicate) return duplicate;
       }
 
-      const entry = await tx.tokenLedger.create({
-        data: {
-          userId: params.userId,
-          type: params.type,
-          amount: params.amount,
-          balanceAfter,
-          reason: params.reason,
-          sourceType: params.sourceType ?? null,
-          sourceId: params.sourceId ?? null,
-          idempotencyKey,
-          metadata: params.metadata as Prisma.InputJsonValue | undefined,
-        },
-      });
+      // Some other unique index (today: UserWallet.userId from a concurrent
+      // upsert) blocked us. Re-read our own key to be sure it wasn't a duplicate
+      // credit, then retry now that the conflicting row exists.
+      const maybeDuplicate = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
+      if (maybeDuplicate) return maybeDuplicate;
 
-      await tx.userWallet.update({
-        where: { id: wallet.id },
-        data: { balance: balanceAfter, version: { increment: 1 } },
-      });
+      if (attempt >= UNIQUE_CONFLICT_RETRIES) throw err;
 
-      return { ...entry, balanceAfter };
-    });
-
-    // Live balance push — non-blocking. Open SSE streams under
-    // GET /api/users/me/balance/stream pick this up instantly.
-    sendBalanceUpdate(params.userId, {
-      balance: ledger.balanceAfter,
-      delta: params.amount,
-      type: params.type,
-      reason: params.reason,
-      timestamp: ledger.createdAt.toISOString(),
-    });
-
-    // Invalidate the cached ledger summary (fires on every ledger write).
-    await invalidateLedgerSummaryCache(params.userId);
-
-    return ledger;
-  } catch (err) {
-    // Concurrent duplicate award: the unique idempotencyKey already won elsewhere.
-    if (isUniqueViolation(err)) {
-      const duplicate = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
-      if (duplicate) return duplicate;
+      logger.warn(
+        { userId: params.userId, attempt, target: uniqueViolationTarget(err) },
+        'Ledger transaction lost a unique-constraint race; retrying',
+      );
+      await sleep(10 * (attempt + 1));
     }
-    throw err;
   }
 }
 

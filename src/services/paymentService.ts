@@ -229,18 +229,44 @@ export async function verifyPayment(reference: string): Promise<VerifyPaymentRes
     };
   }
 
-  // Guard against tampering / partial payments: Paystack reports the amount
-  // actually charged; it must cover the bundle price.
-  if (typeof data.amount === 'number' && data.amount < purchase.amountKobo) {
+  // Guard against tampering, partial payments and wrong-currency settlement.
+  //
+  // This check is deliberately FAIL-CLOSED. The previous form was
+  // `typeof data.amount === 'number' && data.amount < purchase.amountKobo`,
+  // which credits GT whenever `amount` is missing or non-numeric — i.e. the one
+  // anti-fraud control on the money path was bypassed by a malformed provider
+  // response rather than tripped by it. Paystack sends `amount` as a JSON number,
+  // so "not a number" means the payload is not the shape we signed off on and the
+  // only safe response is to refuse.
+  const charged = data.amount;
+  const amountOk = typeof charged === 'number' && Number.isFinite(charged);
+  // Paystack always reports `currency` on a successful transaction, so an absent
+  // one is a malformed payload, not a reason to trust the amount.
+  const currencyOk =
+    typeof data.currency === 'string' &&
+    data.currency.length > 0 &&
+    data.currency === purchase.currency;
+
+  if (!amountOk || charged < purchase.amountKobo || !currencyOk) {
     logger.error(
-      { purchaseId: purchase.id, expected: purchase.amountKobo, received: data.amount },
-      'Paystack amount mismatch — refusing to credit GT',
+      {
+        purchaseId: purchase.id,
+        expectedAmountKobo: purchase.amountKobo,
+        receivedAmount: charged,
+        expectedCurrency: purchase.currency,
+        receivedCurrency: data.currency ?? null,
+      },
+      'Paystack amount/currency mismatch — refusing to credit GT',
     );
     await prisma.gtPurchase.update({
       where: { id: purchase.id },
       data: { status: 'FAILED' },
     });
-    throw new ApiError('Payment amount does not match the bundle', 'PAYMENT_AMOUNT_MISMATCH', 400);
+    throw new ApiError(
+      'Payment amount does not match the bundle',
+      'PAYMENT_AMOUNT_MISMATCH',
+      400,
+    );
   }
 
   // Credit first (idempotent) so the GT can never be lost to a later write

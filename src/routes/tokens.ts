@@ -7,6 +7,7 @@ import { ApiError } from '../middleware/errorHandler';
 import { getBalance, getLedger, getProfile } from '../services/tokenService';
 import { getActivePass, getPassCatalog, isPassType, purchasePass } from '../services/passService';
 import { registerBalanceClient } from '../lib/balanceSse';
+import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import {
   getLeaderboard,
@@ -45,7 +46,7 @@ tokensRouter.get(
 
 // ---------------------------------------------------------------------------
 // GET /api/users/me/balance
-// Authenticated. Live token balance for the signed-in user.
+// Authenticated. Live token balance + translation credits for the signed-in user.
 // ---------------------------------------------------------------------------
 tokensRouter.get(
   '/users/me/balance',
@@ -53,8 +54,11 @@ tokensRouter.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user as AuthUser;
-      const balance = await getBalance(user.id);
-      return res.status(200).json({ balance });
+      const [balance, userRow] = await Promise.all([
+        getBalance(user.id),
+        prisma.user.findUnique({ where: { id: user.id }, select: { translationCredits: true } }),
+      ]);
+      return res.status(200).json({ balance, translationCredits: userRow?.translationCredits ?? 0 });
     } catch (err) {
       return next(err);
     }

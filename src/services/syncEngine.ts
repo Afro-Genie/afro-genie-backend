@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
+import { invalidateAllPlaybackSourceCaches } from '../lib/playbackCache';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
 import { NotificationType, UserRole } from '@prisma/client';
@@ -706,6 +707,11 @@ export const syncAllArtists = async (
     await recordSyncStats(synced, failed);
     await recordSyncRun({ type: 'syncAll', startedAt: start, songsAdded: 0, artistsUpdated: synced, errors: failed });
 
+    // 2.18 — this pass rewrites `spotifyPreviewUrl` across the catalog, which is
+    // the Tier-3 playback source. Evict the resolved-source cache so players see
+    // the new previews instead of up-to-an-hour-old ones.
+    if (synced > 0) await invalidateAllPlaybackSourceCaches();
+
     logger.info({ synced, failed, total: artists.length, durationMs: Date.now() - start }, 'Full artist sync completed');
     return { synced, failed };
   } catch (err) {
@@ -1038,6 +1044,10 @@ export const syncPopularTracks = async (
     await recordSyncDuration('popularTracks', Date.now() - start);
     await recordSyncRun({ type: 'popularTracks', startedAt: start, songsAdded: totalSynced, artistsUpdated: 0, errors: totalFailed });
 
+    // 2.18 — see syncAll: this pass re-points `spotifyPreviewUrl` for the
+    // matched popular tracks, so the cached source must go.
+    if (totalSynced > 0) await invalidateAllPlaybackSourceCaches();
+
     logger.info(
       { synced: totalSynced, failed: totalFailed, queries: SEARCH_QUERIES.length, durationMs: Date.now() - start },
       'Popular tracks sync completed',
@@ -1283,6 +1293,9 @@ export const syncNewReleases = async (): Promise<void> => {
   await setLastSyncTimestamp('syncNewReleases');
   await recordSyncDuration('syncNewReleases', Date.now() - start);
 
+  // 2.18 — new releases bring fresh preview URLs.
+  if (syncedCount > 0) await invalidateAllPlaybackSourceCaches();
+
   logger.info({ synced: syncedCount, albums: filteredAlbums.length, durationMs: Date.now() - start }, '[syncNewReleases] Completed');
 };
 
@@ -1407,6 +1420,10 @@ export const syncGenreDiscovery = async (): Promise<void> => {
 
   await setLastSyncTimestamp('syncGenreDiscovery');
   await recordSyncDuration('syncGenreDiscovery', Date.now() - start);
+
+  // 2.18 — this is the preview backfill: it writes `spotifyPreviewUrl` for every
+  // matched track, so any cached source for those songs is now wrong.
+  if (syncedCount > 0) await invalidateAllPlaybackSourceCaches();
 
   logger.info({ synced: syncedCount, queries: SUPPLEMENTARY_GENRE_QUERIES.length, durationMs: Date.now() - start }, '[syncGenreDiscovery] Completed');
 };

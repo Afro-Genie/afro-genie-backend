@@ -1,7 +1,10 @@
 const { Client } = require('pg');
+const { requireUrls } = require('./scripts/require-db-urls.cjs');
 
-const SRC = 'postgresql://neondb_owner:npg_WSt4wEh2mfNi@ep-old-violet-aq9pxmi0-pooler.c-8.us-east-1.aws.neon.tech/neondb?sslmode=require';
-const DST = 'postgresql://neondb_owner:npg_Li12PMrIHnZC@ep-old-rice-ataoe41y-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require';
+const { SRC, DST } = requireUrls({
+  SRC: 'VIOLET_DATABASE_URL',
+  DST: 'RICE_DATABASE_URL',
+});
 
 function mkClient(conn) { return new Client({ connectionString: conn }); }
 

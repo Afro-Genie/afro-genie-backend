@@ -136,21 +136,46 @@ async function fetchLeaderboardFromZset(): Promise<LeaderboardEntry[]> {
   return entries;
 }
 
+/**
+ * Stage 6.2 — exclude archived test accounts from the ranking.
+ *
+ * Applied in the groupBy `where`, not as a post-filter, so an archived account
+ * cannot consume one of the `take: 20` slots and then be dropped. The Redis
+ * zset is warmed from this same query, so the exclusion propagates to the cached
+ * path too — filtering only in `buildLeaderboardResponse` would leave test
+ * accounts inside the cached zset, and `fetchLeaderboardFromZset` would keep
+ * serving them straight from cache for the whole TTL.
+ */
+const RANKED_USER_FILTER = { isTestAccount: false } as const;
+
 async function fetchLeaderboardFromDb(where?: Record<string, unknown>): Promise<LeaderboardEntry[]> {
   const results = await prisma.tokenLedger.groupBy({
     by: ['userId'],
     _sum: { amount: true },
+    where: { user: RANKED_USER_FILTER, ...(where ?? {}) },
     orderBy: { _sum: { amount: 'desc' } },
     take: 20,
-    ...(where ? { where } : {}),
   });
   return results.map((r) => ({ userId: r.userId, totalTokens: r._sum.amount ?? 0 }));
 }
 
+/**
+ * Stage 6.2 — rebuild the zset from the (now filtered) DB query.
+ *
+ * DEL + ZADD rather than ZADD alone. A merge-only warm is correct as long as
+ * every member of the zset is eligible to rank, which stopped being true the
+ * moment an account could be archived: a test account already scored in the
+ * zset would never be removed by any later warm, and `fetchLeaderboardFromZset`
+ * would keep serving it for the whole cache TTL. The rebuild makes the zset a
+ * pure function of the current query, so archiving takes effect immediately.
+ *
+ * Safe to do on every warm: the zset is a derived cache with no durability
+ * requirement, and the DEL/ZADD pair is a single pipeline.
+ */
 async function warmLeaderboardZset(): Promise<void> {
   const entries = await fetchLeaderboardFromDb();
-  if (entries.length === 0) return;
   const pipeline = redis.pipeline();
+  pipeline.del(LEADERBOARD_ZSET);
   for (const e of entries) {
     pipeline.zadd(LEADERBOARD_ZSET, e.totalTokens, e.userId);
   }
