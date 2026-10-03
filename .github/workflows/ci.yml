@@ -13,9 +13,14 @@ jobs:
   # immediately, before lint and tests spend minutes on it, and so the failure
   # names the problem rather than surfacing as a confusing downstream error.
   #
-  # It needs no dependencies, no database, and no secrets — which is the point.
-  # A check that requires the full environment to run is a check that gets
-  # skipped exactly when the environment is broken.
+  # It needs no database and no secrets — which is the point. A check that
+  # requires the full environment to run is a check that gets skipped exactly
+  # when the environment is broken.
+  #
+  # It does need `npm ci`, because the second step below is a test file run
+  # through tsx. It used to have no install step at all, which meant that step
+  # died on ERR_MODULE_NOT_FOUND the moment the scan started passing — the job
+  # had only ever been seen failing at the step in front of it.
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -29,6 +34,15 @@ jobs:
           # later `git filter-repo` run has the objects it needs locally.
           fetch-depth: 0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Scan tracked files for credentials
         run: npm run secrets:scan
 
@@ -40,6 +54,47 @@ jobs:
 
   ci:
     runs-on: ubuntu-latest
+
+    # The disposable test database and Redis, as job-level service containers.
+    #
+    # WHY SERVICES AND NOT `npm run test:db:up` — that script starts containers
+    # itself, so CI would be managing Docker on every run to reproduce what the
+    # runner already does natively. Services are started before the first step and
+    # torn down with the job, so there is nothing to start, nothing to leave
+    # running and nothing to clean up.
+    #
+    # Ports are the ones in `.env.test` (55432 / 56379), and the credentials are
+    # the ones hard-coded in `scripts/test-db.cjs` and `.env.test`. GitHub maps
+    # these to the runner's interfaces rather than to 127.0.0.1 specifically,
+    # which is the one thing this differs from the local Docker path; the runner
+    # is single-tenant and lives for the length of the job.
+    #
+    # `scripts/test-db.cjs up` detects that both are already listening and pushes
+    # the schema without starting anything, so the step below is all that stands
+    # between a cold runner and a runnable suite.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: afrogenie
+          POSTGRES_PASSWORD: afrogenie
+          POSTGRES_DB: afrogenie
+        ports:
+          - "55432:5432"
+        options: >-
+          --health-cmd "pg_isready -U afrogenie -d afrogenie"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "56379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
 
     steps:
       - name: Checkout
@@ -59,6 +114,12 @@ jobs:
 
       - name: Type check
         run: npm run type-check
+
+      - name: Provision the isolated test database
+        # Reuses the service containers above and pushes the schema. Safe to run
+        # unconditionally: `up` provisions only when the ports are free, and this
+        # job has no credentials to leak if it were to start containers anyway.
+        run: npm run test:db:up
 
       - name: Test
         run: npm run test

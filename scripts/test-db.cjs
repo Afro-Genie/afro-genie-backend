@@ -26,11 +26,19 @@
  * two options are interchangeable from the suite's point of view.
  *
  * Commands:
- *   node scripts/test-db.cjs up       provision + wait for readiness + push schema
+ *   node scripts/test-db.cjs up       reuse what is up, else provision + push schema
  *   node scripts/test-db.cjs down     stop and remove the containers
  *   node scripts/test-db.cjs reset    down, then up (guarantees an empty database)
  *   node scripts/test-db.cjs status   container state, schema and row counts
  *   node scripts/test-db.cjs verify   check isolation invariants only (no Docker)
+ *
+ * `up` REUSES TARGETS IT DID NOT START. Whoever answers on the disposable ports
+ * with the disposable credentials is treated as the test environment, and no
+ * container is started or reset. That covers both non-Docker callers: CI, where
+ * PostgreSQL and Redis arrive as job-level service containers before any step
+ * runs, and a developer with `npm run test:db:up` still open in another
+ * terminal. Provisioning over a live port would either fail with a docker port
+ * clash or, worse, quietly run the suite against something nobody provisioned.
  */
 
 const path = require('node:path');
@@ -133,6 +141,111 @@ function hostedTestDatabase(env) {
   return url;
 }
 
+/**
+ * Host and port of a connection URL, or null when it has no usable host. The
+ * password is never returned, so this is safe to put in a log line.
+ *
+ * IPv6 hostnames arrive bracketed from `new URL()` (`[::1]`) and unbracketed are
+ * what `net.connect` wants, so the brackets come off here.
+ */
+function hostPortOf(url) {
+  const host = hostOf(url);
+  if (!host) return null;
+  try {
+    const { port } = new URL(url);
+    return { host: host.replace(/^\[|\]$/g, ''), port: port ? Number(port) : null };
+  } catch {
+    return null;
+  }
+}
+
+/** `host:port` for log lines. Never includes credentials. */
+function endpointOf(url) {
+  const target = hostPortOf(url);
+  if (!target) return 'unparseable target';
+  return `${target.host}:${target.port ?? 'default port'}`;
+}
+
+/**
+ * True when something accepts a TCP connection on `host:port`.
+ *
+ * Spawned rather than `require`d because this script is synchronous end to end
+ * and inlining `net` would mean making `cmdUp` async for one probe. The same
+ * reason `awaitHealthy` below sleeps by spawning a timer.
+ */
+function tcpReachable(host, port, timeoutMs = 2000) {
+  if (!host || !port) return false;
+  const probe = `
+    const net = require('node:net');
+    const socket = net.connect(${port}, ${JSON.stringify(host)});
+    socket.setTimeout(${timeoutMs});
+    socket.on('connect', () => { socket.destroy(); process.exit(0); });
+    socket.on('error', () => process.exit(1));
+    socket.on('timeout', () => { socket.destroy(); process.exit(1); });
+  `;
+  return spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8', shell: false }).status === 0;
+}
+
+/**
+ * True when the Redis at `url` answers PING with PONG.
+ *
+ * Speaks just enough RESP inline — `*1\r\n$4\r\nPING\r\n` — to avoid taking a
+ * dependency on a client, and to keep `cmdUp` synchronous. The distinction from
+ * a bare TCP probe is the point: an open port does not mean a working Redis, and
+ * the rest of `up` deliberately proves the service rather than assuming it.
+ */
+function redisAnswersPing(url, timeoutMs = 2000) {
+  const target = hostPortOf(url);
+  if (!target || !target.port) return false;
+  const probe = `
+    const net = require('node:net');
+    const socket = net.connect(${target.port}, ${JSON.stringify(target.host)});
+    let seen = '';
+    socket.setTimeout(${timeoutMs});
+    socket.on('connect', () => socket.write('*1\\r\\n$4\\r\\nPING\\r\\n'));
+    socket.on('data', (chunk) => {
+      seen += chunk.toString();
+      socket.destroy();
+      process.exit(seen.startsWith('+PONG') ? 0 : 1);
+    });
+    socket.on('error', () => process.exit(1));
+    socket.on('timeout', () => { socket.destroy(); process.exit(1); });
+  `;
+  return spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8', shell: false }).status === 0;
+}
+
+/**
+ * Which disposable targets are already up: `{ postgres, redis }`.
+ *
+ * PostgreSQL is only TCP-probed. `pushSchema()` is the authoritative check for
+ * it — `prisma db push` either lands the schema or fails loudly — and answering
+ * this question any more thoroughly would mean carrying a second Postgres client
+ * in a script whose whole point is to need no credentials.
+ */
+function probeExistingTargets(env) {
+  const db = hostPortOf(env.DATABASE_URL);
+  return {
+    postgres: db ? tcpReachable(db.host, db.port) : false,
+    redis: redisAnswersPing(env.REDIS_URL),
+  };
+}
+
+/**
+ * Reuse a database and Redis this script did not start: push the schema and
+ * report ready. Assumes both probes already answered true.
+ */
+function reuseExisting(env) {
+  ok(`reusing the PostgreSQL already listening on ${endpointOf(env.DATABASE_URL)}`);
+  ok(`redis answered PING on ${endpointOf(env.REDIS_URL)}`);
+  pushSchema(env, {});
+  ok(`schema pushed (${path.relative(BACKEND_ROOT, path.join(BACKEND_ROOT, 'prisma', 'schema.prisma'))})`);
+  log('');
+  log(`${C.bold}Isolated test environment is ready (reused, not provisioned).${C.reset}`);
+  log(
+    `  ${C.dim}Nothing was started and nothing was reset — use \`npm run test:db:reset\` for an empty database.${C.reset}`,
+  );
+}
+
 // ── commands ────────────────────────────────────────────────────────────────
 
 function cmdUp(env) {
@@ -143,6 +256,27 @@ function cmdUp(env) {
     pushSchema(env, { databaseUrl: hosted });
     ok('schema pushed to the hosted test database');
     return;
+  }
+
+  // ── Already running: CI service containers, or the developer's own ─────────
+  const existing = probeExistingTargets(env);
+  if (existing.postgres && existing.redis) {
+    reuseExisting(env);
+    return;
+  }
+  if (existing.postgres || existing.redis) {
+    const held = [
+      existing.postgres ? endpointOf(env.DATABASE_URL) : null,
+      existing.redis ? endpointOf(env.REDIS_URL) : null,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    die(
+      `Only one of the two test targets is already listening (${held}).\n` +
+        '  Refusing to start the other beside it: the suite would be split across two\n' +
+        '  databases, which is the failure mode .env.test exists to make impossible.\n' +
+        '  Free that port (docker ps), or bring its partner up as well.',
+    );
   }
 
   if (!hasDocker()) {
