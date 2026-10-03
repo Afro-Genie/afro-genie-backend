@@ -1,2 +1,16 @@
+# WHY AN EXPLICIT INSTALL COMMAND — the build runs
+# `node node_modules/prisma/build/index.js generate` (package.json "build"), and
+# `prisma` is a devDependency. Nixpacks' default install for this project is a
+# bare `npm ci`, which omits devDependencies whenever NODE_ENV=production is in
+# the environment — and it is, because the service sets it for the running app.
+# The result was a build that installed cleanly and then died at
+#   Cannot find module '/app/node_modules/prisma/build/index.js'
+# The same omission would break the start command too, which shells out to the
+# `prisma` binary for `migrate deploy` and `generate`.
+#
+# `--include=dev` keeps devDependencies in the installed tree regardless of
+# NODE_ENV. Do not drop it in favour of moving prisma to dependencies: the app
+# does not import it at runtime, it only shells out to the CLI, and the copy in
+# dependencies would then be pruned from the runtime image.
 [phases.install]
-cmds = ["...", "find node_modules/.bin -type l -exec chmod +x {} +"]
+cmds = ["npm ci --include=dev", "find node_modules/.bin -type l -exec chmod +x {} +"]
