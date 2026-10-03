@@ -159,9 +159,16 @@ describe('GET /api/admin/feature-flags (2.4)', () => {
   // -------------------------------------------------------------------------
 
   test('reports configuration presence as booleans and never leaks a secret value', async () => {
-    const SECRET = 'sk_test_LEAKCANARY_do_not_serve_this_9f2a7c';
-    const API_KEY = 'AIzaSyLEAKCANARY_youtube_key_4b8e1d';
-    const PUB_KEY = 'pk_test_LEAKCANARY_public_1a5c2f';
+    // The `-CHANGEME-` runs are load-bearing, not decoration. Each canary has to
+    // be shaped like a real credential for this test to mean anything, and
+    // scripts/scan-secrets.cjs deliberately fails the build on credential-shaped
+    // literals. An obvious-placeholder run inside the value is how a fixture says
+    // "this is not a secret" in a way the scanner accepts, instead of the fixture
+    // being allowlisted by path — a path exemption would also excuse a real key
+    // pasted into this file later.
+    const SECRET = 'sk_test_LEAKCANARY-CHANGEME-9f2a7c4e8b1d';
+    const API_KEY = 'AIzaSyLEAKCANARY-CHANGEME-youtube-key';
+    const PUB_KEY = 'pk_test_LEAKCANARY-CHANGEME-public-key';
 
     try {
       env.YOUTUBE_API_KEY = API_KEY;

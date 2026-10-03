@@ -50,7 +50,9 @@ const SCAN_HISTORY = args.includes('--history');
  * which is the shape of every credential found in this repository. It requires a
  * password component, so `postgresql://localhost:5432/db` and the doc-comment
  * example in prisma.config.ts are not matched — the latter is
- * `user:pass@localhost`, which the explicit placeholder allowlist covers.
+ * `user:pass@localhost`, which the explicit placeholder allowlist covers. A
+ * loopback authority is exempt too, via the check in `isBenign` below rather
+ * than here, because the rule has to stop at the `@` to stay narrow.
  */
 const RULES = [
   { name: 'neon-api-key', re: /\bnpg_[A-Za-z0-9]{16,}/ },
@@ -105,20 +107,45 @@ const ALLOW = new Set([
  * The placeholder and host checks run against the MATCHED TEXT, not the whole
  * line. Checking the line would exempt a real credential that merely shares a
  * line with a comment containing the word "example" — the sort of accidental
- * pass that turns a scanner decorative.
+ * pass that turns a scanner decorative. The one place that has to read past the
+ * match is the loopback-authority check, and it reads only the characters
+ * immediately after the match (see the comment there).
  *
  * `process.env` is the one line-wide check, because it answers a different
  * question: the credential on this line is being *read from* the environment
  * rather than *written into* the source. It cannot exempt a hard-coded literal,
  * because a literal and an env read on one line means both are present and the
  * literal is the finding.
+ *
+ * Takes the match array rather than the matched string: `isBenign` needs
+ * `match.index` to find where the match ended on the line.
  */
 function isBenign(line, match) {
+  const text = match[0];
   if (/process\.env/.test(line)) return true;
-  if (/\$\{?[A-Z_][A-Z0-9_]*\}?/.test(match)) return true; // env interpolation
-  if (/user:pass|user:password|:pass@|:password@|<[^>]*>|xxx+|\bTODO\b|\bCHANGEME\b/i.test(match))
+  if (/\$\{?[A-Z_][A-Z0-9_]*\}?/.test(text)) return true; // env interpolation
+  if (/user:pass|user:password|:pass@|:password@|<[^>]*>|xxx+|\bTODO\b|\bCHANGEME\b/i.test(text))
     return true;
-  if (/localhost|127\.0\.0\.1|::1|\bexample\b|\bplaceholder\b|replace_with/i.test(match))
+  if (/localhost|127\.0\.0\.1|::1|\bexample\b|\bplaceholder\b|replace_with/i.test(text))
+    return true;
+  // `db-password-in-url` stops matching at the `@` — requiring a password
+  // component is what makes the rule fire at all — so the host sits just past the
+  // end of the match, where the loopback check above can never see it. Read it
+  // from the authority that follows.
+  //
+  // A password in a loopback-only DSN is not a credential: it authenticates to
+  // nothing beyond this machine. It is the disposable-test-container value shared
+  // verbatim by `.env.test`, `scripts/test-db.cjs` and `scripts/lib/test-env.cjs`,
+  // and those files must keep agreeing or the containers stop matching the URLs
+  // the suite connects with. Every other host — `db.internal`, every real Neon or
+  // Redis Cloud endpoint — still fails, because the authority must match
+  // immediately after the `@` rather than anywhere on the line, and because a host
+  // that merely starts with `localhost` (`localhost.example.com`) does not match.
+  //
+  // The port is digits or a `${...}` interpolation, because the URL in
+  // test-env.cjs builds it from DISPOSABLE_PG_PORT rather than inlining it.
+  const authority = line.slice((match.index ?? 0) + text.length);
+  if (/^(?:localhost|127\.0\.0\.1|\[::1\])(?::(?:\d+|\$\{[^}]*\}))?(?:[/?#]|$)/.test(authority))
     return true;
   return false;
 }
@@ -139,7 +166,7 @@ function scanText(file, text, label) {
     for (const rule of RULES) {
       const m = line.match(rule.re);
       if (!m) continue;
-      if (isBenign(line, m[0])) continue;
+      if (isBenign(line, m)) continue;
       findings.push({ file, line: i + 1, rule: rule.name, sample: m[0].slice(0, 60), label });
     }
   });

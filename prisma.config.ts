@@ -1,8 +1,46 @@
 import 'dotenv/config';
 import { defineConfig } from 'prisma/config';
 
+/**
+ * The prisma subcommand being invoked, read from argv. Prisma loads this config
+ * before dispatching, so argv is the only signal available for "is this the
+ * command that needs a database". Treated as unknown when absent, which resolves
+ * to not-requiring rather than to requiring: a false negative is a clear prisma
+ * error about a missing URL, while a false positive is a production deploy
+ * refusing to start.
+ */
+function invokedCommand(): string[] {
+  return process.argv.slice(2).filter((a) => !a.startsWith('-'));
+}
+
+/**
+ * Commands that never open a connection. They read the schema and emit files:
+ * `generate` writes the client into node_modules, `validate` and `format` only
+ * read and rewrite prisma/schema.prisma.
+ *
+ * WHY THEY ARE EXEMPT — this file is evaluated by every prisma command, and CI
+ * runs `npm run lint`, which is `prisma generate && tsc --noEmit`. Requiring
+ * DATABASE_URL for a command that only emits code made `npm run lint` fail
+ * everywhere no `.env` exists: every GitHub Actions runner, every fresh clone,
+ * every container build. The guard bought nothing there, because `generate`
+ * authenticates to nothing — it never dials the database. This is the same
+ * scoping decision already made for SHADOW_DATABASE_URL below: fail on the
+ * commands that can do damage, not on all of them.
+ */
+const OFFLINE_COMMANDS = new Set(['generate', 'validate', 'format']);
+
+/**
+ * Stand-in used only when an offline command runs with no DATABASE_URL set. Two
+ * properties matter: it must parse (prisma validates the datasource even when it
+ * will not connect), and it must be inert if anything in the command *did* try to
+ * connect — loopback, and a database name nobody provisions.
+ */
+const OFFLINE_DATABASE_URL = 'postgresql://user:pass@localhost:5432/offline';
+
 const rawUrl = process.env.DATABASE_URL || '';
-if (!rawUrl) {
+const isOfflineCommand = OFFLINE_COMMANDS.has(invokedCommand()[0] ?? '');
+
+if (!rawUrl && !isOfflineCommand) {
   throw new Error(
     `DATABASE_URL is not set. This config file reads every credential from the ` +
       `environment; nothing is hard-coded. Copy .env.example to .env and set it, ` +
@@ -11,7 +49,7 @@ if (!rawUrl) {
 }
 let parsedUrl: URL;
 try {
-  parsedUrl = new URL(rawUrl);
+  parsedUrl = new URL(rawUrl || OFFLINE_DATABASE_URL);
 } catch {
   throw new Error(
     `DATABASE_URL is set but is not a valid URL. Expected something like ` +
@@ -46,18 +84,6 @@ parsedUrl.searchParams.delete('channel_binding');
  * gap, so the requirement is scoped to the commands that actually need it.
  */
 const shadowDatabaseUrl = process.env.SHADOW_DATABASE_URL || '';
-
-/**
- * The prisma subcommand being invoked, read from argv. Prisma loads this config
- * before dispatching, so argv is the only signal available for "is this the
- * command that needs a shadow database". Treated as unknown when absent, which
- * resolves to not-requiring rather than to requiring: a false negative is a
- * clear prisma error about a missing shadow URL, while a false positive is a
- * production deploy refusing to start.
- */
-function invokedCommand(): string[] {
-  return process.argv.slice(2).filter((a) => !a.startsWith('-'));
-}
 
 const NEEDS_SHADOW =
   invokedCommand()[0] === 'migrate' &&

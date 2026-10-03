@@ -290,8 +290,17 @@ export const restorePaymentConfig = (snapshot: PaymentConfigSnapshot): void => {
   env.PAYSTACK_CALLBACK_URL = snapshot.PAYSTACK_CALLBACK_URL;
 };
 
-/** A syntactically valid key. Never a real one — the fetch stub blocks egress. */
-export const TEST_SECRET = 'sk_test_0000000000000000000000000000000000000000';
+/**
+ * A syntactically valid key. Never a real one — the fetch stub blocks egress.
+ *
+ * The `xxxx…` run is load-bearing, not decoration. The key must keep its
+ * `sk_test_` prefix (paymentsWebhook.test.ts asserts no key prefix leaks into a
+ * response), and scripts/scan-secrets.cjs fails the build on any secret-shaped
+ * name assigned a long literal. A run of x's is how this fixture says "not a
+ * secret" in a form the scanner accepts; hex digits would read as a real key to
+ * both the scanner and the next person to open the file.
+ */
+export const TEST_SECRET = 'sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 
 // ---------------------------------------------------------------------------
 // HTTP harness — mirrors app.ts's rawBody capture, mounts only money routers
