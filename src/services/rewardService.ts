@@ -339,12 +339,25 @@ export async function queueReward(
     return;
   }
 
-  await rewardQueue.add(`${reason.toLowerCase().replace(/\s+/g, '-')}`, {
-    userId,
-    amount,
-    reason,
-    event,
-    idempotencyKey,
-  });
+  // Retries: every historical failure in this queue was a single transient event
+  // (a deploy restarting the worker, or a user deleted mid-flight). BullMQ
+  // defaults to a single attempt, so those jobs were destroyed outright and the
+  // user's tokens were never credited. Safe to retry because every credit path
+  // goes through dedupeCreditTokens, which no-ops on an already-seen
+  // idempotencyKey — a replay cannot double-credit.
+  await rewardQueue.add(
+    `${reason.toLowerCase().replace(/\s+/g, '-')}`,
+    {
+      userId,
+      amount,
+      reason,
+      event,
+      idempotencyKey,
+    },
+    {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 2000 },
+    },
+  );
   logMetric('reward_queued', { userId, amount, reason });
 }

@@ -34,8 +34,6 @@ interface AuthUserDto {
   email: string;
   displayName: string;
   role: UserRole;
-  spotifyId?: string | null;
-  spotifyProduct?: string | null;
 }
 
 export interface AuthTokens {
@@ -61,13 +59,11 @@ const refreshKey = (userId: string): string => `refresh:${userId}`;
 
 const resetKey = (tokenHash: string): string => `reset:${tokenHash}`;
 
-const toAuthUser = (user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'spotifyId' | 'spotifyProduct'>): AuthUserDto => ({
+const toAuthUser = (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): AuthUserDto => ({
   id: user.id,
   email: user.email,
   displayName: user.displayName ?? user.email.split('@')[0],
   role: user.role,
-  spotifyId: user.spotifyId ?? null,
-  spotifyProduct: user.spotifyProduct ?? null,
 });
 
 const signAccessToken = (payload: Omit<TokenPayload, 'iat' | 'exp'>): string => {
@@ -107,7 +103,7 @@ const issueTokenPair = async (user: Pick<User, 'id' | 'email' | 'role'>): Promis
 };
 
 const buildAuthResult = async (
-  user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'spotifyId' | 'spotifyProduct'>
+  user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>
 ): Promise<AuthResult> => {
   const tokens = await issueTokenPair(user);
   return {
@@ -170,8 +166,6 @@ export const registerArtist = async (
       email: true,
       displayName: true,
       role: true,
-      spotifyId: true,
-      spotifyProduct: true
     }
   });
 
@@ -216,8 +210,6 @@ export const register = async (email: string, password: string, displayName: str
       email: true,
       displayName: true,
       role: true,
-      spotifyId: true,
-      spotifyProduct: true
     }
   });
 
@@ -238,9 +230,7 @@ export const login = async (email: string, password: string): Promise<AuthResult
       email: true,
       displayName: true,
       role: true,
-      passwordHash: true,
-      spotifyId: true,
-      spotifyProduct: true
+      passwordHash: true
     }
   });
 
@@ -279,7 +269,7 @@ export const refresh = async (refreshToken: string): Promise<AuthResult> => {
 
   const user = await prisma.user.findUnique({
     where: { id: claims.userId },
-    select: { id: true, email: true, displayName: true, role: true, spotifyId: true, spotifyProduct: true }
+select: { id: true, email: true, displayName: true, role: true }
   });
 
   if (!user) {
@@ -432,9 +422,7 @@ export const configureGoogleStrategy = () => {
               email: true,
               displayName: true,
               role: true,
-              googleId: true,
-              spotifyId: true,
-              spotifyProduct: true
+              googleId: true
             }
           });
 
@@ -453,9 +441,7 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
-                googleId: true,
-                spotifyId: true,
-                spotifyProduct: true
+                googleId: true
               }
             });
 
@@ -474,9 +460,7 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
-                googleId: true,
-                spotifyId: true,
-                spotifyProduct: true
+                googleId: true
               }
             });
           }
@@ -494,173 +478,7 @@ export const configureGoogleStrategy = () => {
   googleStrategyInitialized = true;
 };
 
-export const signInWithSpotify = async (accessToken: string): Promise<AuthResult> => {
-  const spotifyRes = await fetch('https://api.spotify.com/v1/me', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
-  if (!spotifyRes.ok) {
-    throw new ApiError('Failed to authenticate with Spotify', 'UNAUTHORIZED', 401);
-  }
-
-  const profile = await spotifyRes.json() as {
-    id: string;
-    display_name?: string;
-    email?: string;
-    images?: Array<{ url: string }>;
-    product?: string;
-  };
-
-  if (!profile.id) {
-    throw new ApiError('Invalid Spotify profile', 'UNAUTHORIZED', 401);
-  }
-
-  const email = profile.email?.toLowerCase();
-  const spotifyProduct = profile.product ?? null;
-
-  let user = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { spotifyId: profile.id },
-        ...(email ? [{ email }] : []),
-      ],
-    },
-    select: { id: true, email: true, displayName: true, role: true, spotifyId: true, spotifyProduct: true },
-  });
-
-  if (!user) {
-    user = await prisma.user.create({
-      data: {
-        email: email ?? `${profile.id}@spotify.afrogenie.app`,
-        spotifyId: profile.id,
-        spotifyProduct,
-        displayName: profile.display_name || email?.split('@')[0] || 'Spotify User',
-        photoUrl: profile.images?.[0]?.url,
-        role: UserRole.USER,
-        lastLoginAt: new Date(),
-      },
-      select: { id: true, email: true, displayName: true, role: true, spotifyId: true, spotifyProduct: true },
-    });
-
-    await awardFirstProfileBadge(user.id);
-    await awardWelcomeBonus(user.id);
-  } else {
-    user = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        spotifyId: user.spotifyId ?? profile.id,
-        spotifyProduct,
-        photoUrl: profile.images?.[0]?.url,
-        lastLoginAt: new Date(),
-        ...(email && !user.email.includes('@spotify.afrogenie.app') ? {} : { email }),
-      },
-      select: { id: true, email: true, displayName: true, role: true, spotifyId: true, spotifyProduct: true },
-    });
-  }
-
-  return buildAuthResult({ id: user.id, email: user.email, displayName: user.displayName, role: user.role, spotifyId: user.spotifyId, spotifyProduct: user.spotifyProduct });
-};
-
-export const syncSpotifyProduct = async (userId: string, spotifyAccessToken: string): Promise<{ spotifyProduct: string | null }> => {
-  // Guard: only sync for users who have an active Spotify link
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { spotifyId: true },
-  });
-
-  if (!user || !user.spotifyId) {
-    return { spotifyProduct: null };
-  }
-
-  const spotifyRes = await fetch('https://api.spotify.com/v1/me', {
-    headers: { Authorization: `Bearer ${spotifyAccessToken}` },
-  });
-
-  if (!spotifyRes.ok) {
-    // If the Spotify token is invalid/expired, do not blindly clear the product.
-    // Return the current state so the client can decide what to do.
-    const current = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { spotifyProduct: true },
-    });
-    return { spotifyProduct: current?.spotifyProduct ?? null };
-  }
-
-  const profile = await spotifyRes.json() as { id?: string; product?: string };
-
-  // Safety: ensure the Spotify profile matches the linked account
-  if (profile.id && profile.id !== user.spotifyId) {
-    throw new ApiError(
-      'Spotify profile does not match the linked account',
-      'CONFLICT',
-      409,
-    );
-  }
-
-  const spotifyProduct = profile.product ?? null;
-
-  await prisma.user.update({
-    where: { id: userId },
-    data: { spotifyProduct },
-  });
-
-  return { spotifyProduct };
-};
-
-export const linkSpotifyToUser = async (
-  userId: string,
-  spotifyAccessToken: string,
-): Promise<{ spotifyProduct: string | null; linked: boolean }> => {
-  const spotifyRes = await fetch('https://api.spotify.com/v1/me', {
-    headers: { Authorization: `Bearer ${spotifyAccessToken}` },
-  });
-
-  if (!spotifyRes.ok) {
-    throw new ApiError('Failed to fetch Spotify profile', 'SPOTIFY_API_ERROR', 502);
-  }
-
-  const profile = await spotifyRes.json() as {
-    id: string;
-    display_name?: string;
-    email?: string;
-    images?: Array<{ url: string }>;
-    product?: string;
-  };
-
-  if (!profile.id) {
-    throw new ApiError('Invalid Spotify profile', 'UNAUTHORIZED', 401);
-  }
-
-  // Check if this Spotify ID is already linked to a different account
-  const existingUser = await prisma.user.findUnique({
-    where: { spotifyId: profile.id },
-    select: { id: true },
-  });
-
-  if (existingUser && existingUser.id !== userId) {
-    throw new ApiError(
-      'This Spotify account is already linked to another user',
-      'CONFLICT',
-      409,
-    );
-  }
-
-  const spotifyProduct = profile.product ?? null;
-
-  const updatedUser = await prisma.user.update({
-    where: { id: userId },
-    data: {
-      spotifyId: profile.id,
-      spotifyProduct,
-      photoUrl: profile.images?.[0]?.url || undefined,
-    },
-    select: { id: true, spotifyProduct: true },
-  });
-
-  return { spotifyProduct: updatedUser.spotifyProduct, linked: true };
-};
-
-export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'spotifyId' | 'spotifyProduct'>): Promise<string> => {
+export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): Promise<string> => {
   const auth = await buildAuthResult(user);
   const query = new URLSearchParams({
     accessToken: auth.accessToken,
@@ -669,8 +487,6 @@ export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | '
     email: auth.user.email,
     displayName: auth.user.displayName,
     role: auth.user.role,
-    spotifyId: auth.user.spotifyId ?? '',
-    spotifyProduct: auth.user.spotifyProduct ?? ''
   });
 
   return `${env.CLIENT_URL}/auth/callback?${query.toString()}`;

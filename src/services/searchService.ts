@@ -94,17 +94,21 @@ interface MultiSearchResponse {
   results: MultiSearchResult[];
 }
 
-const client = new Typesense.Client({
-  nodes: [
-    {
-      host: env.TYPESENSE_HOST,
-      port: env.TYPESENSE_PORT,
-      protocol: env.TYPESENSE_PROTOCOL
-    }
-  ],
-  apiKey: env.TYPESENSE_API_KEY,
-  connectionTimeoutSeconds: Math.ceil(env.TYPESENSE_TIMEOUT_MS / 1000)
-});
+const TYPESENSE_ENABLED = process.env.TYPESENSE_ENABLED !== 'false';
+
+const client = TYPESENSE_ENABLED
+  ? new Typesense.Client({
+      nodes: [
+        {
+          host: env.TYPESENSE_HOST,
+          port: env.TYPESENSE_PORT,
+          protocol: env.TYPESENSE_PROTOCOL
+        }
+      ],
+      apiKey: env.TYPESENSE_API_KEY,
+      connectionTimeoutSeconds: Math.ceil(env.TYPESENSE_TIMEOUT_MS / 1000)
+    })
+  : (null as any);
 
 let collectionsReadyPromise: Promise<void> | null = null;
 
@@ -171,6 +175,9 @@ const notDeletedFilter = {
   ],
 } as Record<string, unknown>;
 
+// Artist has no audioUrl/released columns, so it needs its own (narrower) filter.
+const notDeletedArtistFilter = { softDeleted: false } as Record<string, unknown>;
+
 const normalizeText = (value: string | null | undefined): string => {
   return (value ?? '').trim();
 };
@@ -196,6 +203,10 @@ const parseTypesenseErrorCode = (error: unknown): number | undefined => {
 };
 
 const ensureCollections = async (): Promise<void> => {
+  if (!TYPESENSE_ENABLED || !client) {
+    collectionsReadyPromise = Promise.resolve();
+    return;
+  }
   if (collectionsReadyPromise) {
     await collectionsReadyPromise;
     return;
@@ -295,7 +306,7 @@ const buildSongDocument = async (songId: string): Promise<SongDocument | null> =
 
 const buildArtistDocument = async (artistId: string): Promise<ArtistDocument | null> => {
   const artist = await prisma.artist.findFirst({
-    where: { id: artistId, ...notDeletedFilter, suspended: false } as Prisma.ArtistWhereInput,
+    where: { id: artistId, ...notDeletedArtistFilter, suspended: false } as Prisma.ArtistWhereInput,
     select: {
       id: true,
       name: true,
@@ -420,7 +431,15 @@ const runCollectionSearch = async (
   collection: (typeof COLLECTIONS)[keyof typeof COLLECTIONS],
   params: Record<string, unknown>
 ): Promise<SearchResponse> => {
-  return client.collections(collection).documents().search(params) as Promise<SearchResponse>;
+  if (!TYPESENSE_ENABLED || !client) {
+    return { found: 0, page: Number(params.page) || 1, hits: [] };
+  }
+  try {
+    return client.collections(collection).documents().search(params) as Promise<SearchResponse>;
+  } catch (error) {
+    logger.warn({ error }, 'Typesense search failed; returning empty results');
+    return { found: 0, page: Number(params.page) || 1, hits: [] };
+  }
 };
 
 export const searchCatalog = async (input: SearchParams) => {
@@ -528,50 +547,59 @@ export const suggestCatalog = async (query: string) => {
   if (!q) {
     throw new ApiError('q is required', 'VALIDATION_ERROR', 400);
   }
+  if (!TYPESENSE_ENABLED || !client) {
+    return { query: q, tookMs: Date.now() - start, suggestions: [] };
+  }
 
-  const multi = (await client.multiSearch.perform({
-    searches: [
-      {
-        collection: COLLECTIONS.songs,
-        q,
-        query_by: 'title,titleNormalized,artistName,artistNameNormalized',
-        include_fields: 'id,title,artistName,imageUrl,popularity',
-        sort_by: '_text_match:desc,popularity:desc',
-        per_page: 5,
-        num_typos: 2,
-        typo_tokens_threshold: 1,
-        prefix: true,
-        exhaustive_search: false,
-        search_cutoff_ms: 90
-      },
-      {
-        collection: COLLECTIONS.artists,
-        q,
-        query_by: 'name,nameNormalized',
-        include_fields: 'id,name,imageUrl,popularity',
-        sort_by: '_text_match:desc,popularity:desc',
-        per_page: 5,
-        num_typos: 2,
-        typo_tokens_threshold: 1,
-        prefix: true,
-        exhaustive_search: false,
-        search_cutoff_ms: 90
-      },
-      {
-        collection: COLLECTIONS.genres,
-        q,
-        query_by: 'name,nameNormalized',
-        include_fields: 'id,name,imageUrl,songCount',
-        sort_by: '_text_match:desc,songCount:desc',
-        per_page: 3,
-        num_typos: 1,
-        typo_tokens_threshold: 1,
-        prefix: true,
-        exhaustive_search: false,
-        search_cutoff_ms: 90
-      }
-    ]
-  })) as MultiSearchResponse;
+  let multi: MultiSearchResponse;
+  try {
+    multi = (await client.multiSearch.perform({
+      searches: [
+        {
+          collection: COLLECTIONS.songs,
+          q,
+          query_by: 'title,titleNormalized,artistName,artistNameNormalized',
+          include_fields: 'id,title,artistName,imageUrl,popularity',
+          sort_by: '_text_match:desc,popularity:desc',
+          per_page: 5,
+          num_typos: 2,
+          typo_tokens_threshold: 1,
+          prefix: true,
+          exhaustive_search: false,
+          search_cutoff_ms: 90
+        },
+        {
+          collection: COLLECTIONS.artists,
+          q,
+          query_by: 'name,nameNormalized',
+          include_fields: 'id,name,imageUrl,popularity',
+          sort_by: '_text_match:desc,popularity:desc',
+          per_page: 5,
+          num_typos: 2,
+          typo_tokens_threshold: 1,
+          prefix: true,
+          exhaustive_search: false,
+          search_cutoff_ms: 90
+        },
+        {
+          collection: COLLECTIONS.genres,
+          q,
+          query_by: 'name,nameNormalized',
+          include_fields: 'id,name,imageUrl,songCount',
+          sort_by: '_text_match:desc,songCount:desc',
+          per_page: 3,
+          num_typos: 1,
+          typo_tokens_threshold: 1,
+          prefix: true,
+          exhaustive_search: false,
+          search_cutoff_ms: 90
+        }
+      ]
+    })) as MultiSearchResponse;
+  } catch (error) {
+    logger.warn({ error }, 'Typesense suggest failed');
+    return { query: q, tookMs: Date.now() - start, suggestions: [] };
+  }
 
   const mapped = multi.results.flatMap((result) => {
     const collection = result.request_params.collection_name;
@@ -604,6 +632,7 @@ export const suggestCatalog = async (query: string) => {
 };
 
 export const indexSong = async (songId: string): Promise<void> => {
+  if (!TYPESENSE_ENABLED || !client) return;
   await ensureCollections();
 
   const document = await buildSongDocument(songId);
@@ -612,7 +641,11 @@ export const indexSong = async (songId: string): Promise<void> => {
     return;
   }
 
-  await client.collections(COLLECTIONS.songs).documents().upsert(document);
+  try {
+    await client.collections(COLLECTIONS.songs).documents().upsert(document);
+  } catch (error) {
+    logger.warn({ error, songId }, 'Typesense indexSong failed');
+  }
 };
 
 export const indexArtist = async (artistId: string): Promise<void> => {
@@ -662,6 +695,7 @@ export const deleteArtist = async (artistId: string): Promise<void> => {
 };
 
 export const bulkIndex = async (): Promise<void> => {
+  if (!TYPESENSE_ENABLED || !client) return;
   await ensureCollections();
 
   const [songs, artists, genres] = await Promise.all([
@@ -675,7 +709,7 @@ export const bulkIndex = async (): Promise<void> => {
       }
     }),
     prisma.artist.findMany({
-      where: { ...notDeletedFilter, suspended: false } as Prisma.ArtistWhereInput,
+      where: { ...notDeletedArtistFilter, suspended: false } as Prisma.ArtistWhereInput,
       select: {
         id: true,
         name: true,

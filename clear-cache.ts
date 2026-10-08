@@ -4,7 +4,7 @@ async function clearCache() {
   try {
     console.log('Clearing Redis cache...');
 
-    const patterns = ['catalog:homepage:v*', 'spotify:search:*', 'song:views:*'];
+    const patterns = ['catalog:homepage:v*', 'song:views:*'];
     let totalCleared = 0;
 
     for (const pattern of patterns) {

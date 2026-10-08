@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "https://afro-genie-backend-staging-production.up.railway.app/api",
+      "url": "https://afro-genie-backend-production.up.railway.app/api",
       "description": "Staging"
     },
     {
@@ -347,9 +347,6 @@
             "minimum": 1800,
             "maximum": 2200
           },
-          "spotifyId": {
-            "type": "string"
-          },
           "coverImageUrl": {
             "type": "string"
           },
@@ -402,9 +399,6 @@
           "imageUrl": {
             "type": "string"
           },
-          "spotifyId": {
-            "type": "string"
-          },
           "genres": {
             "type": "array",
             "items": {
@@ -424,35 +418,6 @@
           },
           "verified": {
             "type": "boolean"
-          }
-        }
-      },
-      "SpotifySearchResponse": {
-        "type": "object",
-        "properties": {
-          "tracks": {
-            "type": "object"
-          },
-          "artists": {
-            "type": "object"
-          },
-          "albums": {
-            "type": "object"
-          }
-        }
-      },
-      "SyncArtistRequest": {
-        "type": "object",
-        "required": [
-          "artistId",
-          "spotifyArtistId"
-        ],
-        "properties": {
-          "artistId": {
-            "type": "string"
-          },
-          "spotifyArtistId": {
-            "type": "string"
           }
         }
       },
@@ -501,17 +466,6 @@
             "type": "object"
           },
           "photoURL": {
-            "type": "string"
-          }
-        }
-      },
-      "SpotifySignInRequest": {
-        "type": "object",
-        "required": [
-          "accessToken"
-        ],
-        "properties": {
-          "accessToken": {
             "type": "string"
           }
         }
@@ -953,33 +907,6 @@
           }
         }
       },
-      "SpotifyGenreSeedRequest": {
-        "type": "object",
-        "required": [
-          "genre"
-        ],
-        "properties": {
-          "genre": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          }
-        }
-      },
-      "SpotifyPlaylistSeedRequest": {
-        "type": "object",
-        "properties": {
-          "playlistUrl": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
-          }
-        }
-      },
       "CatalogHomeResponse": {
         "type": "object",
         "properties": {
@@ -1063,28 +990,6 @@
             "items": {
               "type": "object"
             }
-          }
-        }
-      },
-      "SyncProductRequest": {
-        "type": "object",
-        "required": [
-          "spotifyAccessToken"
-        ],
-        "properties": {
-          "spotifyAccessToken": {
-            "type": "string"
-          }
-        }
-      },
-      "LinkSpotifyRequest": {
-        "type": "object",
-        "required": [
-          "spotifyAccessToken"
-        ],
-        "properties": {
-          "spotifyAccessToken": {
-            "type": "string"
           }
         }
       },
@@ -2972,137 +2877,6 @@
         }
       }
     },
-    "/spotify/track/{trackId}": {
-      "get": {
-        "tags": [
-          "Spotify"
-        ],
-        "summary": "Get Spotify track info",
-        "parameters": [
-          {
-            "name": "trackId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Track info",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/spotify/search": {
-      "get": {
-        "tags": [
-          "Spotify"
-        ],
-        "summary": "Search Spotify catalog",
-        "parameters": [
-          {
-            "name": "q",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "type",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Search results",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SpotifySearchResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/spotify/sync-artist": {
-      "post": {
-        "tags": [
-          "Spotify"
-        ],
-        "summary": "Sync artist data from Spotify (Admin)",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncArtistRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Synced",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "success": {
-                      "type": "boolean"
-                    },
-                    "artist": {
-                      "type": "object"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/ping": {
       "get": {
         "tags": [
@@ -3488,46 +3262,6 @@
           },
           "409": {
             "description": "Conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/auth/spotify": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "Sign in with Spotify access token",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SpotifySignInRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Authenticated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
             "content": {
               "application/json": {
                 "schema": {
@@ -4350,126 +4084,6 @@
         }
       }
     },
-    "/admin/seeder/spotify-genre": {
-      "post": {
-        "tags": [
-          "Admin"
-        ],
-        "summary": "Seed catalog from Spotify genre (Admin)",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SpotifyGenreSeedRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Seed result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/seeder/spotify-playlist": {
-      "post": {
-        "tags": [
-          "Admin"
-        ],
-        "summary": "Seed catalog from Spotify playlist URL (Admin)",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SpotifyPlaylistSeedRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Seed result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid playlist URL",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/users": {
       "get": {
         "tags": [
@@ -4682,121 +4296,6 @@
           },
           "404": {
             "description": "User not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/auth/spotify/sync-product": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "Sync Spotify premium status to backend",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncProductRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Synced",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "spotifyProduct": {
-                      "type": "string",
-                      "nullable": true
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/auth/spotify/link": {
-      "post": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "Link Spotify account to existing user",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LinkSpotifyRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Linked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "spotifyProduct": {
-                      "type": "string",
-                      "nullable": true
-                    },
-                    "linked": {
-                      "type": "boolean"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Spotify account already linked to another user",
             "content": {
               "application/json": {
                 "schema": {
@@ -5441,48 +4940,6 @@
         }
       }
     },
-    "/search/spotify-image": {
-      "get": {
-        "tags": [
-          "Search"
-        ],
-        "summary": "Get Spotify album image URL for artist/track",
-        "parameters": [
-          {
-            "name": "artist",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "track",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Image URL (or null)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "imageUrl": {
-                      "type": "string",
-                      "nullable": true
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/users/history": {
       "get": {
         "tags": [
@@ -5829,37 +5286,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/auth/spotify/debug": {
-      "get": {
-        "tags": [
-          "Auth"
-        ],
-        "summary": "Debug Spotify OAuth configuration",
-        "responses": {
-          "200": {
-            "description": "Spotify config debug info",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "clientIdSet": {
-                      "type": "boolean"
-                    },
-                    "clientSecretSet": {
-                      "type": "boolean"
-                    },
-                    "redirectUri": {
-                      "type": "string"
-                    }
-                  }
                 }
               }
             }
@@ -7018,66 +6444,6 @@
         "responses": {
           "200": {
             "description": "Profile updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not an artist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/artists/me/spotify-search": {
-      "post": {
-        "tags": [
-          "Artist Portal"
-        ],
-        "summary": "Search Spotify for artist matching",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "q": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Spotify results",
             "content": {
               "application/json": {
                 "schema": {
@@ -10888,5 +10254,5 @@
       }
     }
   },
-  "x-generatedAt": "2026-07-30T12:35:15.590Z"
+  "x-generatedAt": "2026-10-08T09:51:44.946Z"
 }

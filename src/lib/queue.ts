@@ -40,7 +40,6 @@ export const languageCategorizationQueue = createQueue('languageCategorizationQu
 export const viewCountFlushQueue = createQueue('viewCountFlushQueue');
 export const lyricsEnrichmentQueue = createQueue('lyricsEnrichmentQueue');
 export const syncQueue = createQueue('syncQueue');
-export const syncPopularTracksQueue = createQueue('syncPopularTracksQueue');
 export const rewardQueue = createQueue('rewardQueue');
 export const modPoolDistributionQueue = createQueue('modPoolDistributionQueue');
 export const seasonSnapshotQueue = createQueue('seasonSnapshotQueue');

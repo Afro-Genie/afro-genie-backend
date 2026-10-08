@@ -71,8 +71,8 @@ export async function invalidateAllPlaybackSourceCaches(): Promise<void> {
 //
 //   flag ON  → caches {source:'YOUTUBE'} → flip OFF → still serves YouTube for up
 //              to an hour. The kill switch does not kill.
-//   flag OFF → caches {source:'SPOTIFY_PREVIEW'} → flip ON → still serves the
-//              preview for up to an hour. The rollout cannot be resumed.
+//   flag OFF → caches {source:'NONE'} → flip ON → still serves nothing for up
+//              to an hour. The rollout cannot be resumed.
 //
 // Checking `source === 'YOUTUBE'` only fixes the first half: the entry flag-off
 // *writes* is exactly the stale one in the second half. So the flag state is

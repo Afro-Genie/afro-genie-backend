@@ -1,7 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { enqueueIndexArtist } from '../jobs/searchIndexJob';
 import { prisma } from '../lib/prisma';
-import { syncQueue } from '../lib/queue';
 import { ApiError } from '../middleware/errorHandler';
 
 const DEFAULT_LIMIT = 20;
@@ -20,7 +19,6 @@ interface ArtistInput {
   name: string;
   bio?: string | null;
   imageUrl?: string | null;
-  spotifyId?: string | null;
   genres?: string[];
   popularity?: number;
   followers?: number;
@@ -230,7 +228,6 @@ export const createArtist = async (payload: ArtistInput) => {
       name: payload.name.trim(),
       bio: payload.bio ?? null,
       imageUrl: payload.imageUrl ?? null,
-      spotifyId: payload.spotifyId ?? null,
       genres: payload.genres ?? [],
       popularity: payload.popularity ?? 0,
       followers: payload.followers ?? 0,
@@ -240,14 +237,6 @@ export const createArtist = async (payload: ArtistInput) => {
   });
 
   await enqueueIndexArtist(artist.id);
-
-  if (artist.spotifyId) {
-    await syncQueue.add(
-      'sync-artist',
-      { type: 'artist', artistId: artist.id },
-      { delay: 300000 }
-    );
-  }
 
   return artist;
 };
@@ -264,7 +253,6 @@ export const updateArtist = async (artistId: string, payload: Partial<ArtistInpu
       ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
       ...(payload.bio !== undefined ? { bio: payload.bio } : {}),
       ...(payload.imageUrl !== undefined ? { imageUrl: payload.imageUrl } : {}),
-      ...(payload.spotifyId !== undefined ? { spotifyId: payload.spotifyId } : {}),
       ...(payload.genres !== undefined ? { genres: payload.genres } : {}),
       ...(payload.popularity !== undefined ? { popularity: payload.popularity } : {}),
       ...(payload.followers !== undefined ? { followers: payload.followers } : {}),

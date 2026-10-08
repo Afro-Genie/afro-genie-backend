@@ -17,10 +17,7 @@ import {
   refresh,
   register,
   registerArtist,
-  resetPassword,
-  signInWithSpotify,
-  syncSpotifyProduct,
-  linkSpotifyToUser
+  resetPassword
 } from '../services/authService';
 import { requireAuth } from '../middleware/auth';
 
@@ -143,55 +140,6 @@ authRouter.post(
   }
 );
 
-authRouter.post(
-  '/auth/spotify',
-  [body('accessToken').isString().notEmpty().withMessage('Access token is required')],
-  validateRequest,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { accessToken } = req.body as { accessToken: string };
-      const auth = await signInWithSpotify(accessToken);
-      res.status(200).json(auth);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-authRouter.post(
-  '/auth/spotify/sync-product',
-  requireAuth,
-  [body('spotifyAccessToken').isString().notEmpty().withMessage('Spotify access token is required')],
-  validateRequest,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).user.id;
-      const { spotifyAccessToken } = req.body as { spotifyAccessToken: string };
-      const result = await syncSpotifyProduct(userId, spotifyAccessToken);
-      res.status(200).json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-authRouter.post(
-  '/auth/spotify/link',
-  requireAuth,
-  [body('spotifyAccessToken').isString().notEmpty().withMessage('Spotify access token is required')],
-  validateRequest,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).user.id;
-      const { spotifyAccessToken } = req.body as { spotifyAccessToken: string };
-      const result = await linkSpotifyToUser(userId, spotifyAccessToken);
-      res.status(200).json(result);
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
 authRouter.get('/auth/google', (req: Request, res: Response, next: NextFunction) => {
   if (!isGoogleOauthConfigured()) {
     next(new ApiError('Google OAuth is not configured on the server', 'SERVICE_UNAVAILABLE', 503));
@@ -222,17 +170,13 @@ authRouter.get(
         email: string;
         displayName: string | null;
         role: 'USER' | 'ADMIN' | 'MODERATOR' | 'ARTIST';
-        spotifyId: string | null;
-        spotifyProduct: string | null;
       };
 
       const redirectUrl = await buildGoogleRedirectUrl({
         id: authUser.id,
         email: authUser.email,
         displayName: authUser.displayName,
-        role: authUser.role,
-        spotifyId: authUser.spotifyId ?? null,
-        spotifyProduct: authUser.spotifyProduct ?? null
+        role: authUser.role
       });
 
       res.redirect(redirectUrl);
@@ -298,34 +242,6 @@ authRouter.post(
     }
   }
 );
-
-/**
- * Diagnostic endpoint: returns Spotify OAuth configuration status.
- * Helps verify that the redirect URI and client ID are configured correctly.
- * No secrets are exposed — only shows whether values are set.
- */
-authRouter.get('/auth/spotify/debug', (_req: Request, res: Response) => {
-  const clientId = process.env.SPOTIFY_CLIENT_ID || '';
-  const configuredRedirectUris = [
-    process.env.SPOTIFY_REDIRECT_URI_LOCAL || 'http://127.0.0.1:3000',
-    process.env.SPOTIFY_REDIRECT_URI_STAGING || 'https://afro-genie-staging.vercel.app',
-  ];
-
-  res.json({
-    clientIdConfigured: !!clientId,
-    clientIdPrefix: clientId ? `${clientId.slice(0, 6)}...` : 'NOT SET',
-    configuredRedirectUris,
-    clientUrl: process.env.CLIENT_URL || 'NOT SET',
-    corsOrigin: process.env.CORS_ORIGIN || 'NOT SET',
-    nodeEnv: process.env.NODE_ENV || 'NOT SET',
-    instructions: {
-      step1: 'Go to https://developer.spotify.com/dashboard → your app → Settings → Redirect URIs',
-      step2: 'Add ALL of these redirect URIs:',
-      uris: configuredRedirectUris,
-      note: 'Spotify requires EXACT match. Use http://127.0.0.1 (not http://localhost) — localhost was removed Nov 2025.',
-    },
-  });
-});
 
 authRouter.get('/auth/smtp/debug', async (_req: Request, res: Response) => {
   const info = await getSmtpDebugInfo();

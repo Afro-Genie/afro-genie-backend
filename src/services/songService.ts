@@ -7,14 +7,6 @@ import { prisma } from '../lib/prisma';
 import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
 import { ApiError } from '../middleware/errorHandler';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
-import { getTrack } from './spotifyService';
-
-const SPOTIFY_ID_PREFIX = 'spotify:';
-
-const isSpotifyId = (id: string): boolean => id.startsWith(SPOTIFY_ID_PREFIX);
-
-const extractSpotifyTrackId = (prefixedId: string): string =>
-  prefixedId.slice(SPOTIFY_ID_PREFIX.length);
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
@@ -46,7 +38,6 @@ export interface SongMutationInput {
   artistId: string;
   albumName?: string | null;
   releaseYear?: number | null;
-  spotifyId?: string | null;
   coverImageUrl?: string | null;
   imageUrl?: string | null;
   primaryLanguage?: string | null;
@@ -90,6 +81,37 @@ const buildOrderBy = (sortBy: SortBy, sortOrder: SortOrder): Prisma.SongOrderByW
   }
 
   return { createdAt: sortOrder };
+};
+
+// Postgres sorts NULLs first on DESC, so ordering by youtubeVideoId in SQL
+// ranks unplayable songs ahead of playable ones. Group in JS instead:
+// playable (youtubeVideoId set) first, requested sort applied within each group.
+const rankPlayableFirst = <T extends { youtubeVideoId?: string | null }>(
+  rows: T[],
+  compareSecondary: (a: T, b: T) => number
+): T[] => {
+  return [...rows].sort((a, b) => {
+    const aPlayable = a.youtubeVideoId ? 1 : 0;
+    const bPlayable = b.youtubeVideoId ? 1 : 0;
+    if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+    return compareSecondary(a, b);
+  });
+};
+
+const buildSecondaryComparator = (sortBy: SortBy, sortOrder: SortOrder) => {
+  const direction = sortOrder === 'asc' ? 1 : -1;
+
+  if (sortBy === 'views') {
+    return (a: { views?: number }, b: { views?: number }) => ((a.views ?? 0) - (b.views ?? 0)) * direction;
+  }
+
+  if (sortBy === 'popularity') {
+    return (a: { requestCount?: number }, b: { requestCount?: number }) =>
+      ((a.requestCount ?? 0) - (b.requestCount ?? 0)) * direction;
+  }
+
+  return (a: { createdAt?: Date | string }, b: { createdAt?: Date | string }) =>
+    (new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime()) * direction;
 };
 
 const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
@@ -295,33 +317,39 @@ export const listSongs = async (params: SongListParams) => {
     total = await prisma.song.count({ where });
   }
 
-  let songs;
+  // Lightweight pass to establish playable-first ordering, then hydrate only
+  // the requested slice (SQL can't express "youtubeVideoId IS NOT NULL" as an
+  // ORDER BY group).
+  const keys = await prisma.song.findMany({
+    where,
+    select: { id: true, youtubeVideoId: true, views: true, requestCount: true, createdAt: true },
+    orderBy,
+  });
+  const ordered = rankPlayableFirst(keys, buildSecondaryComparator(sortBy, sortOrder));
+
+  let pageKeys: typeof ordered;
   let nextCursor: string | null = null;
 
   if (cursor) {
-    const rows = await prisma.song.findMany({
-      where,
-      include: songInclude as Prisma.SongInclude,
-      orderBy,
-      cursor: { id: cursor },
-      skip: 1,
-      take: limit + 1,
-    });
-
-    const hasNext = rows.length > limit;
-    songs = hasNext ? rows.slice(0, limit) : rows;
-    nextCursor = hasNext ? songs[songs.length - 1]?.id ?? null : null;
+    const cursorIndex = ordered.findIndex((row) => row.id === cursor);
+    pageKeys = cursorIndex >= 0 ? ordered.slice(cursorIndex + 1, cursorIndex + 1 + limit + 1) : [];
+    const hasNext = pageKeys.length > limit;
+    pageKeys = hasNext ? pageKeys.slice(0, limit) : pageKeys;
+    nextCursor = hasNext ? pageKeys[pageKeys.length - 1]?.id ?? null : null;
   } else {
-    const rows = await prisma.song.findMany({
-      where,
-      include: songInclude as Prisma.SongInclude,
-      orderBy,
-      skip: (page - 1) * limit,
-      take: limit,
-    });
-    songs = rows;
+    pageKeys = ordered.slice((page - 1) * limit, (page - 1) * limit + limit);
   }
 
+  const rows = await prisma.song.findMany({
+    where: { id: { in: pageKeys.map((row) => row.id) } },
+    include: songInclude as Prisma.SongInclude,
+  });
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const hydrated = pageKeys
+    .map((key) => rowsById.get(key.id))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+
+  let songs: typeof hydrated = hydrated;
   const activeSongIds = await getActiveSongIdSet(songs.map((song) => song.id));
   songs = songs.filter((song) => activeSongIds.has(song.id));
 
@@ -338,10 +366,6 @@ export const listSongs = async (params: SongListParams) => {
 };
 
 export const getSongById = async (songId: string, options?: { incrementViewCount?: boolean }) => {
-  if (isSpotifyId(songId)) {
-    return getSpotifySongById(songId);
-  }
-
   const active = await isSongActive(songId);
   if (!active) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
@@ -384,40 +408,6 @@ export const getSongById = async (songId: string, options?: { incrementViewCount
     ...song,
     latestApprovedTranslations: approvedTranslationsByLanguage,
     viewCount: song.views + currentCount,
-  };
-};
-
-const getSpotifySongById = async (prefixedId: string) => {
-  const spotifyTrackId = extractSpotifyTrackId(prefixedId);
-  if (!spotifyTrackId) {
-    throw new ApiError('Invalid Spotify song ID', 'BAD_REQUEST', 400);
-  }
-
-  const track = await getTrack(spotifyTrackId);
-
-  return {
-    id: prefixedId,
-    title: track.name,
-    artistId: '',
-    artist: { id: '', name: track.artistName, imageUrl: track.imageUrl, genres: [] },
-    artistName: track.artistName,
-    albumName: track.albumName,
-    imageUrl: track.imageUrl,
-    spotifyId: track.id,
-    spotifyPreviewUrl: track.previewUrl,
-    previewAvailable: !!track.previewUrl,
-    durationMs: track.durationMs,
-    views: 0,
-    requestCount: 0,
-    softDeleted: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    releaseYear: null,
-    lyrics: [],
-    songLanguages: [],
-    genres: [],
-    latestApprovedTranslations: {},
-    source: 'SPOTIFY' as const,
   };
 };
 
@@ -566,7 +556,6 @@ export const createSong = async (payload: SongMutationInput) => {
       artistId: payload.artistId,
       albumName: payload.albumName ?? null,
       releaseYear: payload.releaseYear ?? null,
-      spotifyId: payload.spotifyId ?? null,
       imageUrl: payload.coverImageUrl ?? payload.imageUrl ?? null,
     },
   });
@@ -621,7 +610,6 @@ export const updateSong = async (songId: string, payload: Partial<SongMutationIn
       ...(payload.artistId !== undefined ? { artistId: payload.artistId } : {}),
       ...(payload.albumName !== undefined ? { albumName: payload.albumName } : {}),
       ...(payload.releaseYear !== undefined ? { releaseYear: payload.releaseYear } : {}),
-      ...(payload.spotifyId !== undefined ? { spotifyId: payload.spotifyId } : {}),
       ...(payload.coverImageUrl !== undefined || payload.imageUrl !== undefined
         ? { imageUrl: payload.coverImageUrl ?? payload.imageUrl ?? null }
         : {}),

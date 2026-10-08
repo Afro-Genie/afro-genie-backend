@@ -30,7 +30,6 @@ import {
   overturnRateAlertQueue,
   viewCountFlushQueue,
   syncQueue,
-  syncPopularTracksQueue,
 } from '../lib/queue';
 import { scheduleAbuseDetection } from './abuseDetectionJob';
 import { scheduleChallengeRotation } from './challengeRotationJob';
@@ -75,9 +74,9 @@ const REPEAT_JOBS: readonly RepeatJobSpec[] = [
   { label: 'overturn-rate-alert', queue: overturnRateAlertQueue, jobId: 'overturn-rate-alert', schedule: scheduleOverturnRateAlert },
   { label: 'view-count-flush', queue: viewCountFlushQueue, jobId: 'flush-song-views', schedule: scheduleViewCountFlush },
   // The sync crons are registered as one group; re-registering the group is
-  // idempotent (stable jobIds), so a single repair covers all of them.
-  { label: 'sync-crons', queue: syncQueue, jobId: 'sync-new-releases-biweekly', schedule: scheduleSyncJobs },
-  { label: 'sync-popular-tracks', queue: syncPopularTracksQueue, jobId: 'sync-popular-tracks-monday', schedule: scheduleSyncJobs },
+  // idempotent (stable jobIds), so a single repair covers all of them. The
+  // Spotify crons are gone (Phase 4); the anchor job is the library cron.
+  { label: 'sync-crons', queue: syncQueue, jobId: 'library-enrichment-tue-thu', schedule: scheduleSyncJobs },
 ];
 
 export interface SelfHealResult {

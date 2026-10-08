@@ -1,4 +1,5 @@
 import type { Job } from 'bullmq';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { creditTokens, dedupeCreditTokens } from '../services/rewardService';
@@ -109,6 +110,23 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
       'Reward job completed',
     );
   } catch (err) {
+    // The user was deleted between enqueue and processing. `User` has no
+    // soft-delete, so the wallet upsert trips the UserWallet_userId_fkey
+    // constraint and there is nobody left to pay. Retrying can never succeed,
+    // so complete the job as a no-op instead of parking it in the failed set
+    // forever — 42 of 44 historical failures were exactly this, and they made
+    // the queue's failure count useless as a health signal.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2003'
+    ) {
+      logger.warn(
+        { jobId: job.id, userId, reason, event },
+        'Reward discarded — user no longer exists',
+      );
+      return;
+    }
+
     logger.error({ err, jobId: job.id, userId, amount, reason, event }, 'Reward job failed');
     throw err;
   }

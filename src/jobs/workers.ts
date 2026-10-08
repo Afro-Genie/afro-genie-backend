@@ -10,7 +10,6 @@ import { processSearchIndexJob } from './searchIndexJob';
 import { processTranslationJob } from './translationJob';
 import { processViewCountFlushJob, scheduleViewCountFlush } from './viewCountFlushJob';
 import { processSyncJob } from './syncWorker';
-import { processPopularTracksSyncJob } from './popularTracksSyncJob';
 import { processAnalyticsRollupJob, scheduleAnalyticsRollup } from './rollupArtistAnalytics';
 import { processReleasePublishJob, scheduleReleasePublish } from './publishScheduledReleases';
 import { processRewardJob } from './rewardJob';
@@ -177,15 +176,6 @@ async function startWorkers(): Promise<void> {
     { connection, concurrency: 1 }
   );
 
-  const popularTracksSyncWorker = new Worker(
-    'syncPopularTracksQueue',
-    async (job) => {
-      logger.info({ jobId: job.id }, 'Processing popular tracks sync job');
-      await processPopularTracksSyncJob(job);
-    },
-    { connection, concurrency: 1 }
-  );
-
   const analyticsRollupWorker = new Worker(
     'analyticsRollupQueue',
     async () => {
@@ -310,7 +300,7 @@ async function startWorkers(): Promise<void> {
     logger.error({ jobId: job?.id, err }, 'Premium pass revocation job failed');
   });
 
-  logger.info('All 16 workers started successfully');
+  logger.info('All 15 workers started successfully');
 
   await scheduleViewCountFlush();
   await scheduleAnalyticsRollup();

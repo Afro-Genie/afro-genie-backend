@@ -23,7 +23,7 @@ export const playbackRouter = Router();
 const SOURCE_CACHE_TTL_SECONDS = 60 * 60; // 1 hour
 const VIEW_COUNT_TTL_SECONDS = 6 * 60 * 60;
 
-const VALID_SOURCES: PlaybackSourceKind[] = ['AUDIO_URL', 'YOUTUBE', 'SPOTIFY_PREVIEW', 'NONE'];
+const VALID_SOURCES: PlaybackSourceKind[] = ['AUDIO_URL', 'YOUTUBE', 'NONE'];
 const VALID_EVENTS = ['play', 'pause', 'complete', 'skip'] as const;
 
 const sourceCacheKey = playbackSourceCacheKey;

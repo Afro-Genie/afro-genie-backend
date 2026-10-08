@@ -5,8 +5,6 @@
  * 
  * Clears:
  *   - Redis keys matching catalog:homepage:*
- *   - Redis keys matching spotify:search:*
- *   - Redis keys matching spotify:token
  *   - Redis keys matching song:views:*
  *   - Reports what was cleared
  */
@@ -32,8 +30,6 @@ async function main() {
   try {
     const patterns = [
       'catalog:homepage:*',
-      'spotify:search:*',
-      'spotify:token',
       'song:views:*',
     ];
 

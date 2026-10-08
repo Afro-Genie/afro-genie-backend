@@ -253,14 +253,6 @@ describe('7.2.4 request deduplication (src/lib/requestDedup.ts)', () => {
     assert.equal(b, 'b');
     assert.equal(dedupFetchCount(), before);
   });
-
-  test('dedupFetch is actually wired into the Spotify fetch path', async () => {
-    const src = await readBackendFile('src', 'services', 'syncEngine.ts');
-    assert.match(src, /import\s*\{[^}]*dedupFetch[^}]*\}\s*from\s*'\.\.\/lib\/requestDedup'/,
-      'syncEngine must import dedupFetch');
-    assert.match(src, /dedupFetch\(\s*`spotify-engine:/,
-      'dedupFetch must wrap the Spotify fetch call');
-  });
 });
 
 // ===========================================================================
@@ -555,69 +547,40 @@ describe('7.1.1 Genius provider bandwidth reduction (src/services/lyricsProvider
 });
 
 // ===========================================================================
-// 7.1.3 — Daily sync caps
+// 7.2.1 / 7.2.3 — Sync schedules (Phase 4: surviving jobs only)
 // ===========================================================================
 
-describe('7.1.3 daily sync caps (src/services/syncEngine.ts)', () => {
-  test('caps match the plan: 500 popular tracks, 100 artist syncs', async () => {
-    const src = await readBackendFile('src', 'services', 'syncEngine.ts');
-    assert.match(src, /POPULAR_TRACKS_DAILY_CAP\s*=\s*500/, 'popular tracks cap must be 500');
-    assert.match(src, /ARTIST_SYNC_DAILY_CAP\s*=\s*100/, 'artist sync cap must be 100');
-  });
-
-  test('both capped code paths consult the remaining daily budget', async () => {
-    const src = await readBackendFile('src', 'services', 'syncEngine.ts');
-    const budgetChecks = src.match(/getDailyRemaining\(/g) ?? [];
-    assert.ok(budgetChecks.length >= 3,
-      `expected the budget guard in both artist-sync paths and the popular-tracks path, found ${budgetChecks.length}`);
-    assert.match(src, /getDailyRemaining\('artistSync'/, 'artist sync must be capped');
-    assert.match(src, /getDailyRemaining\('popularTracks'/, 'popular tracks must be capped');
-  });
-
-  test('daily counters are namespaced per-day with a TTL', async () => {
-    const src = await readBackendFile('src', 'services', 'syncEngine.ts');
-    assert.match(src, /DAILY_CAP_KEY_PREFIX\s*=\s*'sync:daily:'/, 'counter prefix per spec');
-    assert.match(src, /redis\.incrby\(`\$\{DAILY_CAP_KEY_PREFIX\}/, 'counter must be incremented');
-    assert.match(src, /redis\.expire\(/, 'counter must expire so keys do not accumulate');
-  });
-});
-
-// ===========================================================================
-// 7.2.1 / 7.2.3 — Sync schedules
-// ===========================================================================
-
-describe('7.2.1 + 7.2.3 sync schedule reductions (src/jobs/syncCron.ts)', () => {
+describe('7.2.1 + 7.2.3 sync schedules + Phase 4 trim (src/jobs/syncCron.ts)', () => {
   let src = '';
   let cron = '';
 
   before(async () => {
     // The repeat registrations moved out of index.ts into syncCron.ts (2.6) so
-    // they can be re-registered by the self-healer without a restart. The
-    // schedules themselves must be unchanged.
+    // they can be re-registered by the self-healer without a restart.
     src = await readBackendFile('src', 'index.ts');
     cron = await readBackendFile('src', 'jobs', 'syncCron.ts');
   });
 
-  test('popular tracks stays on Monday 2am', () => {
-    assert.match(cron, /jobId:\s*'sync-popular-tracks-monday'/);
-    assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 2 \* \* 1'\s*\}/, 'Mon 2am per spec');
-  });
-
-  test('new releases reduced to bi-weekly (1st and 15th at 3am)', () => {
-    assert.match(cron, /jobId:\s*'sync-new-releases-biweekly'/);
-    assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 3 1,15 \* \*'\s*\}/);
-  });
-
-  test('full artist sync reduced to monthly (1st at 2am)', () => {
-    assert.match(cron, /jobId:\s*'sync-all-monthly'/);
-    assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 2 1 \* \*'\s*\}/);
-  });
-
-  test('daily jobs retained: refresh-stale 4am and lyrics backfill 5am', () => {
-    assert.match(cron, /jobId:\s*'refresh-stale-daily'/);
-    assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 4 \* \* \*'\s*\}/);
+  test('Phase 4: only backfill-lyrics (5am) and library-enrichment (Tue/Thu 3am) remain', () => {
     assert.match(cron, /jobId:\s*'backfill-lyrics-daily'/);
     assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 5 \* \* \*'\s*\}/);
+    assert.match(cron, /jobId:\s*'library-enrichment-tue-thu'/);
+    assert.match(cron, /repeat:\s*\{\s*pattern:\s*'0 3 \* \* 2,4'\s*\}/);
+  });
+
+  test('Phase 4: the Spotify catalog crons are gone', () => {
+    for (const gone of [
+      /sync-popular-tracks-monday/,
+      /sync-new-releases-biweekly/,
+      /sync-all-monthly/,
+      /refresh-stale-daily/,
+      /0 2 \* \* 1/,
+      /0 3 1,15 \* \*/,
+      /0 2 1 \* \*/,
+      /0 4 \* \* \*/,
+    ]) {
+      assert.ok(!gone.test(cron), `removed cron must not be scheduled: ${gone}`);
+    }
   });
 
   test('stale threshold raised from 72h to 7 days', async () => {
@@ -635,11 +598,17 @@ describe('7.2.1 + 7.2.3 sync schedule reductions (src/jobs/syncCron.ts)', () => 
       'no genre-discovery job may be registered with a repeat schedule');
   });
 
-  test('7.2.3 genre discovery worker and manual admin trigger are preserved', async () => {
+  test('7.2.3 + Phase 4: worker dispatches only non-Spotify job types, admin trigger preserved', async () => {
     const worker = await readBackendFile('src', 'jobs', 'syncWorker.ts');
-    assert.match(worker, /case\s*'sync-genre-discovery'/, 'worker must still handle the job type');
+    for (const kept of ['backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm', 'library-enrichment']) {
+      assert.ok(worker.includes(`'${kept}'`) || worker.includes(`"${kept}"`),
+        `worker must still handle the '${kept}' job type`);
+    }
+    assert.ok(!/sync-genre-discovery/.test(worker), 'the Spotify genre-discovery worker case must be gone');
+    assert.ok(!/sync-popular-tracks/.test(worker), 'the Spotify popular-tracks worker case must be gone');
+
     const route = await readBackendFile('src', 'routes', 'admin', 'sync.ts');
-    assert.match(route, /syncQueue|adminSyncRouter/,
+    assert.match(route, /adminSyncRouter|\* router|export.*router/,
       'the manual admin trigger must remain available');
   });
 
@@ -659,75 +628,6 @@ describe('7.2.1 + 7.2.3 sync schedule reductions (src/jobs/syncCron.ts)', () => 
 });
 
 // ===========================================================================
-// 7.2.2 — Spotify response caching
-// ===========================================================================
-
-describe('7.2.2 Spotify API response caching (src/services/spotifyService.ts)', () => {
-  test('access token is cached in Redis with a refresh margin', async () => {
-    const src = await readBackendFile('src', 'services', 'spotifyService.ts');
-    assert.match(src, /redis\.set\(tokenCacheKey,[^)]*'EX',\s*ttlSeconds\)/,
-      'token must be cached with an explicit TTL');
-    assert.match(src, /data\.expires_in\s*-\s*60/, 'TTL must expire 60s early to allow refresh');
-  });
-
-  test('track lookup cached for 24h (raised from 1h)', async () => {
-    const src = await readBackendFile('src', 'services', 'spotifyService.ts');
-    // Assert the hoisted constant's value rather than an inline literal (2.11).
-    assert.match(src, /TRACK_CACHE_TTL_SECONDS\s*=\s*60\s*\*\s*60\s*\*\s*24\b/,
-      'track cache TTL constant must be 24h');
-    assert.match(src, /redis\.set\(cacheKey,[\s\S]{0,80}?'EX',\s*TRACK_CACHE_TTL_SECONDS\)/,
-      'the track cache must be written with that TTL');
-  });
-
-  test('search TTL is 24h for artist, 10 minutes otherwise (2.11)', async () => {
-    const src = await readBackendFile('src', 'services', 'spotifyService.ts');
-    // Assert the named constants' VALUES rather than an inline ternary: the
-    // literals are hoisted so the three TTLs are declared in one readable block.
-    assert.match(src, /ARTIST_SEARCH_CACHE_TTL_SECONDS\s*=\s*60\s*\*\s*60\s*\*\s*24\b/,
-      'artist search TTL constant must be 24h');
-    assert.match(src, /SEARCH_CACHE_TTL_SECONDS\s*=\s*60\s*\*\s*10\b/,
-      'non-artist search TTL constant must be 10 minutes');
-    assert.match(
-      src,
-      /ttlSeconds\s*=\s*type\s*===\s*'artist'\s*\?\s*ARTIST_SEARCH_CACHE_TTL_SECONDS\s*:\s*SEARCH_CACHE_TTL_SECONDS/,
-      'search must select 24h for artist and 10 minutes otherwise',
-    );
-    assert.match(src, /redis\.set\(cacheKey,[\s\S]{0,60}?'EX',\s*ttlSeconds\)/,
-      'the computed TTL must be what is actually written to Redis');
-  });
-
-  test('the plan\'s 24h artist-metadata requirement is now met (2.11)', async () => {
-    const src = await readBackendFile('src', 'services', 'spotifyService.ts');
-    assert.match(src, /ARTIST_SEARCH_CACHE_TTL_SECONDS\s*=\s*60\s*\*\s*60\s*\*\s*24\b/,
-      'artist search cache must be 24h');
-    const plan = await readBackendFile('..', 'IMPLEMENTATION-PLAN.md');
-    assert.match(plan, /Artist metadata:\s*cached 24hr/,
-      'plan specifies 24h and the implementation now matches it');
-  });
-
-  test('album (48h) and new-releases (24h) caches exist (2.12)', async () => {
-    // The plan's 2.12 step described the target as `spotifyService.ts`, but
-    // Phase 6 implemented the album + new-releases caching in syncEngine.ts's
-    // generalized `cachedSpotifyFetch` — the path-keyed cache that the heavy
-    // sync paths (artist albums, new releases, album tracks) actually go
-    // through. `spotifyService.ts` only ever exposes track + search, so there
-    // is no album endpoint there to cache. Assert the real home of these caches.
-    const src = await readBackendFile('src', 'services', 'syncEngine.ts');
-    assert.match(src, /if\s*\(path\.startsWith\('\/albums\/'\)\)\s*return\s*60\s*\*\s*60\s*\*\s*48;/,
-      'album responses must be cached for 48h per §7.2.2');
-    assert.match(src, /if\s*\(path\.startsWith\('\/browse\/new-releases'\)\)\s*return\s*60\s*\*\s*60\s*\*\s*24;/,
-      'new-releases responses must be cached for 24h per §7.2.2');
-
-    // And the sync endpoints that consume freshly-fetched albums must actually
-    // route through the cache (not a bare fetch).
-    const artistAlbums = src.match(/syncArtistAlbums[\s\S]{0,900}cachedSpotifyFetch[\s\S]{0,400}?album/i);
-    assert.ok(artistAlbums, 'syncArtistAlbums must fetch through cachedSpotifyFetch');
-    const newReleases = src.match(/syncNewReleases[\s\S]{0,900}cachedSpotifyFetch[\s\S]{0,400}?new-releases/i);
-    assert.ok(newReleases, 'syncNewReleases must fetch through cachedSpotifyFetch');
-  });
-});
-
-// ===========================================================================
 // 7.4 — Bandwidth monitoring & alerting
 // ===========================================================================
 
@@ -742,7 +642,6 @@ describe('7.4 bandwidth monitoring (src/lib/bandwidthMonitor.ts)', () => {
   test('route classification buckets the highest-traffic families', () => {
     assert.equal(classifyRoute('/uploads/cover.jpg'), 'uploads');
     assert.equal(classifyRoute('/api/playback/source'), 'playback');
-    assert.equal(classifyRoute('/api/spotify/track/1'), 'spotify');
     assert.equal(classifyRoute('/api/songs/1'), 'songs');
     assert.equal(classifyRoute('/api/admin/economy/config'), 'admin');
     assert.equal(classifyRoute('/api/community/topics'), 'community');
@@ -933,8 +832,10 @@ describe('Phase 6 wiring', () => {
     assert.match(route, /bandwidthReadLimiter/, 'read endpoints must be rate limited');
   });
 
-  test('the sync worker still runs the popular-tracks queue', async () => {
+  test('the sync worker still runs the surviving syncQueue, and the popular-tracks queue is gone (Phase 4)', async () => {
     const workers = await readBackendFile('src', 'jobs', 'workers.ts');
-    assert.match(workers, /'syncPopularTracksQueue'/, 'a worker must consume syncPopularTracksQueue');
+    assert.match(workers, /new Worker<SyncJobData>\(\s*'syncQueue'/, 'the surviving syncQueue worker must remain');
+    assert.ok(!/syncPopularTracksQueue/.test(workers),
+      'the Spotify popular-tracks queue worker must be gone (Phase 4)');
   });
 });

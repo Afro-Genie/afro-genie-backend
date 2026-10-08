@@ -1,8 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { redis, scanKeys } from '../lib/redis';
 import { logger } from '../lib/logger';
-import { searchSpotify } from './spotifyService';
-import { genreService } from './genreService';
 import type { Prisma } from '@prisma/client';
 import { generateGradientImage } from './imageService';
 
@@ -22,6 +20,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+// Ranks songs with a YouTube match first, preserving secondary ordering
+// (e.g. views desc) within each group. Postgres puts NULLs first on DESC,
+// so SQL-level ordering by youtubeVideoId cannot express this grouping.
+function rankPlayableFirst<T extends { youtubeVideoId?: string | null; views?: number | null }>(
+  rows: T[]
+): T[] {
+  return [...rows].sort((a, b) => {
+    const aPlayable = a.youtubeVideoId ? 1 : 0;
+    const bPlayable = b.youtubeVideoId ? 1 : 0;
+    if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+    return (b.views ?? 0) - (a.views ?? 0);
+  });
+}
+
 interface UnifiedSong {
   id: string;
   title: string;
@@ -29,9 +41,8 @@ interface UnifiedSong {
   artistId?: string;
   albumName?: string;
   imageUrl?: string;
-  previewUrl?: string | null;
-  spotifyId?: string | null;
-  source: 'DB' | 'SPOTIFY' | 'HYBRID';
+  youtubeVideoId?: string | null;
+  source: 'DB' | 'HYBRID';
   genres?: string[];
   popularity?: number;
 }
@@ -41,9 +52,8 @@ let memCache: { data: any; expiresAt: number; cacheKey: string } | null = null;
 const MEM_CACHE_TTL_MS = 3600 * 1000;
 
 class CatalogService {
-  async getHomepageData(options?: { spotifyFallback?: boolean }): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[]; featuredArtists: any[] }> {
-    const enableSpotifyEnrichment = options?.spotifyFallback !== false;
-    const cacheKey = 'catalog:homepage:v19';
+  async getHomepageData(): Promise<{ songs: UnifiedSong[]; artists: any[]; genres: any[]; featuredArtists: any[] }> {
+    const cacheKey = 'catalog:homepage:v20';
 
     // 1. Try Redis (fast path)
     try {
@@ -92,28 +102,25 @@ class CatalogService {
       genres = results[1];
       featuredArtists = results[0].featuredArtists;
 
-      // 2. Fetch songs from top artists first, then fill with remaining
-      const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
-      const [topArtistSongs, allSongs] = await Promise.all([
-        prisma.song.findMany({
-          where: { ...songWhere, artistId: { in: topArtistIds } },
-          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-          orderBy: { views: 'desc' },
-          take: 20,
-        }),
-        prisma.song.findMany({
-          where: { ...songWhere, artistId: { notIn: topArtistIds } },
-          include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-          orderBy: { views: 'desc' },
-          take: 20,
-        }),
-      ]);
-
-      // Merge: top artists' songs first, then fill remaining slots
-      dbSongs = topArtistSongs;
-      if (dbSongs.length < 20) {
-        dbSongs = [...dbSongs, ...allSongs].slice(0, 20);
-      }
+      // 2. Rank songs playable-first (youtubeVideoId set), then by views.
+      // Postgres sorts NULLs first on DESC, so the grouping is done here in
+      // JS over lightweight keys, then the top rows are hydrated with includes.
+      const candidates = await prisma.song.findMany({
+        where: songWhere,
+        select: { id: true, youtubeVideoId: true, views: true },
+        orderBy: { views: 'desc' },
+      });
+      const topIds = rankPlayableFirst(candidates)
+        .slice(0, 20)
+        .map((row) => row.id);
+      const hydrated = await prisma.song.findMany({
+        where: { id: { in: topIds } },
+        include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
+      });
+      const hydratedById = new Map(hydrated.map((row) => [row.id, row]));
+      dbSongs = topIds
+        .map((id) => hydratedById.get(id))
+        .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
       if (dbSongs.length === 0 || dbArtists.length === 0) {
         logger.warn({ dbSongs: dbSongs.length, dbArtists: dbArtists.length, genres: genres.length }, 'Catalog: DB returned empty results — possible Neon cold start');
@@ -131,9 +138,8 @@ class CatalogService {
       artistId: s.artistId,
       albumName: s.albumName || undefined,
       imageUrl: s.imageUrl || '',
-      previewUrl: s.spotifyPreviewUrl,
       audioUrl: s.audioUrl,
-      spotifyId: s.spotifyId,
+      youtubeVideoId: s.youtubeVideoId || null,
       source: 'DB' as const,
     }));
 
@@ -142,7 +148,6 @@ class CatalogService {
       name: a.name,
       genre: a.genres?.[0] || '',
       image: a.imageUrl || '',
-      spotifyId: a.spotifyId,
       bio: a.bio,
       popularity: a.popularity,
       followers: a.followers,
@@ -158,7 +163,12 @@ class CatalogService {
     // Assemble and return result immediately (DB data only)
     const result = {
       songs: songs
-        .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+        .sort((a, b) => {
+          const aPlayable = a.youtubeVideoId ? 1 : 0;
+          const bPlayable = b.youtubeVideoId ? 1 : 0;
+          if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+          return (b.popularity || 0) - (a.popularity || 0);
+        })
         .slice(0, 20)
         .map(s => ({
         id: s.id,
@@ -167,8 +177,7 @@ class CatalogService {
         artistId: s.artistId || '',
         albumName: s.albumName || '',
         imageUrl: s.imageUrl || '',
-        previewUrl: s.previewUrl || null,
-        spotifyId: s.spotifyId || null,
+        youtubeVideoId: s.youtubeVideoId || null,
         source: s.source,
       })),
       artists,
@@ -196,13 +205,6 @@ class CatalogService {
       logger.warn('Catalog homepage result is empty — skipping Redis cache to avoid poisoning');
     }
 
-    // Kick off Spotify enrichment in background (non-blocking)
-    if (enableSpotifyEnrichment && hasRealData) {
-      this.enrichHomepageCache(cacheKey).catch((err) => {
-        logger.warn({ err }, 'Background homepage enrichment failed');
-      });
-    }
-
     return result;
   }
 
@@ -220,7 +222,6 @@ class CatalogService {
       name: true,
       imageUrl: true,
       genres: true,
-      spotifyId: true,
       bio: true,
       popularity: true,
       followers: true,
@@ -253,187 +254,6 @@ class CatalogService {
     }
 
     return { artists: dbArtists, featuredArtists: featured.slice(0, 8) };
-  }
-
-  private async enrichHomepageCache(cacheKey: string): Promise<void> {
-    const { artists: dbArtists, featuredArtists: dbFeaturedArtists } = await this.fetchHomepageArtists();
-    const genres = await prisma.genre.findMany({ take: 10 });
-
-    // Songs from top artists first, then fill with remaining
-    const topArtistIds = dbArtists.slice(0, 12).map(a => a.id);
-    const enrichSongWhere: Prisma.SongWhereInput = {
-      softDeleted: false,
-      artist: { suspended: false },
-      AND: [
-        {
-          OR: [
-            { release: null },
-            { release: { status: 'PUBLISHED' as const } },
-          ],
-        },
-        {
-          OR: [
-            { audioUrl: null },
-            { released: true },
-          ],
-        },
-      ],
-    };
-    const [topArtistSongs, allSongs] = await Promise.all([
-      prisma.song.findMany({
-        where: { ...enrichSongWhere, artistId: { in: topArtistIds } },
-        include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-        orderBy: { views: 'desc' },
-        take: 20,
-      }),
-      prisma.song.findMany({
-        where: { ...enrichSongWhere, artistId: { notIn: topArtistIds } },
-        include: { artist: { select: { name: true, imageUrl: true, suspended: true } } },
-        orderBy: { views: 'desc' },
-        take: 20,
-      }),
-    ]);
-    const dbSongs = topArtistSongs.length < 20
-      ? [...topArtistSongs, ...allSongs].slice(0, 20)
-      : topArtistSongs;
-
-    const artists = dbArtists.map((a) => ({
-      id: a.id,
-      name: a.name,
-      genre: a.genres?.[0] || '',
-      image: a.imageUrl || '',
-      spotifyId: a.spotifyId,
-      bio: a.bio,
-      popularity: a.popularity,
-      followers: a.followers,
-    }));
-
-    // Artist images — parallel batches
-    const artistsNeedingImages = artists.filter(a => !a.image);
-    if (artistsNeedingImages.length > 0) {
-      const CONCURRENCY = 5;
-      for (let i = 0; i < artistsNeedingImages.length; i += CONCURRENCY) {
-        const batch = artistsNeedingImages.slice(i, i + CONCURRENCY);
-        await Promise.allSettled(
-          batch.map(async (artist) => {
-            try {
-              const result = await searchSpotify(artist.name, 'artist');
-              const firstArtist = result.artists?.items?.[0];
-              if (firstArtist?.images?.[0]?.url) {
-                artist.image = firstArtist.images[0].url;
-              }
-            } catch {
-              // Individual search failed
-            }
-          })
-        );
-      }
-    }
-
-    // Genre enrichment from Spotify
-    if (genres.length < 5) {
-      const [afrobeatsResult, amapianoResult] = await Promise.allSettled([
-        searchSpotify('afrobeats', 'artist'),
-        searchSpotify('amapiano', 'artist'),
-      ]);
-
-      const seen = new Set<string>(genres.map(g => g.name?.toLowerCase()));
-
-      if (afrobeatsResult.status === 'fulfilled') {
-        for (const a of (afrobeatsResult.value.artists?.items || [])) {
-          for (const g of (a.genres || [])) {
-            const name = g as string;
-            if (!seen.has(name.toLowerCase()) && name && genres.length < 10) {
-              seen.add(name.toLowerCase());
-              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-            }
-          }
-        }
-      }
-
-      if (genres.length < 5 && amapianoResult.status === 'fulfilled') {
-        for (const a of (amapianoResult.value.artists?.items || [])) {
-          for (const g of (a.genres || [])) {
-            const name = g as string;
-            if (!seen.has(name.toLowerCase()) && name && genres.length < 10) {
-              seen.add(name.toLowerCase());
-              (genres as any[]).push({ id: `spotify:${name}`, name, imageUrl: '' });
-            }
-          }
-        }
-      }
-    }
-
-    // Genre images — use DB imageUrl first, then Spotify playlist, then gradient
-    const genreNames = genres.slice(0, 10).map((g: any) => g.name);
-    const genreImageObj: Record<string, string> = {};
-
-    // Step 1: Use DB imageUrl where available
-    for (const g of genres.slice(0, 10)) {
-      const dbImage = (g as any).imageUrl;
-      if (dbImage && !dbImage.startsWith('data:')) {
-        genreImageObj[g.name] = dbImage;
-      }
-    }
-
-    // Step 2: For genres still without an image, try Spotify playlist search
-    const missingGenres = genreNames.filter(name => !genreImageObj[name]);
-    if (missingGenres.length > 0) {
-      const genreResults = await Promise.allSettled(
-        missingGenres.map(name => genreService.getGenreImage(name))
-      );
-      for (let i = 0; i < missingGenres.length; i++) {
-        if (genreResults[i].status === 'fulfilled') {
-          const img = (genreResults[i] as PromiseFulfilledResult<string>).value;
-          if (!img.startsWith('data:')) {
-            genreImageObj[missingGenres[i]] = img;
-          }
-        }
-      }
-    }
-
-    // Step 3: Gradient fallback for any remaining
-    for (const name of genreNames) {
-      if (!genreImageObj[name]) {
-        genreImageObj[name] = generateGradientImage(name);
-      }
-    }
-
-    const enrichedResult = {
-      songs: dbSongs
-        .filter((s) => !(s as any).artist?.suspended)
-        .map((s) => ({
-        id: s.id,
-        title: s.title,
-        artistName: (s as any).artist.name,
-        artistId: s.artistId || '',
-        albumName: s.albumName || '',
-        imageUrl: s.imageUrl || '',
-        previewUrl: s.spotifyPreviewUrl || null,
-        spotifyId: s.spotifyId || null,
-        source: 'DB' as const,
-      })).slice(0, 20),
-      artists,
-      genres: genres.slice(0, 10).map((g: any) => ({
-        id: g.id,
-        name: g.name,
-        image: genreImageObj[g.name] || generateGradientImage(g.name),
-      })),
-      featuredArtists: dbFeaturedArtists.map((a) => ({
-        id: a.id,
-        name: a.name,
-        image: a.imageUrl || '',
-        genres: a.genres || [],
-        verified: a.verified,
-      })),
-    };
-
-    try {
-      await redis.set(cacheKey, JSON.stringify(enrichedResult), 'EX', 3600);
-      logger.info('Homepage cache enriched with Spotify data');
-    } catch {
-      // Non-fatal
-    }
   }
 
   async getCatalogSongs(params: {
@@ -483,29 +303,49 @@ class CatalogService {
 
     const sortBy = params.sortBy || 'views';
     const sortOrder = params.sortOrder === 'asc' ? 'asc' : 'desc';
-    const orderBy: any = {};
-    if (sortBy === 'title') orderBy.title = sortOrder;
-    else if (sortBy === 'createdAt') orderBy.createdAt = sortOrder;
-    else if (sortBy === 'releaseYear') orderBy.releaseYear = sortOrder;
-    else orderBy.views = sortOrder;
+    const direction = sortOrder === 'asc' ? 1 : -1;
+    const secondary = (a: any, b: any): number => {
+      if (sortBy === 'title') return a.title.localeCompare(b.title) * direction;
+      if (sortBy === 'createdAt') return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * direction;
+      if (sortBy === 'releaseYear') return ((a.releaseYear || 0) - (b.releaseYear || 0)) * direction;
+      return ((a.views || 0) - (b.views || 0)) * direction;
+    };
 
     const page = params.page || 1;
     const limit = Math.min(params.limit || 50, 500);
 
-    const [dbSongs, total] = await Promise.all([
+    // Playable tracks (youtubeVideoId set) always rank ahead of deferred ones,
+    // with the requested sort applied within each group. Postgres sorts NULLs
+    // first on DESC, so the grouping is done here over lightweight keys.
+    const [keys, total] = await Promise.all([
       prisma.song.findMany({
         where,
-        include: {
-          artist: { select: { name: true, imageUrl: true } },
-          genres: { include: { genre: { select: { name: true } } }, take: 1 },
-          _count: { select: { lyrics: true } },
-        },
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy,
+        select: { id: true, youtubeVideoId: true, title: true, views: true, createdAt: true, releaseYear: true },
+        orderBy: sortBy === 'title' ? { title: sortOrder as any } : sortBy === 'createdAt' ? { createdAt: sortOrder as any } : sortBy === 'releaseYear' ? { releaseYear: sortOrder as any } : { views: sortOrder as any },
       }),
       prisma.song.count({ where }),
     ]);
+    const ordered = [...keys].sort((a, b) => {
+      const aPlayable = a.youtubeVideoId ? 1 : 0;
+      const bPlayable = b.youtubeVideoId ? 1 : 0;
+      if (aPlayable !== bPlayable) return bPlayable - aPlayable;
+      return secondary(a, b);
+    });
+    const pageIds = ordered
+      .slice((page - 1) * limit, (page - 1) * limit + limit)
+      .map((row) => row.id);
+    const pageRows = await prisma.song.findMany({
+      where: { id: { in: pageIds } },
+      include: {
+        artist: { select: { name: true, imageUrl: true } },
+        genres: { include: { genre: { select: { name: true } } }, take: 1 },
+        _count: { select: { lyrics: true } },
+      },
+    });
+    const rowsById = new Map(pageRows.map((row) => [row.id, row]));
+    const dbSongs = pageIds
+      .map((id) => rowsById.get(id))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
     const songs = dbSongs.map((s) => ({
       id: s.id,
@@ -519,9 +359,9 @@ class CatalogService {
       album: s.albumName || '',
       requestCount: s.requestCount,
       createdAt: s.createdAt,
-      spotifyId: s.spotifyId || null,
+      youtubeVideoId: (s as any).youtubeVideoId || null,
       audioUrl: (s as any).audioUrl || null,
-      source: (s as any)._count?.lyrics > 0 ? 'DB' as const : s.spotifyId ? 'SPOTIFY' as const : 'DB' as const,
+      source: 'DB' as const,
     }));
 
     return { songs, total };
@@ -552,7 +392,6 @@ class CatalogService {
           name: true,
           imageUrl: true,
           genres: true,
-          spotifyId: true,
           bio: true,
           popularity: true,
           followers: true,
@@ -570,7 +409,6 @@ class CatalogService {
         name: a.name,
         genre: a.genres?.[0] || '',
         image: a.imageUrl || '',
-        spotifyId: a.spotifyId,
         bio: a.bio,
         popularity: a.popularity,
         followers: a.followers,
@@ -587,7 +425,7 @@ class CatalogService {
     cleared.push('memCache');
 
     // Clear all known Redis cache keys
-    const patterns = ['catalog:homepage:v*', 'spotify:search:*', 'song:views:*'];
+    const patterns = ['catalog:homepage:v*', 'song:views:*'];
     for (const pattern of patterns) {
       try {
         const keys = await withTimeout(scanKeys(pattern), 2000, `redis:keys:${pattern}`);

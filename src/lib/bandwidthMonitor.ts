@@ -90,7 +90,6 @@ const bytesAt = async (key: string): Promise<number> => {
 export function classifyRoute(path: string): string {
   if (path.startsWith('/uploads')) return 'uploads';
   if (path.startsWith('/api/playback')) return 'playback';
-  if (path.startsWith('/api/spotify')) return 'spotify';
   if (path.startsWith('/api/lyrics')) return 'lyrics';
   if (path.startsWith('/api/search')) return 'search';
   if (path.startsWith('/api/songs')) return 'songs';

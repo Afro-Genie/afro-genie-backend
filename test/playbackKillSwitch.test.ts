@@ -38,10 +38,11 @@ import {
 // in-place lever it claims to be. `resolvePlaybackSource` now treats a cached
 // YOUTUBE answer as a miss while the flag is off. These tests pin that.
 //
-// SCOPE, STATED HONESTLY: the flag gates the YOUTUBE TIER only. Own-uploaded audio
-// (Tier 1) and the Spotify 30s preview (Tier 3) are not flag-gated and keep
-// working — that is deliberate, and asserted below. "Flag off" means "no YouTube
-// tier", not "no playback at all".
+// SCOPE, STATED HONESTLY: the flag gates the YOUTUBE TIER only. Own-uploaded
+// audio (Tier 1) is not flag-gated and keeps working — that is deliberate, and
+// asserted below. "Flag off" means "no YouTube tier", not "no playback at all".
+// The Spotify 30s preview (old Tier 3) was removed in Phase 3, so a song with no
+// own audio and no (gated) YouTube match resolves to NONE.
 
 const PREVIEW = 'https://p.scdn.co/audio-clip/killswitch.mp3';
 const VIDEO_ID = 'k1llSw1tchV1d';
@@ -146,7 +147,7 @@ describe('playback kill switch (2.3) — flag off stops the YouTube tier over HT
       'YOUTUBE',
       'a cached YouTube answer must not survive the kill switch',
     );
-    assert.equal(after.body.source, 'SPOTIFY_PREVIEW', 'it must fall through to Tier 3');
+    assert.equal(after.body.source, 'NONE', 'it must fall through to no source');
     assert.equal(after.body.youtubeVideoId, undefined, 'no video id may leak in the response');
   });
 
@@ -162,12 +163,12 @@ describe('playback kill switch (2.3) — flag off stops the YouTube tier over HT
     const res = await harness.request('GET', `/api/playback/${song.id}/source`);
 
     assert.equal(res.status, 200);
-    assert.equal(res.body.source, 'SPOTIFY_PREVIEW');
+    assert.equal(res.body.source, 'NONE');
   });
 
   test('a song with no fallback resolves to NONE, not YOUTUBE, with the flag off', async () => {
-    // No own audio and no Spotify preview: the only source that could exist is
-    // YouTube. Turning the flag off must remove playback, not misreport it.
+    // No own audio: the only source that could exist is YouTube. Turning the
+    // flag off must remove playback, not misreport it.
     const song = await createPhase3Song(registry, {
       audioUrl: null,
       youtubeVideoId: VIDEO_ID,
@@ -197,7 +198,7 @@ describe('playback kill switch (2.3) — flag off stops the YouTube tier over HT
 
     setFlag(false);
     const off = await harness.request('GET', `/api/playback/${song.id}/source`);
-    assert.equal(off.body.source, 'SPOTIFY_PREVIEW');
+    assert.equal(off.body.source, 'NONE');
 
     setFlag(true);
     const on = await harness.request('GET', `/api/playback/${song.id}/source`);
@@ -284,10 +285,10 @@ describe('playback kill switch (2.3) — flag off stops the YouTube tier over HT
 
     const current = await harness.request('POST', '/api/playback/report', {
       token: listenerToken,
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play' },
+      body: { songId: song.id, source: 'NONE', eventType: 'play' },
     });
 
-    assert.equal(current.status, 200, 'the tier actually being served must be accepted');
+    assert.equal(current.status, 200, 'the source actually served must be accepted');
     assert.equal(await prisma.songPlay.count({ where: { songId: song.id } }), 1);
   });
 });

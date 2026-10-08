@@ -10,7 +10,9 @@ import {
   type FixtureRegistry,
 } from './phase3Fixtures';
 
-// Phase 3.2 — YouTube matching service: 3-tier playback fallback resolution.
+// Phase 3.2 — YouTube matching service: 2-tier playback fallback resolution.
+// The Spotify 30s preview tier was removed in Phase 3, so a song with no own
+// audio and no YouTube match resolves to NONE.
 
 const AUDIO = 'https://cdn.afrogenie.test/audio/probe.mp3';
 const PREVIEW = 'https://p.scdn.co/audio-clip/probe-30s.mp3';
@@ -41,37 +43,23 @@ describe('youtubeService — playback source fallback', () => {
     assert.equal(result.source, 'AUDIO_URL');
     assert.equal(result.audioUrl, AUDIO);
     assert.equal(result.youtubeVideoId, undefined);
-    assert.equal(result.previewUrl, undefined);
+    assert.ok(!('previewUrl' in result), 'no previewUrl field is served after the Phase 3 removal');
   });
 
   test('Tier 2: YouTube match is used when no own audio exists', async () => {
-    const song = await createPhase3Song(registry, { youtubeVideoId: VIDEO_ID, spotifyPreviewUrl: null });
-
-    const result = await youtubeService.getPlaybackSource(song.id);
-
-    assert.equal(result.source, 'YOUTUBE');
-    assert.equal(result.youtubeVideoId, VIDEO_ID);
-  });
-
-  test('Tier 2: carries the Spotify preview so the client can fall back on embed failure', async () => {
     const song = await createPhase3Song(registry, { youtubeVideoId: VIDEO_ID, spotifyPreviewUrl: PREVIEW });
 
     const result = await youtubeService.getPlaybackSource(song.id);
 
     assert.equal(result.source, 'YOUTUBE');
-    assert.equal(result.previewUrl, PREVIEW, 'previewUrl must ride along for the Tier 3 error fallback');
+    assert.equal(result.youtubeVideoId, VIDEO_ID);
+    assert.ok(!('previewUrl' in result), 'no previewUrl rides along for an embed-error fallback (removed)');
   });
 
-  test('Tier 2: previewUrl is omitted when the song has no Spotify preview', async () => {
-    const song = await createPhase3Song(registry, { youtubeVideoId: VIDEO_ID, spotifyPreviewUrl: null });
-
-    const result = await youtubeService.getPlaybackSource(song.id);
-
-    assert.equal(result.source, 'YOUTUBE');
-    assert.equal(result.previewUrl, undefined);
-  });
-
-  test('Tier 3: Spotify preview is used when there is no audio and no YouTube match', async () => {
+  test('Tier NONE: no own audio and no YouTube match resolves to NONE even with a Spotify preview', async () => {
+    // The Spotify preview was the old Tier 3. Phase 3 removed it: a preview URL
+    // on a song row is data, not a playable source, so the resolver must not
+    // degrade to it.
     const song = await createPhase3Song(registry, {
       audioUrl: null,
       youtubeVideoId: null,
@@ -80,11 +68,13 @@ describe('youtubeService — playback source fallback', () => {
 
     const result = await youtubeService.getPlaybackSource(song.id);
 
-    assert.equal(result.source, 'SPOTIFY_PREVIEW');
-    assert.equal(result.previewUrl, PREVIEW);
+    assert.equal(result.source, 'NONE');
+    assert.equal(result.audioUrl, undefined);
+    assert.equal(result.youtubeVideoId, undefined);
+    assert.ok(!('previewUrl' in result));
   });
 
-  test('Tier 4: a song with no source at all reports NONE', async () => {
+  test('Tier NONE: a song with no source at all reports NONE', async () => {
     const song = await createPhase3Song(registry, {
       audioUrl: null,
       youtubeVideoId: null,
@@ -96,7 +86,7 @@ describe('youtubeService — playback source fallback', () => {
     assert.equal(result.source, 'NONE');
     assert.equal(result.audioUrl, undefined);
     assert.equal(result.youtubeVideoId, undefined);
-    assert.equal(result.previewUrl, undefined);
+    assert.ok(!('previewUrl' in result));
   });
 
   test('every tier returns the song metadata block the player needs', async () => {
@@ -135,7 +125,7 @@ describe('youtubeService — playback source fallback', () => {
   test('getPlaybackSource always reads live DB state (caching is a route concern)', async () => {
     const song = await createPhase3Song(registry, { youtubeVideoId: null, spotifyPreviewUrl: PREVIEW });
 
-    assert.equal((await youtubeService.getPlaybackSource(song.id)).source, 'SPOTIFY_PREVIEW');
+    assert.equal((await youtubeService.getPlaybackSource(song.id)).source, 'NONE');
 
     // The service itself is uncached, so a tier flip is visible immediately.
     // The 1h `playback:source:<id>` Redis cache in routes/playback.ts is the

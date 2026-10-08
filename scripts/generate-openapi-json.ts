@@ -17,7 +17,7 @@ const nowIso = new Date().toISOString();
 const version = packageJson.version || '0.0.0';
 const stagingApiBaseUrl =
   process.env.OPENAPI_STAGING_SERVER_URL ||
-  'https://afro-genie-backend-staging-production.up.railway.app/api';
+  'https://afro-genie-backend-production.up.railway.app/api';
 
 const info = (spec.info as Record<string, unknown>) || {};
 info.version = version;
