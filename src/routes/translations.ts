@@ -561,13 +561,15 @@ translationsRouter.post(
         success: false,
         error: err.message?.substring(0, 300),
         provider: getActiveProvider().name,
-        hint: err.message?.includes('quota')
-          ? 'Gemini quota/billing issue. Check credits at aistudio.google.com'
-          : err.message?.includes('404')
-            ? 'Gemini model not found. Check API key at aistudio.google.com/apikey'
-            : err.message?.includes('503')
-              ? 'Gemini temporarily unavailable. Try again in a moment.'
-              : undefined,
+        hint: err.message?.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') || err.message?.includes('UNAUTHENTICATED')
+          ? 'GEMINI_API_KEY was rejected (401). Generate a new key at aistudio.google.com/apikey and update it in the environment.'
+          : err.message?.includes('quota')
+            ? 'Gemini quota/billing issue. Check credits at aistudio.google.com'
+            : err.message?.includes('404')
+              ? 'Gemini model not found. Check API key at aistudio.google.com/apikey'
+              : err.message?.includes('503')
+                ? 'Gemini temporarily unavailable. Try again in a moment.'
+                : undefined,
         latencyMs: Date.now() - startTime,
       });
     }
