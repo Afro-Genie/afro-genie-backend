@@ -3,7 +3,6 @@ import { env, missingPaymentKeys } from './lib/env';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { redis, scanKeys } from './lib/redis';
-import { syncPopularTracksQueue } from './lib/queue';
 import { catalogService } from './services/catalogService';
 import { bulkIndex } from './services/searchService';
 import { shutdownBandwidthMonitor } from './lib/bandwidthMonitor';
@@ -19,35 +18,9 @@ if (env.ENABLE_WORKERS) {
   logger.info('Background workers disabled for this process');
 }
 
-const FALLBACK_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
-const startFallbackSyncTimer = () => {
-  setInterval(async () => {
-    try {
-      const lastSync = await redis.get('sync:lastSync:popularTracks');
-      const daysSinceLastSync = lastSync
-        ? (Date.now() - new Date(lastSync).getTime()) / (1000 * 60 * 60 * 24)
-        : 99;
-
-      if (daysSinceLastSync >= 3) {
-        logger.info({ daysSinceLastSync }, 'Fallback timer: 3+ days since last popular tracks sync, triggering now');
-        await syncPopularTracksQueue.add('sync-popular-tracks', {}, {
-          jobId: `sync-popular-tracks-fallback-${Date.now()}`,
-          removeOnComplete: 100,
-          removeOnFail: 50,
-        });
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Fallback sync check failed');
-    }
-  }, FALLBACK_SYNC_INTERVAL_MS);
-
-  logger.info({ intervalHours: FALLBACK_SYNC_INTERVAL_MS / 3_600_000 }, 'Fallback sync timer started');
-};
-
 const invalidateStaleCaches = async () => {
   try {
-    const patterns = ['catalog:homepage:v*', 'spotify:search:*'];
+    const patterns = ['catalog:homepage:v*'];
     for (const pattern of patterns) {
       const keys = await scanKeys(pattern);
       if (keys.length > 0) {
@@ -160,8 +133,6 @@ const server = app.listen(env.PORT, async () => {
     // Redis, re-registering any that vanished (2.6). Replaces a boot-only check
     // that covered 4 of 14 repeatable jobs and could not repair them.
     startSelfHeal();
-
-    startFallbackSyncTimer();
   }
 
   // Pre-warm homepage cache in background so first user request hits Redis

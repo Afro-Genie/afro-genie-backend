@@ -77,7 +77,7 @@ describe('playback routes', () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.source, 'YOUTUBE');
     assert.equal(res.body.youtubeVideoId, VIDEO_ID);
-    assert.equal(res.body.previewUrl, PREVIEW);
+    assert.ok(!('previewUrl' in res.body), 'no previewUrl field after the Phase 3 removal');
     assert.equal(res.body.song.id, song.id);
   });
 
@@ -96,12 +96,12 @@ describe('playback routes', () => {
   });
 
   test('2.18: a source-tier change evicts the cached answer instead of going stale for 1h', async () => {
-    const song = await createPhase3Song(registry, { audioUrl: null, spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: null, youtubeVideoId: null });
     const key = playbackSourceKey(song.id);
     registry.redisKeys.push(key);
 
     const first = await harness.request('GET', `/api/playback/${song.id}/source`);
-    assert.equal(first.body.source, 'SPOTIFY_PREVIEW');
+    assert.equal(first.body.source, 'NONE');
     assert.ok(await redis.get(key), 'the first read must warm the cache');
 
     // Stand in for the admin/artist audio-upload path: the same
@@ -130,12 +130,13 @@ describe('playback routes', () => {
   });
 
   test('is publicly readable without authentication', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { youtubeVideoId: VIDEO_ID });
     registry.redisKeys.push(playbackSourceKey(song.id));
 
     const res = await harness.request('GET', `/api/playback/${song.id}/source`);
 
     assert.equal(res.status, 200);
+    assert.equal(res.body.source, 'YOUTUBE');
   });
 
   // -------------------------------------------------------------------------
@@ -197,12 +198,12 @@ describe('playback routes', () => {
   });
 
   test('accepts all four documented event types', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: AUDIO });
     registry.redisKeys.push(viewCounterKey(song.id));
 
     for (const eventType of ['play', 'pause', 'skip']) {
       const res = await harness.request('POST', '/api/playback/report', {
-        body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType },
+        body: { songId: song.id, source: 'AUDIO_URL', eventType },
         token: listenerToken,
       });
       assert.equal(res.status, 200, `${eventType} should be accepted`);
@@ -214,14 +215,14 @@ describe('playback routes', () => {
   // -------------------------------------------------------------------------
 
   test('a "play" event records a SongPlay row and increments the Redis view counter', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: AUDIO });
     const viewKey = viewCounterKey(song.id);
     registry.redisKeys.push(viewKey);
 
     const before = await prisma.songPlay.count({ where: { songId: song.id } });
 
     const res = await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play', positionMs: 0 },
+      body: { songId: song.id, source: 'AUDIO_URL', eventType: 'play', positionMs: 0 },
       token: listenerToken,
     });
 
@@ -239,16 +240,16 @@ describe('playback routes', () => {
   });
 
   test('non-"play" events do not record a SongPlay or touch the view counter', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: AUDIO });
     const viewKey = viewCounterKey(song.id);
     registry.redisKeys.push(viewKey);
 
     await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'pause' },
+      body: { songId: song.id, source: 'AUDIO_URL', eventType: 'pause' },
       token: listenerToken,
     });
     await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'skip' },
+      body: { songId: song.id, source: 'AUDIO_URL', eventType: 'skip' },
       token: listenerToken,
     });
 
@@ -332,14 +333,14 @@ describe('playback routes', () => {
     // tests in this file (the counter is keyed on user id and lives in Redis).
     const spammer = await createPhase3User(registry, 'USER');
     const spamToken = tokenFor(spammer.id, spammer.email, 'USER');
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: AUDIO });
     registry.redisKeys.push(viewCounterKey(song.id));
     registry.redisKeys.push(`ratelimit:playback-report:${spammer.id}`);
 
     const statuses: number[] = [];
     for (let i = 0; i < REPORT_RATE_LIMIT + 5; i += 1) {
       const res = await harness.request('POST', '/api/playback/report', {
-        body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play' },
+        body: { songId: song.id, source: 'AUDIO_URL', eventType: 'play' },
         token: spamToken,
       });
       statuses.push(res.status);
@@ -382,12 +383,12 @@ describe('playback routes', () => {
   });
 
   test('2.16: a "play" reporting the served source is accepted', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { audioUrl: AUDIO });
     registry.redisKeys.push(viewCounterKey(song.id));
     registry.redisKeys.push(playbackSourceKey(song.id));
 
     const res = await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play' },
+      body: { songId: song.id, source: 'AUDIO_URL', eventType: 'play' },
       token: listenerToken,
     });
 
@@ -396,19 +397,19 @@ describe('playback routes', () => {
   });
 
   test('2.17 + 2.18: soft-deleting a song evicts its cached source so it stops resolving', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: PREVIEW });
+    const song = await createPhase3Song(registry, { youtubeVideoId: VIDEO_ID });
     const key = playbackSourceKey(song.id);
     registry.redisKeys.push(key);
 
     const first = await harness.request('GET', `/api/playback/${song.id}/source`);
-    assert.equal(first.body.source, 'SPOTIFY_PREVIEW');
+    assert.equal(first.body.source, 'YOUTUBE');
     assert.ok(await redis.get(key));
 
     await softDeleteSong(song.id);
     assert.equal(await redis.get(key), null, 'soft delete must evict the cached source');
 
     const after = await harness.request('GET', `/api/playback/${song.id}/source`);
-    assert.notEqual(after.body.source, 'SPOTIFY_PREVIEW', 'a hidden song must not keep serving its preview');
+    assert.equal(after.status, 404, 'a hidden song must stop resolving a source');
   });
 
   // -------------------------------------------------------------------------

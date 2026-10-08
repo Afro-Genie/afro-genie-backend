@@ -45,6 +45,61 @@ const DEFAULT_TEST_DATABASE_URL = `postgresql://afrogenie:afrogenie@localhost:${
 const DEFAULT_TEST_REDIS_URL = `redis://localhost:${DISPOSABLE_REDIS_PORT}`;
 
 /**
+ * Real third-party credentials that must never be visible to a test run.
+ *
+ * The hazard this closes
+ * ---------------------
+ * `applyTestEnv` only *sets* the keys that `.env.test` declares. dotenv then
+ * loads `.env`, and dotenv does not overwrite a key already present in
+ * `process.env`. That protects every key `.env.test` declares — but it silently
+ * *fails open* for any credential `.env.test` does not mention: `.env` supplies
+ * it and the test process gets the real value.
+ *
+ * That is not hypothetical. Adding a real `YOUTUBE_API_KEY` to `.env` (as the
+ * Phase 2.8 handoff did) was enough to put a live, quota-billing Google key
+ * into every `npm test` run, because `YOUTUBE_API_KEY` is deliberately *absent*
+ * from `.env.test` — see the long note there explaining that a placeholder was
+ * rejected for flipping `isConfigured()` on. Absent meant "not neutralised",
+ * not "empty".
+ *
+ * So a test that stubs `fetch` still passed, masking the leak, while any
+ * enrichment/admin path that did not stub would have issued real metered
+ * requests.
+ *
+ * Why `''` and not `delete`
+ * -------------------------
+ * `delete` runs before `import 'dotenv/config'` in `src/lib/env.ts`, so dotenv
+ * would simply re-add the key from `.env` moments later. Assigning `''` makes the
+ * key *present*, which is precisely what dotenv's no-override rule needs — and
+ * every consumer in this codebase gates on truthiness (`Boolean(env.X)`), so an
+ * empty string reads as "not configured" and takes the short-circuit branch.
+ */
+const THIRD_PARTY_KEYS_NEVER_REAL = [
+  // Metered Google API — the Phase 2.8 key.
+  'YOUTUBE_API_KEY',
+  // LLM providers: billed per token.
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  // Lyrics/metadata providers.
+  'GENIUS_ACCESS_TOKEN',
+  'LASTFM_API_KEY',
+  'LYRICFIND_API_KEY',
+  // Streaming + search.
+  'SPOTIFY_CLIENT_ID',
+  'SPOTIFY_CLIENT_SECRET',
+  'TYPESENSE_API_KEY',
+  // Money. The payment suites stub the provider, but a real secret key must not
+  // be reachable from a test process even if a stub is ever missed.
+  'PAYSTACK_SECRET_KEY',
+  'PAYSTACK_PUBLIC_KEY',
+  // Outbound email — a test must not be able to send real mail.
+  'BREVO_API_KEY',
+  'SMTP_PASS',
+  // OAuth.
+  'GOOGLE_CLIENT_SECRET',
+];
+
+/**
  * True when the caller has asked for test isolation. `NODE_ENV=test` is the
  * only supported switch: it is what the npm scripts set, and it is what CI
  * sets. Nothing else may turn isolation on, so a stray `AFRO_TEST=1` in a
@@ -132,7 +187,27 @@ function applyTestEnv({ env = process.env, cwd = BACKEND_ROOT } = {}) {
     if (env[key] !== value) applied.push(key);
     env[key] = value;
   }
-  return { file, applied, keys: Object.keys(parsed).length };
+
+  // Neutralise every credential that `.env` supplies but `.env.test` does not.
+  // This must happen here, before anything imports dotenv, so that the value
+  // dotenv later reads from `.env` has nowhere to land. See the comment on
+  // THIRD_PARTY_KEYS_NEVER_REAL for why this is `''` rather than a delete.
+  //
+  // A key `.env.test` *does* declare is left alone: those are the deliberate
+  // `test-only-*` placeholders, and some of them (TYPESENSE_API_KEY,
+  // GEMINI_API_KEY) are REQUIRED by the zod schema, so blanking them would turn
+  // a leak fix into a boot failure. Only the undeclared keys — the actual hole —
+  // are forced empty.
+  const neutralised = [];
+  for (const key of THIRD_PARTY_KEYS_NEVER_REAL) {
+    if (Object.hasOwn(parsed, key)) continue;
+    if (env[key] !== '') {
+      neutralised.push(key);
+      env[key] = '';
+    }
+  }
+
+  return { file, applied, neutralised, keys: Object.keys(parsed).length };
 }
 
 /**
@@ -229,6 +304,7 @@ module.exports = {
   DISPOSABLE_PG_PORT,
   DISPOSABLE_REDIS_PORT,
   TEST_ENV_FILE,
+  THIRD_PARTY_KEYS_NEVER_REAL,
   applyTestEnv,
   assertIsolatedTargets,
   hostOf,

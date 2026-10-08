@@ -9,7 +9,7 @@ import { prisma } from '../src/lib/prisma';
 import { redis } from '../src/lib/redis';
 import { env } from '../src/lib/env';
 import { syncQueue, rewardQueue } from '../src/lib/queue';
-import { youtubeService } from '../src/services/youtubeService';
+import { youtubeService, youtubeMatchCacheKey } from '../src/services/youtubeService';
 import { featureFlags } from '../src/config/featureFlags';
 import {
   enqueueLibraryEnrichment,
@@ -84,7 +84,12 @@ const registry: FixtureRegistry = newRegistry();
  */
 const sweepSentinelRedisKeys = async (): Promise<number> => {
   const songScoped = registry.songIds.flatMap((id) => [playbackSourceKey(id), viewCounterKey(id)]);
-  const globs = await redis.keys('youtube:match:p3test-*');
+  // Matches both the pre-Phase-B key format and the versioned v2 one, so a
+  // format change cannot strand sentinel keys in production Redis.
+  const globs = [
+    ...(await redis.keys('youtube:match:p3test-*')),
+    ...(await redis.keys('youtube:match:v2:p3test-*')),
+  ];
   const all = [...new Set([...songScoped, ...globs])];
   if (all.length > 0) await redis.del(...all);
   return all.length;
@@ -113,7 +118,62 @@ interface YouTubeStub {
   videosStatus?: number;
   /** When true, the stubbed request rejects as if the network dropped. */
   networkError?: boolean;
+  /** Phase C — `channels.list` response for the uploads-playlist lookup. */
+  channels?: unknown;
+  /** Phase C — `playlistItems.list` response for the upload walk. */
+  playlistItems?: unknown;
+  channelsStatus?: number;
+  playlistItemsStatus?: number;
 }
+
+/**
+ * Build a stub whose result genuinely matches `(songTitle, artistName)`.
+ *
+ * Phase B means a match now requires the candidate's title and channel to
+ * actually correspond to the song, so every "this should match" test has to
+ * describe a real match rather than an arbitrary payload. This is the one place
+ * that knows how, so the individual tests stay readable.
+ *
+ * `iso` sets the video duration so the duration-drift gate can be exercised;
+ * `omitVideos` simulates a `videos.list` failure.
+ */
+const matchingStub = (
+  videoId: string,
+  songTitle: string,
+  artistName: string,
+  opts: {
+    iso?: string | null;
+    embeddable?: boolean;
+    channelTitle?: string;
+    omitVideos?: boolean;
+    videosStatus?: number;
+  } = {},
+) => ({
+  search: {
+    items: [
+      {
+        id: { videoId },
+        snippet: {
+          title: `${songTitle} (Official Video)`,
+          channelTitle: opts.channelTitle ?? artistName,
+          thumbnails: { high: { url: `https://i.ytimg.com/vi/${videoId}/hq.jpg` } },
+        },
+      },
+    ],
+  },
+  videos: opts.omitVideos
+    ? {}
+    : {
+        items: [
+          {
+            id: videoId,
+            contentDetails: { duration: opts.iso ?? 'PT3M0S' },
+            status: { embeddable: opts.embeddable ?? true },
+          },
+        ],
+      },
+  ...(opts.videosStatus !== undefined ? { videosStatus: opts.videosStatus } : {}),
+});
 
 let stub: YouTubeStub | null = null;
 let youtubeCalls: string[] = [];
@@ -124,20 +184,22 @@ const jsonResponse = (body: unknown, status = 200) => ({
   json: async () => body,
 });
 
-const searchBody = (videoId: string) => ({
-  items: [
-    {
-      id: { videoId },
-      snippet: {
-        title: `Stub title for ${videoId}`,
-        channelTitle: 'Stub Channel',
-        thumbnails: { high: { url: `https://i.ytimg.com/vi/${videoId}/hq.jpg` } },
-      },
-    },
-  ],
+/**
+ * A search response whose single result IS the song being searched for.
+ *
+ * Phase B validates candidates instead of trusting `items[0]`, so a stub whose
+ * title is unrelated to the song no longer matches — correctly. Each test that
+ * expects a match now passes the song's own title and artist, and keeps full
+ * control over the channel title so the `channelTitle` assertions still hold.
+ *
+ * `durationSeconds` rides on `contentDetails` only when `iso` is supplied;
+ * `embeddable` defaults to true because a video the IFrame player cannot embed
+ * is rejected before it is ever scored.
+ */
+/** Duration-only `videos.list` stub body, for tests that only assert the parse. */
+const videosBody = (iso: string, videoId = 'ph4detailsvid1') => ({
+  items: [{ id: videoId, contentDetails: { duration: iso }, status: { embeddable: true } }],
 });
-
-const videosBody = (iso: string) => ({ items: [{ contentDetails: { duration: iso } }] });
 
 const installYouTubeStub = (next: YouTubeStub) => {
   stub = next;
@@ -162,6 +224,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.includes('/videos')) {
     return jsonResponse(stub.videos, stub.videosStatus ?? 200) as unknown as Response;
+  }
+  // Phase C — the cheap enumeration path. Checked before `/search` would match
+  // "playlistItems" containing neither substring, so order is immaterial here.
+  if (url.includes('/channels')) {
+    return jsonResponse(stub.channels ?? {}, stub.channelsStatus ?? 200) as unknown as Response;
+  }
+  if (url.includes('/playlistItems')) {
+    return jsonResponse(stub.playlistItems ?? {}, stub.playlistItemsStatus ?? 200) as unknown as Response;
   }
   throw new Error(`Phase 4 test: unexpected YouTube URL ${url}`);
 }) as typeof globalThis.fetch;
@@ -207,8 +277,15 @@ const pinBudget = async (budget: number): Promise<void> => {
 const runJob = (id: string) =>
   processLibraryEnrichmentJob({ id, data: { type: LIBRARY_ENRICHMENT_JOB_NAME } } as never);
 
-const matchCacheKey = (title: string, artist: string) =>
-  `youtube:match:${title.toLowerCase()}:${artist.toLowerCase()}`;
+/**
+ * The production match-cache key.
+ *
+ * Phase B versioned it to `youtube:match:v2:` so pre-validation entries (which
+ * hold an unvalidated `items[0]` result) are retired rather than served. This
+ * delegates to the service so the two cannot drift — the previous test-local
+ * literal had exactly that problem.
+ */
+const matchCacheKey = (title: string, artist: string) => youtubeMatchCacheKey(title, artist);
 
 const artistNameOf = async (artistId: string): Promise<string> => {
   const artist = await prisma.artist.findUnique({ where: { id: artistId }, select: { name: true } });
@@ -360,13 +437,15 @@ describe('Phase 4.1 — library enrichment success path', () => {
   after(() => restoreFlagState(saved));
 
   test('a successful match persists the video id, stamps it, and evicts the playback cache', async () => {
-    installYouTubeStub({ search: searchBody('ph4successvid1'), videos: videosBody('PT3M20S') });
     const song = await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS });
+    // Phase B: the stub must offer a video that is actually this song. The
+    // fixture duration is 180_000ms, so PT3M0S sits inside the drift gate.
+    installYouTubeStub(matchingStub('ph4successvid1', song.title, await artistNameOf(song.artistId), { iso: 'PT3M0S' }));
     const key = playbackSourceKey(song.id);
     registry.redisKeys.push(key);
-      // Seed a stale Tier 3 answer; a successful match must invalidate it.
+      // Seed a stale playback:source answer; a successful match must invalidate it.
       // Seed WITH a TTL: a bare SET leaves a permanent key behind if the run dies.
-      await redis.set(key, JSON.stringify({ source: 'SPOTIFY_PREVIEW' }), 'EX', 300);
+      await redis.set(key, JSON.stringify({ source: 'AUDIO_URL' }), 'EX', 300);
 
     await pinBudget(1);
     const result = await runJob('p4-success');
@@ -397,7 +476,6 @@ describe('Phase 4.1 — library enrichment success path', () => {
 
   test('the newly matched song immediately resolves to the YOUTUBE tier over HTTP', async () => {
     // End-to-end: the job writes the id, then the playback route serves the new tier.
-    installYouTubeStub({ search: searchBody('ph4e2evid00001'), videos: videosBody('PT4M1S') });
     const harness = await startPhase3Harness();
     try {
       const song = await createPhase3Song(registry, {
@@ -405,12 +483,14 @@ describe('Phase 4.1 — library enrichment success path', () => {
         spotifyPreviewUrl: 'https://p.scdn.co/p4-e2e.mp3',
         views: SAFE_VIEWS,
       });
+      installYouTubeStub(matchingStub('ph4e2evid00001', song.title, await artistNameOf(song.artistId), { iso: 'PT3M0S' }));
       const key = playbackSourceKey(song.id);
       registry.redisKeys.push(key);
 
-      // Warm the cache with the pre-match tier so invalidation is load-bearing.
+      // Warm the cache with the pre-match tier (NONE — no own audio yet), so
+      // invalidation is load-bearing.
       const warm = await harness.request('GET', `/api/playback/${song.id}/source`);
-      assert.equal(warm.body.source, 'SPOTIFY_PREVIEW');
+      assert.equal(warm.body.source, 'NONE');
 
       await pinBudget(1);
       const result = await runJob('p4-e2e');
@@ -420,7 +500,7 @@ describe('Phase 4.1 — library enrichment success path', () => {
       assert.equal(res.status, 200);
       assert.equal(res.body.source, 'YOUTUBE', 'cache eviction must let the new tier win');
       assert.equal(res.body.youtubeVideoId, 'ph4e2evid00001');
-      assert.equal(res.body.previewUrl, 'https://p.scdn.co/p4-e2e.mp3', 'the Tier 3 fallback URL rides along');
+      assert.ok(!('previewUrl' in res.body), 'no previewUrl field after the Phase 3 removal');
     } finally {
       await harness.close();
     }
@@ -455,9 +535,10 @@ describe('Phase 4.1 — library enrichment success path', () => {
   });
 
   test('a duration-lookup failure still yields a usable match, with duration unknown rather than 0 (2.21)', async () => {
-    installYouTubeStub({ search: searchBody('ph4noduration1'), videos: {}, videosStatus: 500 });
     const song = await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS });
-    registry.redisKeys.push(matchCacheKey(song.title, await artistNameOf(song.artistId)));
+    const artist = await artistNameOf(song.artistId);
+    installYouTubeStub(matchingStub('ph4noduration1', song.title, artist, { omitVideos: true, videosStatus: 500 }));
+    registry.redisKeys.push(matchCacheKey(song.title, artist));
 
     await pinBudget(1);
     const result = await runJob('p4-noduration');
@@ -471,16 +552,18 @@ describe('Phase 4.1 — library enrichment success path', () => {
 
     // "Unknown" must not be represented as 0. A 0 is a real value here: YouTube
     // reports `PT0S` for a live stream.
-    const match = await youtubeService.searchMatch('ph4 noduration', 'probe artist');
+    const match = await youtubeService.searchMatch(song.title, artist);
     assert.equal(match?.durationSeconds, null,
       'an unusable duration must stay null, not collapse to 0');
   });
 
   test('each attempt is rate limited (~100ms) so the YouTube quota is not bursted', async () => {
-    installYouTubeStub({ search: searchBody('ph4ratelimit01'), videos: videosBody('PT2M') });
-    await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS });
-    await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS - 1 });
-    await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS - 2 });
+    for (const views of [SAFE_VIEWS, SAFE_VIEWS - 1, SAFE_VIEWS - 2]) {
+      const song = await createPhase3Song(registry, { youtubeVideoId: null, views });
+      installYouTubeStub(
+        matchingStub('ph4ratelimit01', song.title, await artistNameOf(song.artistId), { iso: 'PT3M0S' }),
+      );
+    }
 
     await pinBudget(3);
     const started = Date.now();
@@ -493,8 +576,10 @@ describe('Phase 4.1 — library enrichment success path', () => {
   });
 
   test('a matched song is excluded from the next run (idempotent, no re-work)', async () => {
-    installYouTubeStub({ search: searchBody('ph4idempotent1'), videos: videosBody('PT3M') });
     const song = await createPhase3Song(registry, { youtubeVideoId: null, views: SAFE_VIEWS });
+    installYouTubeStub(
+      matchingStub('ph4idempotent1', song.title, await artistNameOf(song.artistId), { iso: 'PT3M0S' }),
+    );
 
     await pinBudget(1);
     const first = await runJob('p4-idem-1');
@@ -521,8 +606,8 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
 
   test('returns a fully populated match and caches it for 30 days', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ search: searchBody('ph4unitvid001'), videos: videosBody('PT1H2M3S') });
     const title = `Stub Song ${Date.now()}`;
+    installYouTubeStub(matchingStub('ph4unitvid001', title, 'Stub Artist', { iso: 'PT1H2M3S' }));
     const key = matchCacheKey(title, 'Stub Artist');
     registry.redisKeys.push(key);
 
@@ -531,7 +616,7 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
     assert.ok(match, 'a stubbed search + videos response must produce a match');
     assert.equal(match!.videoId, 'ph4unitvid001');
     assert.equal(match!.durationSeconds, 3723);
-    assert.equal(match!.channelTitle, 'Stub Channel');
+    assert.equal(match!.channelTitle, 'Stub Artist');
     assert.equal(match!.thumbnailUrl, 'https://i.ytimg.com/vi/ph4unitvid001/hq.jpg');
 
     const cached = await redis.get(key);
@@ -546,14 +631,16 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
     const title = `Cache Probe ${Date.now()}`;
     const key = matchCacheKey(title, 'Stub Artist');
     registry.redisKeys.push(key);
+    // channelTitle must name the artist: Phase B re-validates cache hits, so an
+    // entry with an unrelated channel would (correctly) be discarded and refetched.
     await redis.set(
       key,
-      JSON.stringify({ videoId: 'cachedvid0001', title, channelTitle: 'C', thumbnailUrl: null, durationSeconds: 10 }),
+      JSON.stringify({ videoId: 'cachedvid0001', title, channelTitle: 'Stub Artist', thumbnailUrl: null, durationSeconds: 10 }),
       'EX',
       600,
     );
 
-    installYouTubeStub({ search: searchBody('shouldnotbeused'), videos: videosBody('PT1M') });
+    installYouTubeStub(matchingStub('shouldnotbeused', title, 'Stub Artist', { iso: 'PT1M' }));
     const match = await youtubeService.searchMatch(title, 'Stub Artist');
 
     assert.equal(match!.videoId, 'cachedvid0001');
@@ -575,11 +662,20 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
 
   test('a snippet with no thumbnails still matches (thumbnailUrl = null)', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({
-      search: { items: [{ id: { videoId: 'nothumb00001' }, snippet: { title: 'No thumbs' } }] },
-      videos: videosBody('PT1M'),
-    });
     const title = `NoThumb Probe ${Date.now()}`;
+    installYouTubeStub({
+      // A snippet with no `channelTitle` at all: the resolver falls back to the
+      // artist it searched for, which is what makes the channel gate pass.
+      search: {
+        items: [
+          {
+            id: { videoId: 'nothumb00001' },
+            snippet: { title: `${title} (Official Audio)` },
+          },
+        ],
+      },
+      videos: videosBody('PT1M', 'nothumb00001'),
+    });
     registry.redisKeys.push(matchCacheKey(title, 'Stub Artist'));
 
     const match = await youtubeService.searchMatch(title, 'Stub Artist');
@@ -600,10 +696,10 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
     assert.ok(youtubeCalls.length >= 1, 'the stub must actually have been hit');
   });
 
-  test('the search request targets the music category with a low result count', async () => {
+  test('the search request targets the music category and asks for a validation-sized window', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ search: searchBody('reqshape00001'), videos: videosBody('PT1M') });
     const title = `Req Shape ${Date.now()}`;
+    installYouTubeStub(matchingStub('reqshape00001', title, 'Stub Artist', { iso: 'PT1M' }));
     registry.redisKeys.push(matchCacheKey(title, 'Stub Artist'));
 
     await youtubeService.searchMatch(title, 'Stub Artist');
@@ -611,7 +707,10 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
     const searchCall = youtubeCalls.find((u) => u.includes('/search'));
     assert.ok(searchCall, `expected a /search call, got ${youtubeCalls.join(' | ')}`);
     assert.match(searchCall!, /videoCategoryId=10/);
-    assert.match(searchCall!, /maxResults=3/);
+    // Phase B widened the window from 3 to 8 so validation has candidates to
+    // choose from when the top hit is a remix. `maxResults` does not change the
+    // per-call quota cost, so this stays free.
+    assert.match(searchCall!, /maxResults=8/);
     assert.match(searchCall!, /part=snippet/);
     assert.match(searchCall!, /type=video/);
     assert.match(searchCall!, /key=REDACTED/, 'the key must be sent, but never logged in the clear');
@@ -619,8 +718,10 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
 
   test('matchSong writes the match for a specific song and returns it', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ search: searchBody('ph4matchsong01'), videos: videosBody('PT2M30S') });
     const song = await createPhase3Song(registry, { youtubeVideoId: null });
+    installYouTubeStub(
+      matchingStub('ph4matchsong01', song.title, await artistNameOf(song.artistId), { iso: 'PT3M0S' }),
+    );
     registry.redisKeys.push(matchCacheKey(song.title, await artistNameOf(song.artistId)));
 
     const match = await youtubeService.matchSong(song.id);
@@ -636,12 +737,299 @@ describe('Phase 4.1 — youtubeService.searchMatch against the stub', () => {
 
   test('matchSong returns null for an unknown song id and writes nothing', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ search: searchBody('neverused00001'), videos: videosBody('PT1M') });
+    installYouTubeStub({
+      search: { items: [] },
+      videos: videosBody('PT1M'),
+    });
 
     const match = await youtubeService.matchSong('p4-no-such-song-id');
 
     assert.equal(match, null);
     assert.equal(youtubeCalls.length, 0, 'no YouTube call may be made for a missing song');
+  });
+});
+
+// ===========================================================================
+// E. Phase C — channel-upload enumeration (the cheap, search-free path)
+// ===========================================================================
+
+describe('Phase C — youtubeService.listArtistUploads', () => {
+  const saved = saveFlagState();
+  after(() => restoreFlagState(saved));
+
+  /**
+   * `channels` always answers for EVERY handle spelling.
+   *
+   * Resolution now probes all spellings and dedupes by uploads playlist id, so a
+   * stub that returned a channel for each one still yields a single walk. That
+   * also means the stub cannot key off the handle the way the old single-handle
+   * stub did.
+   *
+   * `nextPageToken` is one-shot. A stub that kept returning the same token would
+   * make the pagination loop never terminate, since the repeated items dedupe to
+   * zero new candidates — the run would spin until the heap died rather than fail.
+   */
+  const uploadsStub = (items: unknown[], nextPageToken?: string) => {
+    let pagesServed = 0;
+    return {
+      channels: {
+        items: [
+          {
+            snippet: { title: 'Stub Channel' },
+            statistics: { subscriberCount: '1000', videoCount: String(items.length) },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_phasec_uploads' } },
+          },
+        ],
+      },
+      playlistItems: {
+        items,
+        ...(nextPageToken && pagesServed++ === 0 ? { nextPageToken } : {}),
+      },
+      videos: {},
+    };
+  };
+
+  test('resolves the uploads playlist and returns candidates without a search', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub(
+      uploadsStub([
+        {
+          snippet: {
+            title: 'Essence (Official Video)',
+            channelTitle: 'WizkidVEVO',
+            resourceId: { videoId: 'phasecupl001' },
+          },
+        },
+      ]),
+    );
+
+    const candidates = await youtubeService.listArtistUploads('Wizkid', 50);
+
+    assert.equal(candidates?.length, 1);
+    assert.equal(candidates![0].videoId, 'phasecupl001');
+    assert.equal(candidates![0].title, 'Essence (Official Video)');
+    assert.equal(candidates![0].channelTitle, 'WizkidVEVO');
+
+    // The whole point of the path: no search.list unit was spent.
+    assert.equal(
+      youtubeCalls.some((u) => u.includes('/search')),
+      false,
+      `enumeration must not call search, got ${youtubeCalls.join(' | ')}`,
+    );
+    assert.ok(
+      youtubeCalls.some((u) => u.includes('/channels') && u.includes('forHandle=')),
+      `expected a forHandle lookup, got ${youtubeCalls.join(' | ')}`,
+    );
+    assert.ok(
+      youtubeCalls.some((u) => u.includes('/playlistItems') && u.includes('UU_phasec_uploads')),
+      `expected a playlistItems walk, got ${youtubeCalls.join(' | ')}`,
+    );
+  });
+
+  // playlistItems.list carries title but not `status.embeddable`, so the
+  // enumeration path can never satisfy that gate on its own. It has to be
+  // "unknown", not "false" — a false would reject every candidate and the whole
+  // cheap path would silently match nothing.
+  test('leaves embeddable null rather than false, so the gate is not silently failed', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub(
+      uploadsStub([
+        { snippet: { title: 'Any Title', channelTitle: 'X', resourceId: { videoId: 'phasecembed01' } } },
+      ]),
+    );
+
+    const candidates = await youtubeService.listArtistUploads('X', 10);
+
+    assert.equal(candidates![0].embeddable, null);
+    assert.equal(candidates![0].durationSeconds, null);
+  });
+
+  test('follows nextPageToken until the walk completes', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub(
+      uploadsStub(
+        [{ snippet: { title: 'One', channelTitle: 'X', resourceId: { videoId: 'page1vid001' } } }],
+        'NEXT_PAGE_TOKEN',
+      ),
+    );
+
+    await youtubeService.listArtistUploads('X', 100);
+
+    const pageCalls = youtubeCalls.filter((u) => u.includes('/playlistItems'));
+    assert.ok(pageCalls.length >= 2, `expected a second page, got ${pageCalls.join(' | ')}`);
+    assert.ok(
+      pageCalls.some((u) => u.includes('pageToken=NEXT_PAGE_TOKEN')),
+      `expected the token to be forwarded, got ${pageCalls.join(' | ')}`,
+    );
+  });
+
+  // Regression: a server that keeps handing back the same nextPageToken made the
+  // walk loop forever. Every repeated page dedupes to zero new candidates, so the
+  // `fetched < maxItems` guard never trips and the process spins until the heap
+  // dies. This asserts the walk gives up instead.
+  test('a repeated nextPageToken terminates the walk instead of looping', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({
+      channels: {
+        items: [
+          {
+            snippet: { title: 'Stuck Channel' },
+            statistics: { subscriberCount: '10', videoCount: '1' },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_phasec_stuck' } },
+          },
+        ],
+      },
+      // Always the same token, always the same item.
+      playlistItems: {
+        items: [{ snippet: { title: 'Loop', channelTitle: 'X', resourceId: { videoId: 'loopvid00001' } } }],
+        nextPageToken: 'SAME_TOKEN_FOREVER',
+      },
+      videos: {},
+    });
+
+    const candidates = await youtubeService.listArtistUploads('X', 200);
+
+    assert.equal(candidates?.length, 1, 'the single distinct video is kept');
+    const pageCalls = youtubeCalls.filter((u) => u.includes('/playlistItems'));
+    assert.ok(pageCalls.length <= 3, `walk must stop early, issued ${pageCalls.length} page calls`);
+  });
+
+  test('respects maxItems', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub(
+      uploadsStub(
+        Array.from({ length: 50 }, (_, i) => ({
+          snippet: { title: `T${i}`, channelTitle: 'X', resourceId: { videoId: `cap${String(i).padStart(6, '0')}` } },
+        })),
+      ),
+    );
+
+    const candidates = await youtubeService.listArtistUploads('X', 5);
+
+    assert.equal(candidates!.length, 5);
+  });
+
+  // Regression: a name resolves to several real channels, and stopping at the
+// first resolved the wrong one. "@Asake" is a Fortnite streamer with 130 subs;
+// "@AsakeMusic" is ASAKE with 2.18M and 153 uploads. Both resolve, so the walk
+// must union them rather than trust the first hit.
+  test('unions every candidate handle, not just the first that resolves', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({
+      channels: {
+        items: [
+          {
+            id: 'UC_wrong_channel',
+            snippet: { title: 'Asake (gamer)' },
+            statistics: { subscriberCount: '130', videoCount: '5' },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_wrong' } },
+          },
+          {
+            id: 'UC_right_channel',
+            snippet: { title: 'ASAKE' },
+            statistics: { subscriberCount: '2180000', videoCount: '153' },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_right' } },
+          },
+        ],
+      },
+      playlistItems: {
+        items: [
+          { snippet: { title: 'Live Fortnite', channelTitle: 'Asake', resourceId: { videoId: 'wrongvid001' } } },
+          { snippet: { title: '2:30', channelTitle: 'ASAKE', resourceId: { videoId: 'rightvid0001' } } },
+        ],
+      },
+      videos: {},
+    });
+
+    const candidates = await youtubeService.listArtistUploads('Asake', 50);
+
+    const ids = (candidates ?? []).map((c) => c.videoId).sort();
+    assert.deepEqual(ids, ['rightvid0001', 'wrongvid001'], 'both channels must be walked');
+  });
+
+  test('dedupes a video that appears on more than one channel', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({
+      channels: {
+        items: [
+          {
+            id: 'UC_a',
+            snippet: { title: 'A' },
+            statistics: { subscriberCount: '2000', videoCount: '2' },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_a' } },
+          },
+          {
+            id: 'UC_b',
+            snippet: { title: 'B' },
+            statistics: { subscriberCount: '1000', videoCount: '2' },
+            contentDetails: { relatedPlaylists: { uploads: 'UU_b' } },
+          },
+        ],
+      },
+      // Same video id from both playlists, as a VEVO mirror would produce.
+      playlistItems: {
+        items: [{ snippet: { title: 'Shared', channelTitle: 'A', resourceId: { videoId: 'sharedvid01' } } }],
+      },
+      videos: {},
+    });
+
+    const candidates = await youtubeService.listArtistUploads('Shared', 50);
+
+    assert.equal(candidates?.length, 1, 'a mirrored upload must not be counted twice');
+  });
+
+  test('returns null when no handle spelling resolves to a channel', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({ channels: { items: [] }, videos: {} });
+
+    const candidates = await youtubeService.listArtistUploads('Nobody At All', 50);
+
+    assert.equal(candidates, null);
+  });
+
+  test('an API error on channels.list degrades to null instead of throwing', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({ channels: {}, channelsStatus: 403, videos: {} });
+
+    const candidates = await youtubeService.listArtistUploads('Some Artist', 50);
+
+    assert.equal(candidates, null, 'the caller falls back to search, so this must not throw');
+  });
+
+  test('fetchCandidateDetails batches at 50 ids and reports embeddability', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({
+      search: { items: [] },
+      videos: {
+        items: [
+          { id: 'batchvid0001', contentDetails: { duration: 'PT2M30S' }, status: { embeddable: true } },
+          { id: 'batchvid0002', contentDetails: { duration: 'PT3M' }, status: { embeddable: false } },
+        ],
+      },
+    });
+
+    const ids = Array.from({ length: 120 }, (_, i) => `batchvid${String(i).padStart(4, '0')}`);
+    const details = await youtubeService.fetchCandidateDetails(ids);
+
+    assert.equal(details.size, 120, 'every requested id must have an entry');
+    // Unknown for ids the stub did not describe: absent is "not checked".
+    assert.equal(details.get('batchvid0001')!.durationSeconds, 150);
+    assert.equal(details.get('batchvid0001')!.embeddable, true);
+    assert.equal(details.get('batchvid0002')!.embeddable, false);
+    assert.equal(details.get('batchvid0100')!.embeddable, null);
+
+    const videoCalls = youtubeCalls.filter((u) => u.includes('/videos'));
+    assert.equal(videoCalls.length, 3, `120 ids at 50 per call is 3 units, got ${videoCalls.length}`);
+  });
+
+  test('fetchCandidateDetails never throws when the API fails', async () => {
+    env.YOUTUBE_API_KEY = 'phase4-stub-key';
+    installYouTubeStub({ search: { items: [] }, videos: {}, videosStatus: 500 });
+
+    const details = await youtubeService.fetchCandidateDetails(['failingvid1']);
+
+    assert.equal(details.get('failingvid1')!.durationSeconds, null);
+    assert.equal(details.get('failingvid1')!.embeddable, null);
   });
 });
 
@@ -793,15 +1181,22 @@ describe('Phase 4.1 — queue and cron wiring', () => {
     // re-registered as one idempotent group, so the enrichment cron is covered.
     const raw = await readBackendFile('src', 'jobs', 'selfHeal.ts');
     assert.match(raw, /scheduleSyncJobs/);
-    assert.match(raw, /sync-new-releases-biweekly/);
+    assert.match(raw, /library-enrichment-tue-thu/);
 
     const indexRaw = await readBackendFile('src', 'index.ts');
     assert.match(indexRaw, /startSelfHeal\(\)/, 'index.ts must start the self-heal loop');
   });
 
-  test('popular-tracks sync triggers enrichment for the freshly synced songs', async () => {
-    const raw = await readBackendFile('src', 'jobs', 'popularTracksSyncJob.ts');
-    assert.match(raw, /enqueueLibraryEnrichment\(\{ reason: 'post-popular-tracks-sync' \}\)/);
+  test('Phase 4: the Spotify catalog pipeline no longer enqueues enrichment triggers', async () => {
+    // The Spotify popular-tracks sync (and its post-sync enrichment hook) was
+    // removed with the catalog pipeline. Library enrichment is now triggered
+    // only by its own Tue/Thu cron.
+    const cron = await readBackendFile('src', 'jobs', 'syncCron.ts');
+    assert.ok(!/enqueueLibraryEnrichment/.test(cron),
+      'no Spotify-driven enrichment enqueue may remain in the cron module');
+    const queue = await readBackendFile('src', 'lib', 'queue.ts');
+    assert.ok(!/syncPopularTracksQueue/.test(queue),
+      'the syncPopularTracksQueue must be gone from queue.ts');
   });
 
   test('the playback and admin-YouTube routers are mounted in app.ts', async () => {
@@ -857,51 +1252,45 @@ describe('Phase 4.3 — migration checklist coverage (live catalog)', () => {
     return true;
   };
 
-  test('the four playback tiers partition the live catalog exactly', async (t) => {
-    const [total, ownAudio, youtube, preview, none] = await Promise.all([
+  test('the playback source tiers partition the live catalog exactly', async (t) => {
+    const [total, ownAudio, youtube, none] = await Promise.all([
       prisma.song.count({ where: live }),
       prisma.song.count({ where: { ...live, audioUrl: { not: null } } }),
       prisma.song.count({ where: { ...live, youtubeVideoId: { not: null } } }),
       prisma.song.count({
-        where: { ...live, audioUrl: null, youtubeVideoId: null, spotifyPreviewUrl: { not: null } },
-      }),
-      prisma.song.count({
-        where: { ...live, audioUrl: null, youtubeVideoId: null, spotifyPreviewUrl: null },
+        where: { ...live, audioUrl: null, youtubeVideoId: null },
       }),
     ]);
 
     if (skipIfNoLiveCatalog(t, total)) return;
     assert.equal(
-      ownAudio + youtube + preview + none,
+      ownAudio + youtube + none,
       total,
-      'the four tiers must partition the live catalog exactly',
+      'the source tiers must partition the live catalog exactly',
     );
   });
 
   test('FAILS: only a small share of the catalog is playable on any tier', async (t) => {
-    const [total, ownAudio, youtube, preview] = await Promise.all([
+    const [total, ownAudio, youtube] = await Promise.all([
       prisma.song.count({ where: live }),
       prisma.song.count({ where: { ...live, audioUrl: { not: null } } }),
       prisma.song.count({ where: { ...live, youtubeVideoId: { not: null } } }),
-      prisma.song.count({
-        where: { ...live, audioUrl: null, youtubeVideoId: null, spotifyPreviewUrl: { not: null } },
-      }),
     ]);
     if (skipIfNoLiveCatalog(t, total)) return;
 
-    const playable = ownAudio + youtube + preview;
+    const playable = ownAudio + youtube;
     const pct = total === 0 ? 0 : Math.round((playable / total) * 1000) / 10;
     console.log(
-      `[phase4.3] catalog=${total} ownAudio=${ownAudio} youtube=${youtube} spotifyPreview=${preview} ` +
+      `[phase4.3] catalog=${total} ownAudio=${ownAudio} youtube=${youtube} ` +
         `playable=${playable} (${pct}%)`,
     );
 
     assert.ok(
       pct >= 90,
       `FAILS: only ${playable}/${total} songs (${pct}%) are playable on any tier. Checklist items ` +
-        '1-3 ("all songs with youtubeVideoId play via YouTube", "songs with audioUrl play own audio", ' +
-        '"songs with neither play the Spotify 30s preview") cannot pass while spotifyPreviewUrl is ' +
-        'unpopulated and library enrichment has never matched anything.',
+        '1-2 ("all songs with youtubeVideoId play via YouTube", "songs with audioUrl play own audio") ' +
+        'cannot pass while library enrichment has never matched anything. ' +
+        'Songs with neither resolve to NONE since the Spotify preview tier was removed.',
     );
   });
 
@@ -919,22 +1308,8 @@ describe('Phase 4.3 — migration checklist coverage (live catalog)', () => {
     );
   });
 
-  test('FAILS: spotifyPreviewUrl was never backfilled, so the Tier 3 fallback is dead', async (t) => {
-    const withSpotifyId = await prisma.song.count({ where: { ...live, spotifyId: { not: null } } });
-    const withPreview = await prisma.song.count({ where: { ...live, spotifyPreviewUrl: { not: null } } });
-    const total = await prisma.song.count({ where: live });
-    if (skipIfNoLiveCatalog(t, total)) return;
-    console.log(`[phase4.3] spotifyId=${withSpotifyId} spotifyPreviewUrl=${withPreview}`);
-    assert.ok(
-      withPreview > 0,
-      'FAILS: no song has a Spotify preview URL, so every unmatched song falls through to Tier 4 ' +
-        '("unavailable"). Checklist item 3 cannot pass. Root cause is upstream: the Spotify app ' +
-        'is on a non-Premium plan and sync-new-releases jobs are failing with HTTP 403.',
-    );
-  });
-
   test('no song exposes a Spotify Premium requirement in the player UI', async () => {
-    const files = ['components/PlaybackManager.tsx', 'components/YouTubePlayer.tsx', 'components/LegacyPreviewPlayer.tsx'];
+    const files = ['components/PlaybackManager.tsx', 'components/YouTubePlayer.tsx'];
     for (const rel of files) {
       const raw = await readFile(path.join(FRONTEND_ROOT, ...rel.split('/')), 'utf8');
       assert.ok(
@@ -1007,11 +1382,10 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
     const savedFlag = saveFlagState();
     try {
       env.FLAG_PLAYBACK_YOUTUBE = true;
-      for (const source of ['AUDIO_URL', 'YOUTUBE', 'SPOTIFY_PREVIEW', 'NONE'] as const) {
+      for (const source of ['AUDIO_URL', 'YOUTUBE', 'NONE'] as const) {
         const song = await createPhase3Song(registry, {
           audioUrl: source === 'AUDIO_URL' ? 'https://cdn.example/a.mp3' : null,
           youtubeVideoId: source === 'YOUTUBE' ? 'ph4reportvid1' : null,
-          spotifyPreviewUrl: source === 'SPOTIFY_PREVIEW' ? 'https://p.scdn.co/x.mp3' : null,
         });
         registry.redisKeys.push(viewCounterKey(song.id));
 
@@ -1027,7 +1401,7 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
   });
 
   test('a play reported against the wrong tier is rejected (2.16)', async (t) => {
-    // A song with only a Spotify preview resolves to SPOTIFY_PREVIEW, so
+    // A song with only a (now inert) Spotify preview resolves to NONE, so
     // claiming AUDIO_URL is a misattribution and must not be recorded.
     const song = await createPhase3Song(registry, {
       spotifyPreviewUrl: 'https://p.scdn.co/mismatch.mp3',
@@ -1078,11 +1452,11 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
     const key = `daily-listen:${userId}:${dayKey()}`;
     assert.match(key, /^daily-listen:[^:]+:\d{4}-\d{2}-\d{2}$/);
 
-    // A second tier reporting the same day must reuse the same key, which is
+    // A second event reporting the same day must reuse the same key, which is
     // what makes the ledger's unique constraint collapse the duplicates.
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: 'https://p.scdn.co/dup.mp3' });
+    const song = await createPhase3Song(registry, { youtubeVideoId: 'ph4dupvid1' });
     await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'complete' },
+      body: { songId: song.id, source: 'YOUTUBE', eventType: 'complete' },
       token: listenerToken,
     });
 
@@ -1103,7 +1477,8 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
   });
 
   test('BUG (documented): a report can inflate a view count without any limit', async () => {
-    const song = await createPhase3Song(registry, { spotifyPreviewUrl: 'https://p.scdn.co/x.mp3' });
+    // Tier 1 audio so the accepted report does not depend on the YouTube flag.
+    const song = await createPhase3Song(registry, { audioUrl: 'https://cdn.example/a.mp3' });
     const key = viewCounterKey(song.id);
     registry.redisKeys.push(key);
     await redis.del(key);
@@ -1111,7 +1486,7 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
     const statuses: number[] = [];
     for (let i = 0; i < 10; i += 1) {
       const res = await harness.request('POST', '/api/playback/report', {
-        body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play' },
+        body: { songId: song.id, source: 'AUDIO_URL', eventType: 'play' },
         token: listenerToken,
       });
       statuses.push(res.status);
@@ -1138,6 +1513,8 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
     // the song with `incrementViewCount: false`.
     const { getSongById } = await import('../src/services/songService.js');
 
+    // Preview-only song: audioUrl is null (so isSongActive passes), yet it
+    // resolves to NONE — a valid report source that needs no YouTube flag.
     const song = await createPhase3Song(registry, { spotifyPreviewUrl: 'https://p.scdn.co/dbl.mp3' });
     const key = viewCounterKey(song.id);
     registry.redisKeys.push(key);
@@ -1151,7 +1528,7 @@ describe('Phase 4.3 — playback reporting across tiers', () => {
 
     // Step 2: the Phase 4 playback report for the same play.
     const res = await harness.request('POST', '/api/playback/report', {
-      body: { songId: song.id, source: 'SPOTIFY_PREVIEW', eventType: 'play' },
+      body: { songId: song.id, source: 'NONE', eventType: 'play' },
       token: listenerToken,
     });
     assert.equal(res.status, 200);

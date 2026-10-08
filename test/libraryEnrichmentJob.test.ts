@@ -222,7 +222,7 @@ describe('libraryEnrichmentJob — daily budget', () => {
     const song = await createPhase3Song(registry, { youtubeVideoId: null, spotifyPreviewUrl: 'https://p.scdn.co/x.mp3' });
     const key = playbackSourceKey(song.id);
     registry.redisKeys.push(key);
-    await redis.set(key, JSON.stringify({ source: 'SPOTIFY_PREVIEW' }));
+    await redis.set(key, JSON.stringify({ source: 'AUDIO_URL' }));
 
     await withCounterSnapshot(async () => {
       await budgetFor(1);

@@ -18,7 +18,7 @@ npm run docs:api:generate
 Optionally override the staging server URL in the generated spec:
 
 ```bash
-OPENAPI_STAGING_SERVER_URL="https://afro-genie-backend-staging-production.up.railway.app/api" npm run docs:api:generate
+OPENAPI_STAGING_SERVER_URL="https://afro-genie-backend-production.up.railway.app/api" npm run docs:api:generate
 ```
 
 ## Local preview
@@ -30,7 +30,7 @@ Open `docs/api-docs/index.html` in a browser after generation.
 3. Build Command:
 
 ```bash
-cd ../.. && OPENAPI_STAGING_SERVER_URL="https://afro-genie-backend-staging-production.up.railway.app/api" npm run docs:api:generate
+cd ../.. && OPENAPI_STAGING_SERVER_URL="https://afro-genie-backend-production.up.railway.app/api" npm run docs:api:generate
 ```
 
 4. Output Directory: `.`

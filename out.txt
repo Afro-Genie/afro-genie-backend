@@ -1,0 +1,1105 @@
+[run-tests] allowlisted (proven DB-free): test/phase6WorkerOptimization.test.ts — these are now redundant under .env.test isolation and can be retired from ALLOWLIST
+[run-tests] node --import ./scripts/load-test-env.cjs --import ./scripts/assert-safe-tests.cjs --import tsx --test --test-concurrency=1 --test-force-exit test\adminFeatureFlags.test.ts test\leaderboardService.test.ts test\libraryEnrichmentJob.test.ts test\passService.test.ts test\paymentService.test.ts test\paymentsWebhook.test.ts test\phase4PlaybackRollout.test.ts test\phase5ChallengeAndEconomy.tierA.test.ts test\phase5ChallengeAndEconomy.tierB.test.ts test\phase6WorkerOptimization.test.ts test\playbackKillSwitch.test.ts test\playbackRoutes.test.ts test\reconciliationJob.test.ts test\referralService.test.ts test\rewardJobResilience.test.ts test\seasonService.test.ts test\secretScan.test.ts test\stage6DeadLetterAndTestAccounts.test.ts test\stage7Isolation.test.ts test\storeService.test.ts test\streakService.test.ts test\tierService.test.ts test\tokenService.test.ts test\youtubeMatchValidation.test.ts test\youtubeService.test.ts
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ GET /api/admin/feature-flags (2.4)
+  ✔ rejects an unauthenticated request with 401 (45.0167ms)
+  ✔ rejects an ordinary authenticated user with 403 (12.0048ms)
+  ✔ rejects a garbage bearer token with 401 (6.1219ms)
+  ✔ lets an ADMIN through and reports every flag (7.9079ms)
+  ✔ reports the effective flag value, tracking a change made after boot (14.4302ms)
+  ✔ agrees with the flag the playback resolver enforces, right now (13.0352ms)
+  ✔ reports configuration presence as booleans and never leaks a secret value (8.0759ms)
+  ✔ reports absent configuration as false without erroring (4.9324ms)
+  ✔ is read-only: no flag is mutated by reading (7.094ms)
+  ✔ does not accept a write that would flip a flag from outside the process (42.2301ms)
+✔ GET /api/admin/feature-flags (2.4) (565.6674ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ leaderboardService
+  ✔ period guards reject invalid values (1.3784ms)
+  ✔ token scope sums EARN rows and ranks by total (178.3818ms)
+  ✔ period filters constrain the window (21.283ms)
+  ✔ quality scope ranks APPROVED translation counts (40.6365ms)
+  ✔ limit is clamped to 1..200 (21.939ms)
+✔ leaderboardService (753.7438ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ libraryEnrichmentJob — rollout guards
+  ✔ dayKey produces a sortable UTC calendar day (2.0853ms)
+{"level":30,"time":1791455489589,"service":"afro-genie-server","status":"flag_disabled","reason":"p3-test","msg":"Library enrichment not queued"}
+  ✔ enqueue is refused while the rollout flag is off (72.1868ms)
+{"level":30,"time":1791455489595,"service":"afro-genie-server","status":"not_configured","reason":"p3-test","msg":"Library enrichment not queued"}
+{"level":30,"time":1791455489599,"service":"afro-genie-server","jobId":"p3-test-flag-off","status":"flag_disabled","msg":"Library enrichment skipped"}
+  ✔ enqueue is refused when the flag is on but no API key exists (4.983ms)
+  ✔ the processor skips cleanly while the rollout flag is off (1.6507ms)
+  ✔ the processor skips cleanly when the API key is missing (0.4919ms)
+  ✔ job ids are day-scoped so repeated triggers collapse into one job (0.3634ms)
+✔ libraryEnrichmentJob — rollout guards (83.7185ms)
+{"level":30,"time":1791455489600,"service":"afro-genie-server","jobId":"p3-test-no-key","status":"not_configured","msg":"Library enrichment skipped"}
+{"level":30,"time":1791455490079,"service":"afro-genie-server","jobId":"p3-test-capped","dayKey":"2026-10-08","dailyProcessed":99,"dailyCap":99,"msg":"Library enrichment daily cap already reached"}
+▶ libraryEnrichmentJob — daily budget
+  ✔ the job is a no-op once the daily cap is exhausted (495.0631ms)
+{"level":40,"time":1791455491379,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455491379,"service":"afro-genie-server","songId":"cmuzeceti0001kg13nt5pw6h2","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":40,"time":1791455491764,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455491765,"service":"afro-genie-server","songId":"cmuzecevn0003kg13uwfk3ur5","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":40,"time":1791455492073,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455492074,"service":"afro-genie-server","songId":"cmuzecevz0005kg13mzhkh9ei","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":20,"time":1791455492185,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async <anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:183:22)\n    at async withCounterSnapshot (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:50:12)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:181:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p3-test-partial","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455492226,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455492227,"service":"afro-genie-server","jobId":"p3-test-partial","remainingSongs":4,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455492227,"service":"afro-genie-server","jobId":"p3-test-partial","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":3,"attempted":3,"matched":0,"failed":3,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+  ✔ the budget is DAILY_CAP minus what the shared counter already spent (2142.0383ms)
+{"level":40,"time":1791455492496,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455492496,"service":"afro-genie-server","songId":"cmuzecevn0003kg13uwfk3ur5","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":40,"time":1791455492892,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455492892,"service":"afro-genie-server","songId":"cmuzeceti0001kg13nt5pw6h2","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":20,"time":1791455493006,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async <anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:203:22)\n    at async withCounterSnapshot (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:50:12)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:201:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p3-test-counter","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455493015,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455493015,"service":"afro-genie-server","jobId":"p3-test-counter","remainingSongs":6,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455493015,"service":"afro-genie-server","jobId":"p3-test-counter","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":2,"attempted":2,"matched":0,"failed":2,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+  ✔ every attempted song advances the shared counter and the counter expires (770.5709ms)
+{"level":40,"time":1791455493301,"service":"afro-genie-server","status":400,"msg":"YouTube search failed"}
+{"level":40,"time":1791455493301,"service":"afro-genie-server","songId":"cmuzeceti0001kg13nt5pw6h2","reason":"http_400","retryable":false,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":20,"time":1791455493413,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async <anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:229:22)\n    at async withCounterSnapshot (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:50:12)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\libraryEnrichmentJob.test.ts:227:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p3-test-cache","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455493427,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455493427,"service":"afro-genie-server","jobId":"p3-test-cache","remainingSongs":7,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455493427,"service":"afro-genie-server","jobId":"p3-test-cache","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":0,"failed":1,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+  ✔ a failed match never invalidates the playback source cache (403.152ms)
+{"level":30,"time":1791455493447,"service":"afro-genie-server","jobId":"p3-test-nokey-budget","status":"not_configured","msg":"Library enrichment skipped"}
+  ✔ an unconfigured API key burns no budget at all (21.5958ms)
+✔ libraryEnrichmentJob — daily budget (3852.9245ms)
+▶ libraryEnrichmentJob — YouTube quota budget
+  ✔ DAILY_CAP is pinned to the free-tier maximum, not just under it (0.3948ms)
+  ✔ the daily cap fits inside the free-tier YouTube quota (0.2023ms)
+  ✔ the catalog is larger than one day of free quota, so the backfill needs multiple days (0.1628ms)
+✔ libraryEnrichmentJob — YouTube quota budget (1.0321ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ pass catalog
+  ✔ every purchasable type has a cost, a label and a credit count (1.4911ms)
+  ✔ isPassType rejects anything not in the catalog (0.7092ms)
+  ✔ the catalog costs match the reward config exactly (0.6005ms)
+✔ pass catalog (5.1506ms)
+{"level":30,"time":1791455495418,"service":"afro-genie-server","userId":"cmuzeciq00000s0131stsvzp5","passId":"cmuzecix80003s013os068i2v","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+▶ purchasePass
+  ✔ a 7-day premium pass debits GT and activates the pass (610.3295ms)
+{"level":30,"time":1791455495536,"service":"afro-genie-server","userId":"cmuzecizk0005s013i4cu7ts9","passId":"cmuzecj0p0008s0131ncnu7ez","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ a 7-day pass expires in seven days (83.8178ms)
+{"level":30,"time":1791455495614,"service":"afro-genie-server","userId":"cmuzecj1t000as013ufv8wycm","passId":"cmuzecj2l000ds013ks1qmyhg","passType":"TRANSLATION_PACK_10","gtCost":50,"credits":10,"msg":"Premium pass purchased"}
+  ✔ a translation pack grants its credits and is NOT returned as an active premium pass (107.888ms)
+{"level":30,"time":1791455495713,"service":"afro-genie-server","userId":"cmuzecj4t000fs013gjz0z4hs","passId":"cmuzecj5o000is013yx149d1r","passType":"TRANSLATION_PACK_10","gtCost":50,"credits":10,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455495740,"service":"afro-genie-server","userId":"cmuzecj4t000fs013gjz0z4hs","passId":"cmuzecj6u000ks013fs7f6xp1","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ a premium pass bought after a pack still resolves as the active premium (98.6614ms)
+{"level":30,"time":1791455495797,"service":"afro-genie-server","userId":"cmuzecj7k000ms013vj2ob0ld","passId":"cmuzecj8a000ps013zvc9octa","passType":"TRANSLATION_PACK_50","gtCost":200,"credits":50,"msg":"Premium pass purchased"}
+  ✔ the 50-credit pack grants 50 credits (60.7498ms)
+{"level":30,"time":1791455495981,"service":"afro-genie-server","userId":"cmuzecj99000rs013rrnkbgdk","passId":"cmuzecj9s000us013tlxq5g1l","passType":"TRANSLATION_PACK_10","gtCost":50,"credits":10,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496020,"service":"afro-genie-server","userId":"cmuzecj99000rs013rrnkbgdk","passId":"cmuzecje5000ws013ca5rjcr8","passType":"TRANSLATION_PACK_10","gtCost":50,"credits":10,"msg":"Premium pass purchased"}
+  ✔ packs stack with an existing balance of credits (216.5614ms)
+  ✔ rejects an unknown pass type with 400 (29.5406ms)
+  ✔ a rejected unknown type costs no GT and leaves no pass row (41.3421ms)
+  ✔ an insufficient balance is refused and leaves no orphaned pass row (48.0309ms)
+  ✔ a zero-balance user cannot buy anything (22.2679ms)
+{"level":30,"time":1791455496204,"service":"afro-genie-server","userId":"cmuzecjj6001bs0134roe5uvm","passId":"cmuzecjjt001es01392k57wgp","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496236,"service":"afro-genie-server","userId":"cmuzecjj6001bs0134roe5uvm","passId":"cmuzecjkc001gs013ezzfokad","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ buying two passes debits twice and creates two rows (79.0636ms)
+{"level":30,"time":1791455496314,"service":"afro-genie-server","userId":"cmuzecjle001is013vft7hmup","passId":"cmuzecjm5001ls013378nxwm4","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ concurrent purchases cannot overspend the balance (128.0248ms)
+{"level":30,"time":1791455496442,"service":"afro-genie-server","userId":"cmuzecjoy001ps013shy9eyy7","passId":"cmuzecjq4001ss013et2yxo09","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496470,"service":"afro-genie-server","userId":"cmuzecjoy001ps013shy9eyy7","passId":"cmuzecjqz001us01349rpnqst","passType":"TRANSLATION_PACK_10","gtCost":50,"credits":10,"msg":"Premium pass purchased"}
+  ✔ the ledger stays reconciled after a purchase (wallet == sum of ledger) (110.6551ms)
+✔ purchasePass (1639.0848ms)
+{"level":30,"time":1791455496561,"service":"afro-genie-server","userId":"cmuzecjs1001ws0136gw8tyu6","passId":"cmuzecjsw001zs013v5bjtfdb","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+▶ pass expiry and renewal
+  ✔ getActivePass ignores an expired-but-still-flagged-active pass (90.3355ms)
+{"level":30,"time":1791455496647,"service":"afro-genie-server","userId":"cmuzecjuk0021s013lwolbz89","passId":"cmuzecjvx0027s013t6udpty9","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496675,"service":"afro-genie-server","userId":"cmuzecjuk0021s013lwolbz89","passId":"cmuzecjwo0029s0131r0xidkb","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496715,"service":"afro-genie-server","userId":"cmuzecjvd0024s013lr8iq214","passId":"cmuzecjxg002bs013iribcdl9","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496742,"service":"afro-genie-server","revoked":2,"msg":"Expired premium passes revoked"}
+  ✔ revokeExpiredPasses deactivates only the expired rows (177.9037ms)
+{"level":30,"time":1791455496822,"service":"afro-genie-server","userId":"cmuzecjzi002ds013ctz1mb03","passId":"cmuzeck0d002gs013b3fza90e","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455496832,"service":"afro-genie-server","revoked":1,"msg":"Expired premium passes revoked"}
+  ✔ revokeExpiredPasses is idempotent (98.5069ms)
+{"level":30,"time":1791455496983,"service":"afro-genie-server","userId":"cmuzeck29002is013hz90ehwz","passId":"cmuzeck4j002ls013a6lghv42","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455497008,"service":"afro-genie-server","revoked":1,"msg":"Expired premium passes revoked"}
+  ✔ expiry never refunds GT (a pass is consumed, not returned) (172.3737ms)
+{"level":30,"time":1791455497134,"service":"afro-genie-server","userId":"cmuzeck71002ns013ixhhxqr2","passId":"cmuzeck8g002qs0133rpa7417","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455497145,"service":"afro-genie-server","revoked":1,"msg":"Expired premium passes revoked"}
+{"level":30,"time":1791455497183,"service":"afro-genie-server","userId":"cmuzeck71002ns013ixhhxqr2","passId":"cmuzeckai002ss0137dh494pm","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ renewing after expiry costs GT again and does not resurrect the old row (170.4099ms)
+{"level":30,"time":1791455497266,"service":"afro-genie-server","userId":"cmuzeckbr002us013vmisxwm9","passId":"cmuzeckcw002xs013ibs62yh2","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455497285,"service":"afro-genie-server","userId":"cmuzeckbr002us013vmisxwm9","passId":"cmuzeckdu002zs0138smn71uz","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ renewing before expiry stacks a second pass row and both count as active (99.1507ms)
+{"level":30,"time":1791455497344,"service":"afro-genie-server","userId":"cmuzeckei0031s0136epk6edm","passId":"cmuzeckf70034s013lk3wl5fz","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455497367,"service":"afro-genie-server","userId":"cmuzeckei0031s0136epk6edm","passId":"cmuzeckg00036s013zwxtkqlg","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ getActivePass returns the furthest-expiry pass when several overlap (90.6157ms)
+  ✔ a user with no passes gets null, not an error (28.1011ms)
+{"level":30,"time":1791455497494,"service":"afro-genie-server","userId":"cmuzeckht003bs013vw14rwdc","passId":"cmuzeckjh003hs01329w945sk","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+{"level":30,"time":1791455497518,"service":"afro-genie-server","userId":"cmuzeckid003es013fkt0uhtd","passId":"cmuzeckk6003js013f9vkimfk","passType":"SEVEN_DAY_PREMIUM","gtCost":200,"credits":0,"msg":"Premium pass purchased"}
+  ✔ listPasses is scoped to the caller (111.2091ms)
+✔ pass expiry and renewal (1039.5939ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ initializePayment
+  ✔ rejects an unknown bundle with 404 and never calls Paystack (382.5902ms)
+  ✔ rejects an inactive bundle with 404 (18.1356ms)
+  ✔ rejects a user without a verifiable email with 400 (22.2146ms)
+  ✔ returns 503 PAYMENTS_NOT_CONFIGURED when no secret key is present (96.2227ms)
+{"level":30,"time":1791455499455,"service":"afro-genie-server","userId":"cmuzecm1s0007jc13r0vqavq7","purchaseId":"cmuzecm2c0009jc13kzbwmywp","bundleId":"cmuzecm1w0008jc13hqjcnryn","gtAmount":250,"msg":"GT purchase initialized"}
+  ✔ creates a purchase keyed by its own id and returns checkout data (37.7338ms)
+{"level":30,"time":1791455499482,"service":"afro-genie-server","userId":"cmuzecm2u000ajc13hbvd6mcd","purchaseId":"cmuzecm38000cjc13d1sfkwz2","bundleId":"cmuzecm31000bjc132usncthi","gtAmount":125,"msg":"GT purchase initialized"}
+  ✔ sends the bundle price and email to Paystack, including the bonus (21.4168ms)
+{"level":30,"time":1791455499508,"service":"afro-genie-server","userId":"cmuzecm3g000djc13cmpd9o1h","purchaseId":"cmuzecm3y000fjc13btn9rxwz","bundleId":"cmuzecm3o000ejc13yowuxcb8","gtAmount":100,"msg":"GT purchase initialized"}
+  ✔ omits callback_url when none is configured, so Paystack uses the dashboard default (25.9846ms)
+{"level":30,"time":1791455499536,"service":"afro-genie-server","userId":"cmuzecm46000gjc13vmcqdkit","purchaseId":"cmuzecm4q000ijc13fi2tkh8s","bundleId":"cmuzecm4c000hjc13ut33xtac","gtAmount":100,"msg":"GT purchase initialized"}
+  ✔ sends the configured callback_url to Paystack (27.1332ms)
+{"level":50,"time":1791455499552,"service":"afro-genie-server","path":"/transaction/initialize","statusCode":500,"message":"stub","msg":"Paystack request failed"}
+  ✔ marks the purchase FAILED when the provider errors, and writes no ledger row (26.8714ms)
+{"level":50,"time":1791455499575,"service":"afro-genie-server","err":{"type":"TypeError","message":"fetch failed: getaddrinfo ENOTFOUND api.paystack.co","stack":"TypeError: fetch failed: getaddrinfo ENOTFOUND api.paystack.co\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\paymentService.test.ts:198:28)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"path":"/transaction/initialize","msg":"Paystack request error"}
+  ✔ surfaces provider unreachability as 502 without a stack trace in the message (18.2689ms)
+{"level":50,"time":1791455499608,"service":"afro-genie-server","path":"/transaction/initialize","statusCode":200,"message":"stub","msg":"Paystack request failed"}
+  ✔ rejects an invalid (status:false) provider payload as 502 (31.6664ms)
+{"level":50,"time":1791455499638,"service":"afro-genie-server","path":"/transaction/initialize","statusCode":200,"msg":"Paystack request failed"}
+  ✔ rejects a payload with no data object as 502 (33.4191ms)
+✔ initializePayment (745.6897ms)
+{"level":30,"time":1791455499676,"service":"afro-genie-server","userId":"cmuzecm82000vjc13phy4j81y","purchaseId":"cmuzecm8k000xjc13p56f7fji","bundleId":"cmuzecm89000wjc139aorcloq","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455499792,"service":"afro-genie-server","purchaseId":"cmuzecm8k000xjc13p56f7fji","userId":"cmuzecm82000vjc13phy4j81y","gtAmount":100,"msg":"GT purchase credited"}
+▶ verifyPayment — task 1.8 double-entry
+  ✔ credits GT exactly once and leaves wallet and ledger reconciled (175.1209ms)
+{"level":30,"time":1791455499862,"service":"afro-genie-server","userId":"cmuzecmcw0011jc13qydtr68j","purchaseId":"cmuzecmdj0013jc13gs2nlx4j","bundleId":"cmuzecmd50012jc13isv3cgzk","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455499937,"service":"afro-genie-server","purchaseId":"cmuzecmdj0013jc13gs2nlx4j","userId":"cmuzecmcw0011jc13qydtr68j","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ second verify does not double-credit (client verify + webhook race) (139.0342ms)
+{"level":30,"time":1791455499998,"service":"afro-genie-server","userId":"cmuzecmgs0017jc13t98wipaj","purchaseId":"cmuzecmhg0019jc13qrcywgdy","bundleId":"cmuzecmgz0018jc13bqx2swwb","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500060,"service":"afro-genie-server","purchaseId":"cmuzecmhg0019jc13qrcywgdy","userId":"cmuzecmgs0017jc13t98wipaj","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455500071,"service":"afro-genie-server","purchaseId":"cmuzecmhg0019jc13qrcywgdy","userId":"cmuzecmgs0017jc13t98wipaj","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455500074,"service":"afro-genie-server","purchaseId":"cmuzecmhg0019jc13qrcywgdy","userId":"cmuzecmgs0017jc13t98wipaj","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ concurrent verifies credit exactly once (117.0437ms)
+{"level":30,"time":1791455500109,"service":"afro-genie-server","userId":"cmuzecmk0001fjc1357m6oxjd","purchaseId":"cmuzecmkh001hjc13m6n4wtp8","bundleId":"cmuzecmk4001gjc13ov44yt1r","gtAmount":100,"msg":"GT purchase initialized"}
+  ✔ a failed transaction writes no ledger row and no wallet (44.6907ms)
+{"level":30,"time":1791455500224,"service":"afro-genie-server","userId":"cmuzecmli001ijc13csd95mx1","purchaseId":"cmuzecmnk001kjc138em2iufn","bundleId":"cmuzecmmx001jjc13erskq91w","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500229,"service":"afro-genie-server","purchaseId":"cmuzecmnk001kjc138em2iufn","expectedAmountKobo":200000,"receivedAmount":199999,"expectedCurrency":"NGN","receivedCurrency":"NGN","msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+  ✔ a short payment is refused: no GT credited even though Paystack says success (128.9687ms)
+{"level":30,"time":1791455500272,"service":"afro-genie-server","userId":"cmuzecmou001ljc13my133u6l","purchaseId":"cmuzecmp4001njc13aeythi7e","bundleId":"cmuzecmoy001mjc13r70zmpgf","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500276,"service":"afro-genie-server","purchaseId":"cmuzecmp4001njc13aeythi7e","expectedAmountKobo":200000,"expectedCurrency":"NGN","receivedCurrency":"NGN","msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+  ✔ a missing amount is refused rather than silently trusted (30.9143ms)
+{"level":30,"time":1791455500301,"service":"afro-genie-server","userId":"cmuzecmpp001ojc13tcaqb18c","purchaseId":"cmuzecmpz001qjc13w7u7iag5","bundleId":"cmuzecmps001pjc13qfd8dmqg","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500308,"service":"afro-genie-server","purchaseId":"cmuzecmpz001qjc13w7u7iag5","expectedAmountKobo":200000,"receivedAmount":"200000","expectedCurrency":"NGN","receivedCurrency":"NGN","msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+  ✔ a non-numeric amount string is refused rather than coerced (30.9468ms)
+{"level":30,"time":1791455500340,"service":"afro-genie-server","userId":"cmuzecmql001rjc13ria4supg","purchaseId":"cmuzecmr4001tjc13bwlpvs4x","bundleId":"cmuzecmqw001sjc135n8no9em","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500344,"service":"afro-genie-server","purchaseId":"cmuzecmr4001tjc13bwlpvs4x","expectedAmountKobo":200000,"receivedAmount":200000,"expectedCurrency":"NGN","receivedCurrency":null,"msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+  ✔ a missing currency is refused (39.8231ms)
+{"level":30,"time":1791455500379,"service":"afro-genie-server","userId":"cmuzecmro001ujc130o8x8ts5","purchaseId":"cmuzecms3001wjc13o823lur7","bundleId":"cmuzecmrs001vjc13gjskzvz2","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500382,"service":"afro-genie-server","purchaseId":"cmuzecms3001wjc13o823lur7","expectedAmountKobo":200000,"receivedAmount":200000,"expectedCurrency":"NGN","receivedCurrency":"USD","msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+  ✔ the right amount in the wrong currency is refused (34.7472ms)
+{"level":30,"time":1791455500411,"service":"afro-genie-server","userId":"cmuzecmsn001xjc13fno4ru2a","purchaseId":"cmuzecmsz001zjc1312wulmyx","bundleId":"cmuzecmsq001yjc13ifist8jc","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500444,"service":"afro-genie-server","purchaseId":"cmuzecmsz001zjc1312wulmyx","userId":"cmuzecmsn001xjc13fno4ru2a","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ overpaying in the right currency is still credited (55.4242ms)
+{"level":30,"time":1791455500466,"service":"afro-genie-server","userId":"cmuzecmu70023jc13hs3cjugo","purchaseId":"cmuzecmuh0025jc130lis3h62","bundleId":"cmuzecmu90024jc13vh5mqgi5","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455500469,"service":"afro-genie-server","err":{"type":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\paymentService.test.ts:392:24)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"path":"/transaction/verify/cmuzecmuh0025jc130lis3h62","msg":"Paystack request error"}
+  ✔ a provider outage during verify leaves the purchase untouched and uncredited (29.3851ms)
+  ✔ an unknown reference is a 404 (3.1919ms)
+{"level":30,"time":1791455500496,"service":"afro-genie-server","userId":"cmuzecmv30026jc13b0rtfoxf","purchaseId":"cmuzecmve0028jc135jqhqo0o","bundleId":"cmuzecmv60027jc13mtewqn7x","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500543,"service":"afro-genie-server","purchaseId":"cmuzecmve0028jc135jqhqo0o","userId":"cmuzecmv30026jc13b0rtfoxf","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ a user cannot be credited for someone else’s purchase reference (66.8403ms)
+{"level":30,"time":1791455500562,"service":"afro-genie-server","userId":"cmuzecmwy002cjc13parchnkn","purchaseId":"cmuzecmxa002ejc13p93zjpgp","bundleId":"cmuzecmx3002djc13rnwuhq1e","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500573,"service":"afro-genie-server","userId":"cmuzecmxe002fjc13miz4majl","purchaseId":"cmuzecmxl002hjc13ra0xmap0","bundleId":"cmuzecmxg002gjc13wjokiptb","gtAmount":50,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500596,"service":"afro-genie-server","purchaseId":"cmuzecmxa002ejc13p93zjpgp","userId":"cmuzecmwy002cjc13parchnkn","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ wallet balance always equals the sum of the ledger (reconciliation invariant) (64.1682ms)
+✔ verifyPayment — task 1.8 double-entry (962.0944ms)
+{"level":30,"time":1791455500630,"service":"afro-genie-server","userId":"cmuzecmyr002ljc131ujbh5jo","purchaseId":"cmuzecmz6002njc1384npqq9v","bundleId":"cmuzecmyz002mjc13ebwthzc6","gtAmount":100,"msg":"GT purchase initialized"}
+▶ handleWebhook
+  ✔ ignores non charge.success events (22.7589ms)
+  ✔ ignores an event with no reference (0.3411ms)
+{"level":50,"time":1791455500637,"service":"afro-genie-server","err":{"type":"ApiError","message":"Purchase not found","stack":"Error: Purchase not found\n    at verifyPayment (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\paymentService.ts:200:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async handleWebhook (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\paymentService.ts:336:5)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\paymentService.test.ts:469:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)","code":"NOT_FOUND","status":404},"reference":"unknown-ref","msg":"Paystack webhook handling failed"}
+  ✔ never throws on a bad reference (Paystack must not retry forever) (5.4265ms)
+{"level":30,"time":1791455500655,"service":"afro-genie-server","userId":"cmuzecmzk002ojc1373r0fhn7","purchaseId":"cmuzecmzu002qjc13ro4paix4","bundleId":"cmuzecmzo002pjc13d2m90c0q","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455500676,"service":"afro-genie-server","purchaseId":"cmuzecmzu002qjc13ro4paix4","userId":"cmuzecmzk002ojc1373r0fhn7","gtAmount":100,"msg":"GT purchase credited"}
+  ✔ a webhook replay cannot double-credit (59.3443ms)
+✔ handleWebhook (88.3052ms)
+▶ getPurchaseHistory
+  ✔ is scoped to the caller and paginates (27.1379ms)
+  ✔ clamps out-of-range pagination instead of erroring (7.4634ms)
+✔ getPurchaseHistory (34.813ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ POST /api/payments/webhook — signature
+  ✔ accepts a correctly signed charge.success and credits GT (635.6238ms)
+  ✔ rejects a body signed with the WRONG secret, and credits nothing (73.9128ms)
+  ✔ rejects a tampered payload whose signature covers the original bytes (30.9675ms)
+  ✔ rejects a payload with no signature header (400) (9.909ms)
+  ✔ rejects a truncated signature without throwing (3.4818ms)
+  ✔ rejects an empty signature (3.5189ms)
+  ✔ rejects an unsigned body that would otherwise be a valid charge.success (32.2549ms)
+  ✔ the signature is over the RAW bytes, so re-serialized JSON is rejected (28.4955ms)
+✔ POST /api/payments/webhook — signature (823.4989ms)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+▶ POST /api/payments/webhook — replay and idempotency
+  ✔ the SAME signed event delivered 5 times credits exactly once (158.7921ms)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+  ✔ concurrent deliveries of the same event credit exactly once (132.3439ms)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+  ✔ a webhook racing the client verify credits exactly once (86.4276ms)
+  ✔ a replayed webhook after the first credit reports already-credited, not a new credit (207.8021ms)
+  ✔ a non charge.success event is acknowledged but credits nothing (193.6224ms)
+  ✔ acknowledges 200 even for an unknown reference, so Paystack stops retrying (4.266ms)
+  ✔ a webhook claiming less than the bundle price credits nothing (364.6144ms)
+  ✔ returns 503 when payments are not configured (4.0248ms)
+✔ POST /api/payments/webhook — replay and idempotency (1152.9278ms)
+▶ authenticated payment routes
+  ✔ GET /api/payments/bundles is public (17.9026ms)
+  ✔ GET /api/payments/bundles never leaks inactive bundles (9.6312ms)
+  ✔ POST /api/payments/initialize requires auth (401) (13.8574ms)
+  ✔ POST /api/payments/initialize rejects a missing bundleId (400) (11.3997ms)
+  ✔ POST /api/payments/initialize rejects an unknown bundleId (404) (11.8576ms)
+  ✔ GET /api/payments/verify/:reference requires auth (401) (2.8972ms)
+  ✔ GET /api/payments/history requires auth (401) (4.217ms)
+  ✔ a user cannot verify another user's purchase (404, not 403) (47.1546ms)
+  ✔ a user only ever sees their own history (73.4092ms)
+  ✔ history never exposes provider access codes or refs (50.5727ms)
+  ✔ no error response leaks the Paystack secret or a provider stack (18.9585ms)
+  ✔ a provider 4xx surfaces as 502 without provider internals (31.745ms)
+✔ authenticated payment routes (295.1912ms)
+▶ rate limiting on the money routes
+  ✔ initialize is throttled per user after 10 attempts in a minute (186.4578ms)
+  ✔ one user exhausting the initialize limit does not block another user (230.7667ms)
+  ✔ verify is throttled after 20 attempts in a minute (299.9775ms)
+  ✔ throttling initialize leaves the buyer able to finish an existing checkout (254.4697ms)
+✔ rate limiting on the money routes (972.1388ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ Phase 4.2 — feature flag wiring
+  ✔ the PLAYBACK_YOUTUBE flag mirrors env.FLAG_PLAYBACK_YOUTUBE at import time (0.7871ms)
+  ✖ the rollout flag defaults to OFF when FLAG_PLAYBACK_YOUTUBE is absent (298.9894ms)
+  ✔ FLAG_PLAYBACK_YOUTUBE=true/1 turns the flag ON (the flag is not hard-wired off) (542.4526ms)
+  ✔ garbage values fall back to the schema default (false), never a crash (1130.5264ms)
+  ✔ .env.example documents both the API key and the flag defaulting to OFF (2.7392ms)
+  ✔ the frontend ships youtubePlayback OFF by default (1.0897ms)
+{"level":30,"time":1791455509388,"service":"afro-genie-server","jobId":"p4-flag-gate","status":"flag_disabled","msg":"Library enrichment skipped"}
+  ✔ FIXED (2.15): the backend flag gates the YouTube tier in getPlaybackSource (362.6683ms)
+  ✔ the flag gates library enrichment (the one place it is actually enforced) (2.3115ms)
+✖ Phase 4.2 — feature flag wiring (2343.7893ms)
+{"level":20,"time":1791455509633,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:451:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Promise.all (index 0)\n    at async Suite.run (node:internal/test_runner/test:1771:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-success","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455509653,"service":"afro-genie-server","jobId":"p4-success","deadLettered":0,"msg":"Library enrichment complete — no eligible songs remain"}
+{"level":30,"time":1791455509653,"service":"afro-genie-server","jobId":"p4-success","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":1,"failed":0,"deadLettered":0,"dailyCapReached":true,"reQueued":false,"msg":"Library enrichment run complete"}
+▶ Phase 4.1 — library enrichment success path
+  ✔ a successful match persists the video id, stamps it, and evicts the playback cache (287.7297ms)
+  ✔ the newly matched song immediately resolves to the YOUTUBE tier over HTTP (395.5191ms)
+{"level":40,"time":1791455510130,"service":"afro-genie-server","status":403,"msg":"YouTube search failed"}
+{"level":40,"time":1791455510131,"service":"afro-genie-server","songId":"cmuzecuac0007nk1356h8b5ub","reason":"http_403","retryable":true,"msg":"YouTube lookup did not complete — song left eligible for retry"}
+{"level":20,"time":1791455510244,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:519:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-quota","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455510262,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455510262,"service":"afro-genie-server","jobId":"p4-quota","remainingSongs":1,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455510263,"service":"afro-genie-server","jobId":"p4-quota","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":0,"failed":1,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+  ✔ a 403 quotaExceeded response counts as failed and is never cached (204.9106ms)
+{"level":40,"time":1791455510326,"service":"afro-genie-server","status":500,"count":1,"msg":"YouTube videos.list failed"}
+{"level":20,"time":1791455510445,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:544:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-noduration","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455510456,"service":"afro-genie-server","jobId":"p4-noduration","deadLettered":0,"msg":"Library enrichment complete — no eligible songs remain"}
+{"level":30,"time":1791455510457,"service":"afro-genie-server","jobId":"p4-noduration","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":1,"failed":0,"deadLettered":0,"dailyCapReached":true,"reQueued":false,"msg":"Library enrichment run complete"}
+  ✔ a duration-lookup failure still yields a usable match, with duration unknown rather than 0 (2.21) (185.9588ms)
+{"level":20,"time":1791455510957,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:570:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-ratelimit","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455510969,"service":"afro-genie-server","jobId":"p4-ratelimit","deadLettered":0,"msg":"Library enrichment complete — no eligible songs remain"}
+{"level":30,"time":1791455510969,"service":"afro-genie-server","jobId":"p4-ratelimit","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":3,"attempted":3,"matched":3,"failed":0,"deadLettered":0,"dailyCapReached":true,"reQueued":false,"msg":"Library enrichment run complete"}
+  ✔ each attempt is rate limited (~100ms) so the YouTube quota is not bursted (507.0381ms)
+{"level":20,"time":1791455511126,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:585:19)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-idem-1","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455511136,"service":"afro-genie-server","jobId":"p4-idem-1","deadLettered":0,"msg":"Library enrichment complete — no eligible songs remain"}
+{"level":30,"time":1791455511136,"service":"afro-genie-server","jobId":"p4-idem-1","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":1,"failed":0,"deadLettered":0,"dailyCapReached":true,"reQueued":false,"msg":"Library enrichment run complete"}
+{"level":20,"time":1791455511146,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:590:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-idem-2","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455511152,"service":"afro-genie-server","jobId":"p4-idem-2","deadLettered":0,"msg":"Library enrichment complete — no eligible songs remain"}
+{"level":30,"time":1791455511153,"service":"afro-genie-server","jobId":"p4-idem-2","dayKey":"2026-10-08","dailyProcessed":98,"remainingBefore":1,"attempted":0,"matched":0,"failed":0,"deadLettered":0,"dailyCapReached":false,"reQueued":false,"msg":"Library enrichment run complete"}
+  ✔ a matched song is excluded from the next run (idempotent, no re-work) (185.9423ms)
+✔ Phase 4.1 — library enrichment success path (1768.51ms)
+▶ Phase 4.1 — youtubeService.searchMatch against the stub
+  ✔ returns a fully populated match and caches it for 30 days (14.8446ms)
+  ✔ a cached match short-circuits the API (the second call issues no HTTP request) (4.0396ms)
+  ✔ a search response with no items returns null and caches nothing (3.586ms)
+  ✔ a snippet with no thumbnails still matches (thumbnailUrl = null) (3.8726ms)
+{"level":40,"time":1791455511187,"service":"afro-genie-server","err":{"type":"Error","message":"simulated socket failure","stack":"Error: simulated socket failure\n    at globalThis.fetch (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:220:11)\n    at YouTubeService.lookupMatch (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\youtubeService.ts:235:25)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async YouTubeService.searchMatch (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\youtubeService.ts:670:20)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:693:19)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"msg":"YouTube search request errored"}
+  ✔ a thrown network error is swallowed and returns null instead of crashing the job (3.7555ms)
+  ✔ the search request targets the music category and asks for a validation-sized window (3.4986ms)
+  ✔ matchSong writes the match for a specific song and returns it (44.3521ms)
+{"level":30,"time":1791455511243,"service":"afro-genie-server","artistName":"Wizkid","channels":[{"handle":"@Wizkid","subs":1000,"videos":1}],"msg":"Resolved candidate channels for artist"}
+  ✔ matchSong returns null for an unknown song id and writes nothing (4.4437ms)
+✔ Phase 4.1 — youtubeService.searchMatch against the stub (83.489ms)
+▶ Phase C — youtubeService.listArtistUploads
+  ✔ resolves the uploads playlist and returns candidates without a search (1.4276ms)
+  ✔ leaves embeddable null rather than false, so the gate is not silently failed (0.3057ms)
+  ✔ follows nextPageToken until the walk completes (0.5194ms)
+  ✔ a repeated nextPageToken terminates the walk instead of looping (0.3859ms)
+  ✔ respects maxItems (0.4217ms)
+  ✔ unions every candidate handle, not just the first that resolves (1.1282ms)
+  ✔ dedupes a video that appears on more than one channel (0.3335ms)
+  ✔ returns null when no handle spelling resolves to a channel (0.3026ms)
+  ✔ an API error on channels.list degrades to null instead of throwing (0.1632ms)
+  ✔ fetchCandidateDetails batches at 50 ids and reports embeddability (0.559ms)
+  ✔ fetchCandidateDetails never throws when the API fails (0.1688ms)
+✔ Phase C — youtubeService.listArtistUploads (6.2542ms)
+{"level":30,"time":1791455511243,"service":"afro-genie-server","artistName":"X","channels":[{"handle":"@X","subs":1000,"videos":1}],"msg":"Resolved candidate channels for artist"}
+{"level":30,"time":1791455511244,"service":"afro-genie-server","artistName":"X","channels":[{"handle":"@X","subs":1000,"videos":1}],"msg":"Resolved candidate channels for artist"}
+{"level":40,"time":1791455511244,"service":"afro-genie-server","artistName":"X","handle":"@X","pageToken":"NEXT_PAGE_TOKEN","msg":"playlistItems.nextPageToken repeated - stopping walk"}
+{"level":30,"time":1791455511244,"service":"afro-genie-server","artistName":"X","channels":[{"handle":"@X","subs":10,"videos":1}],"msg":"Resolved candidate channels for artist"}
+{"level":40,"time":1791455511244,"service":"afro-genie-server","artistName":"X","handle":"@X","pageToken":"SAME_TOKEN_FOREVER","msg":"playlistItems.nextPageToken repeated - stopping walk"}
+{"level":30,"time":1791455511245,"service":"afro-genie-server","artistName":"X","channels":[{"handle":"@X","subs":1000,"videos":50}],"msg":"Resolved candidate channels for artist"}
+{"level":30,"time":1791455511245,"service":"afro-genie-server","artistName":"Asake","channels":[{"handle":"@Asake","subs":2180000,"videos":153},{"handle":"@Asake","subs":130,"videos":5}],"msg":"Resolved candidate channels for artist"}
+{"level":30,"time":1791455511246,"service":"afro-genie-server","artistName":"Shared","channels":[{"handle":"@Shared","subs":2000,"videos":2},{"handle":"@Shared","subs":1000,"videos":2}],"msg":"Resolved candidate channels for artist"}
+{"level":30,"time":1791455511246,"service":"afro-genie-server","artistName":"Nobody At All","channels":[],"msg":"Resolved candidate channels for artist"}
+{"level":30,"time":1791455511247,"service":"afro-genie-server","artistName":"Nobody At All","msg":"No YouTube upload playlist for any candidate handle"}
+{"level":40,"time":1791455511247,"service":"afro-genie-server","status":403,"artistName":"Some Artist","handle":"@SomeArtist","msg":"YouTube channels.list failed"}
+{"level":30,"time":1791455511247,"service":"afro-genie-server","artistName":"Some Artist","msg":"No YouTube upload playlist for any candidate handle"}
+{"level":40,"time":1791455511247,"service":"afro-genie-server","status":500,"count":1,"msg":"YouTube videos.list failed"}
+{"level":20,"time":1791455511407,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:1065:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Promise.all (index 0)\n    at async Suite.run (node:internal/test_runner/test:1771:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-requeue","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455511417,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455511417,"service":"afro-genie-server","jobId":"p4-requeue","remainingSongs":1,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455511417,"service":"afro-genie-server","jobId":"p4-requeue","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":0,"failed":1,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+▶ Phase 4.1 — enrichment re-queue
+  ✔ a run that leaves songs unmatched self-schedules a 24h follow-up (178.1585ms)
+{"level":20,"time":1791455511575,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:1082:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-requeue-a","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455511588,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455511588,"service":"afro-genie-server","jobId":"p4-requeue-a","remainingSongs":1,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455511588,"service":"afro-genie-server","jobId":"p4-requeue-a","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":0,"failed":1,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+{"level":20,"time":1791455511707,"service":"afro-genie-server","err":{"type":"TypeError","message":"job.updateProgress is not a function","stack":"TypeError: job.updateProgress is not a function\n    at reportProgress (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:252:17)\n    at processLibraryEnrichmentJob (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\libraryEnrichmentJob.ts:344:9)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase4PlaybackRollout.test.ts:1086:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"jobId":"p4-requeue-b","msg":"Library enrichment progress update failed"}
+{"level":30,"time":1791455511718,"service":"afro-genie-server","jobId":"library-enrichment-followup-2026-10-09","reason":"library-enrichment-followup","msg":"Library enrichment job queued"}
+{"level":30,"time":1791455511718,"service":"afro-genie-server","jobId":"p4-requeue-b","remainingSongs":1,"reQueued":true,"deadLettered":0,"msg":"Library enrichment re-queued for next day"}
+{"level":30,"time":1791455511718,"service":"afro-genie-server","jobId":"p4-requeue-b","dayKey":"2026-10-08","dailyProcessed":99,"remainingBefore":1,"attempted":1,"matched":0,"failed":1,"deadLettered":0,"dailyCapReached":true,"reQueued":true,"msg":"Library enrichment run complete"}
+  ✔ the follow-up is deduplicated by day-scoped job id across repeated runs (319.0434ms)
+{"level":30,"time":1791455511760,"service":"afro-genie-server","jobId":"p4-requeue-capped","dayKey":"2026-10-08","dailyProcessed":99,"dailyCap":99,"msg":"Library enrichment daily cap already reached"}
+  ✔ a capped no-op run neither attempts a song nor re-schedules a follow-up (16.0137ms)
+{"level":30,"time":1791455511768,"service":"afro-genie-server","status":"flag_disabled","reason":"p4-flag-off","msg":"Library enrichment not queued"}
+  ✔ enqueue is refused while the flag is off and adds no job (12.1251ms)
+{"level":30,"time":1791455511784,"service":"afro-genie-server","status":"not_configured","reason":"p4-no-key","msg":"Library enrichment not queued"}
+  ✔ enqueue is refused when the flag is on but no API key is configured (14.366ms)
+  ✔ FIXED (Stage 6.1): unmatchable songs retire instead of retrying forever (12.695ms)
+✔ Phase 4.1 — enrichment re-queue (553.2146ms)
+▶ Phase 4.1 — queue and cron wiring
+  ✔ the library-enrichment job type is dispatched by the sync worker (1.8776ms)
+  ✔ syncCron.ts schedules the Tue/Thu 3am enrichment cron (started by index.ts) (1.9703ms)
+  ✔ selfHeal re-registers the enrichment cron if Redis loses it (1.6616ms)
+  ✔ Phase 4: the Spotify catalog pipeline no longer enqueues enrichment triggers (1.5032ms)
+  ✔ the playback and admin-YouTube routers are mounted in app.ts (1.2621ms)
+  ✔ the admin YouTube router requires ADMIN on every route (1.1037ms)
+  ✔ all four admin YouTube endpoints from the plan are present (1.0794ms)
+  ✔ FIXED (2.20): the enrichment job reports BullMQ progress (1.098ms)
+✔ Phase 4.1 — queue and cron wiring (12.3365ms)
+▶ Phase 4.3 — migration checklist coverage (live catalog)
+  ﹣ the playback source tiers partition the live catalog exactly (50.6111ms) # live catalog is empty in this environment — coverage gate is not measurable here
+  ﹣ FAILS: only a small share of the catalog is playable on any tier (10.2656ms) # live catalog is empty in this environment — coverage gate is not measurable here
+  ﹣ FAILS: the library enrichment job has never matched a single catalog song (10.4812ms) # live catalog is empty in this environment — coverage gate is not measurable here
+  ✔ no song exposes a Spotify Premium requirement in the player UI (2.4039ms)
+  ✔ DAILY_LISTEN reward config exists and is positive (the reward fires on complete) (7.0024ms)
+  ✔ the view-count flush worker exists so Redis view counters reach the DB (1.9282ms)
+  ✔ the flush worker drains the counters the report route writes (1.6423ms)
+✔ Phase 4.3 — migration checklist coverage (live catalog) (85.2274ms)
+▶ Phase 4.3 — playback reporting across tiers
+  ✔ every documented source value is accepted by the report endpoint (276.5311ms)
+  ✔ a play reported against the wrong tier is rejected (2.16) (42.8502ms)
+  ✔ a complete event enqueues a DAILY_LISTEN reward for the YOUTUBE tier too (171.5056ms)
+  ✔ the daily-listen idempotency key is per-user-per-UTC-day and reuses across tiers (39.0422ms)
+  ✔ BUG (documented): a report can inflate a view count without any limit (205.648ms)
+  ✔ BUG (documented): one real play is counted twice in the view counter (314.9486ms)
+[phase4.3] SongPlay rows with userId = null: 0
+  ✔ BUG (documented): the song detail route records anonymous SongPlay rows (6.7596ms)
+✔ Phase 4.3 — playback reporting across tiers (1072.4278ms)
+[phase4] swept 22 sentinel Redis key(s) after the run
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ A1. pure units: getWeekWindow
+  ✔ the window starts on Monday 00:00 UTC for every day of the week (2.0756ms)
+  ✔ Sunday belongs to the week that started six days earlier, not the next one (0.8008ms)
+  ✔ the window is exactly seven days (0.314ms)
+  ✔ the window is stable across a DST transition (the week stays 7x24h) (0.6823ms)
+  ✔ the window is stable across a leap day (29 Feb 2028) (0.616ms)
+  ✔ the window is stable across a year boundary (0.4237ms)
+  ✔ a window is idempotent: recomputing from any instant inside it agrees (1.5454ms)
+✔ A1. pure units: getWeekWindow (8.7788ms)
+▶ A1. pure units: CHALLENGE_TEMPLATES schema conformance
+  ✔ every template type is a valid ChallengeType in the Prisma enum (1.4378ms)
+  ✔ every ChallengeType in the enum has a template (1.3208ms)
+  ✔ template types are unique (the upsert keys on type+startsAt) (0.239ms)
+  ✔ targetValue is a positive integer (0.1457ms)
+  ✔ gtReward is a positive integer (0.0961ms)
+  ✔ title and description are non-empty (0.0819ms)
+  ✔ the title does not contradict the target (0.2252ms)
+  ✔ there is one template per type and the lineup is 5 (Stage 4 post-check expects 5) (0.0694ms)
+✔ A1. pure units: CHALLENGE_TEMPLATES schema conformance (4.3137ms)
+▶ A1. pure units: TUNABLE_REWARD_TYPES key integrity
+  ✔ every amountKey names a real key in REWARD_CONFIG (0.2133ms)
+  ✔ every dailyCapKey names a real key in REWARD_CONFIG (0.0964ms)
+  ✔ every tunable type declares an amountKey (otherwise PATCH /rewards 400s on it) (0.0795ms)
+  ✔ reward type identifiers are unique (0.0941ms)
+  ✔ every tunable has a non-empty human label (0.1068ms)
+  ✔ a reward type owns at most one amountKey (no two rows edit the same value) (0.1597ms)
+  ✔ every daily cap is a positive integer (0 would silently disable earning) (0.1115ms)
+✔ A1. pure units: TUNABLE_REWARD_TYPES key integrity (1.0345ms)
+▶ A2. read-only: getCurrentChallenges
+  ✔ without a user id it returns the open challenges with zeroed progress (53.5427ms)
+  ✔ with a user id it merges that user progress, clamped to targetValue (60.5611ms)
+  ✔ a challenge that has not started is not offered (30.9864ms)
+  ✔ an expired challenge is not offered (13.1152ms)
+  ✔ an inactive challenge is not offered (17.758ms)
+  ✔ the list is ordered by expiry, so the most urgent challenge is first (9.559ms)
+  ✔ an unknown challenge id is a 404 NOT_FOUND, not a silent zero (7.4511ms)
+✔ A2. read-only: getCurrentChallenges (543.0359ms)
+▶ A2. read-only: listAbuseFlags pagination bounds
+  ✔ page is clamped to at least 1 and limit to 1..100 (127.1316ms)
+  ✔ totalPages is always at least 1, even with zero rows (14.5835ms)
+  ✔ the returned page never exceeds the requested limit (10.2842ms)
+  ✔ includeReviewed defaults to false (8.359ms)
+  ✔ a rule filter is passed through to the query (15.2765ms)
+✔ A2. read-only: listAbuseFlags pagination bounds (176.4422ms)
+▶ A2. read-only: getAbuseDashboard
+  ✔ returns the 3-sigma threshold block with a stable rule label (49.5039ms)
+  ✔ the cutoff is mean + 3 standard deviations (15.3244ms)
+  ✔ every detector list is present and an array (12.7563ms)
+  ✔ abnormal earners are sorted by earnings descending (7.0577ms)
+✔ A2. read-only: getAbuseDashboard (85.326ms)
+▶ A3. auth guards: 401 without a token
+  ✔ GET /api/challenges is 401 without a token (35.2758ms)
+  ✔ GET /api/challenges/any-id/progress is 401 without a token (5.5379ms)
+  ✔ POST /api/challenges/any-id/claim is 401 without a token (35.7147ms)
+  ✔ GET /api/admin/economy/config is 401 without a token (2.9691ms)
+  ✔ GET /api/admin/economy/circulation is 401 without a token (3.2326ms)
+  ✔ GET /api/admin/economy/abuse is 401 without a token (5.7773ms)
+  ✔ PATCH /api/admin/economy/rewards is 401 without a token (8.6188ms)
+  ✔ PATCH /api/admin/economy/store/any-item is 401 without a token (6.5653ms)
+  ✔ PATCH /api/admin/economy/abuse/any-flag is 401 without a token (4.9753ms)
+  ✔ POST /api/admin/economy/adjust is 401 without a token (10.947ms)
+  ✔ a malformed or wrongly-signed token is 401, not 403 (9.6865ms)
+✔ A3. auth guards: 401 without a token (157.2777ms)
+▶ A3. auth guards: 403 for a non-admin, and 401 for a bad body
+  ✔ GET /api/admin/economy/config is 403 for an authenticated USER (6.5439ms)
+  ✔ GET /api/admin/economy/circulation is 403 for an authenticated USER (3.9739ms)
+  ✔ GET /api/admin/economy/abuse is 403 for an authenticated USER (7.9609ms)
+  ✔ PATCH /api/admin/economy/rewards is 403 for an authenticated USER (3.8761ms)
+  ✔ PATCH /api/admin/economy/store/any-item is 403 for an authenticated USER (3.9625ms)
+  ✔ PATCH /api/admin/economy/abuse/any-flag is 403 for an authenticated USER (3.4438ms)
+  ✔ POST /api/admin/economy/adjust is 403 for an authenticated USER (4.8966ms)
+  ✔ a normal user CAN read their own challenges (403 must not leak into user routes) (16.1532ms)
+  ✔ PATCH /economy/rewards is 400 for an unknown rewardType (3.1812ms)
+  ✔ the reward-config cache key is namespaced and not a production key (0.2365ms)
+✔ A3. auth guards: 403 for a non-admin, and 401 for a bad body (67.7971ms)
+▶ A4. the suite is still pointed at a disposable database
+  ✔ the Phase 5 tables exist and are reachable (6.4296ms)
+  ✔ no foreign P5TEST rows exist, so the leak assertion in teardown is meaningful (5.7454ms)
+  ✔ Redis is reachable and disposable (a PING, not a write) (1.6453ms)
+✔ A4. the suite is still pointed at a disposable database (14.147ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ B4. challenge claim flow
+  ✔ an incomplete challenge is refused with CHALLENGE_INCOMPLETE (400) (50.6723ms)
+  ✔ a completed challenge awards the GT, writes the ledger row and notifies (226.9766ms)
+  ✔ a second claim is refused with ALREADY_CLAIMED (409) and pays nothing extra (98.7761ms)
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Unique constraint failed on the fields: (`"userId"`)
+prisma:error 
+Invalid `prisma.userEntitlement.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\challengeService.ts:241:34
+
+  238 });
+  239 
+  240 try {
+→ 241   await prisma.userEntitlement.create(
+Unique constraint failed on the fields: (`"userId"`, `type`)
+prisma:error 
+Invalid `prisma.userEntitlement.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\challengeService.ts:241:34
+
+  238 });
+  239 
+  240 try {
+→ 241   await prisma.userEntitlement.create(
+Unique constraint failed on the fields: (`"userId"`, `type`)
+  ✔ concurrent claims of the same challenge pay out exactly once (124.4221ms)
+  ✔ a not-yet-started challenge is CHALLENGE_NOT_STARTED (400) (13.6829ms)
+  ✔ an expired challenge is CHALLENGE_EXPIRED (400) (7.8368ms)
+  ✔ an inactive challenge is 404 NOT_FOUND (7.5557ms)
+  ✔ the claim is reachable over HTTP and returns the same result (219.4749ms)
+  ✔ EARN_N_GT progress counts only EARN rows inside the window (69.202ms)
+  ✔ ACHIEVE_N_APPROVALS counts approved translations inside the window (69.9073ms)
+  ✔ TRANSLATE_N_SONGS counts DISTINCT songs, not rows (33.4763ms)
+  ✔ progress is clamped to targetValue so the UI cannot show 9000% (27.7625ms)
+✔ B4. challenge claim flow (1391.1715ms)
+▶ B5. admin economy
+  ✔ GET /economy/config returns every tunable reward with its config values (37.0309ms)
+  ✔ PATCH /economy/rewards updates the value, flushes the cache and audit-logs (79.8375ms)
+  ✔ PATCH /economy/rewards rejects an unknown rewardType with 400 (10.5647ms)
+  ✔ PATCH /economy/rewards requires at least one field to change (7.395ms)
+  ✔ PATCH /economy/rewards rejects a negative amount at the validation layer (6.2965ms)
+  ✔ PATCH /economy/rewards toggling active writes an ACTIVE: key (60.5689ms)
+  ✔ POST /economy/adjust credits the wallet, notifies and audit-logs (70.0272ms)
+  ✔ POST /economy/adjust DEBIT moves the balance down (39.9533ms)
+  ✔ POST /economy/adjust is 404 for an unknown user (7.5464ms)
+  ✔ POST /economy/adjust rejects amount 0, a negative amount and a bad type (28.3507ms)
+  ✔ POST /economy/adjust rejects an amount above the 100000 ceiling (5.4561ms)
+  ✔ PATCH /economy/store/:id is 404 for an unknown item (10.682ms)
+  ✔ PATCH /economy/store/:id applies a discount and forces limitedTime on (39.5984ms)
+  ✔ PATCH /economy/store/:id rejects a discount outside 1-99 (36.7556ms)
+  ✔ GET /economy/circulation aggregates ledger and wallet totals (37.4858ms)
+  ✔ GET /economy/abuse returns the dashboard with its 3-sigma block (40.7359ms)
+  ✔ PATCH /economy/abuse/:flagId is 404 for an unknown flag (9.8894ms)
+  ✔ PATCH /economy/abuse/:flagId reviews a real flag (37.6436ms)
+✔ B5. admin economy (581.5181ms)
+{"level":30,"time":1791455519311,"service":"afro-genie-server","upserted":5,"deactivated":1,"startsAt":"2026-10-05T00:00:00.000Z","expiresAt":"2026-10-12T00:00:00.000Z","msg":"Weekly challenge rotation completed"}
+▶ B6. weekly challenge rotation
+  ✔ rotation creates exactly one challenge per template for the current week (50.4474ms)
+{"level":30,"time":1791455519342,"service":"afro-genie-server","upserted":5,"deactivated":0,"startsAt":"2026-10-05T00:00:00.000Z","expiresAt":"2026-10-12T00:00:00.000Z","msg":"Weekly challenge rotation completed"}
+  ✔ rotation is idempotent: a second run updates rather than duplicates (29.2932ms)
+{"level":30,"time":1791455519363,"service":"afro-genie-server","upserted":5,"deactivated":0,"startsAt":"2026-10-05T00:00:00.000Z","expiresAt":"2026-10-12T00:00:00.000Z","msg":"Weekly challenge rotation completed"}
+  ✔ rotation makes this week challenges actually visible to users (84.9313ms)
+{"level":30,"time":1791455519459,"service":"afro-genie-server","upserted":5,"deactivated":1,"startsAt":"2026-10-05T00:00:00.000Z","expiresAt":"2026-10-12T00:00:00.000Z","msg":"Weekly challenge rotation completed"}
+  ✔ rotation deactivates challenges whose window has closed (32.7044ms)
+{"level":30,"time":1791455519482,"service":"afro-genie-server","upserted":5,"deactivated":0,"startsAt":"2026-10-05T00:00:00.000Z","expiresAt":"2026-10-12T00:00:00.000Z","msg":"Weekly challenge rotation completed"}
+  ✔ the week window used by rotation is the one getWeekWindow returns (22.4086ms)
+✔ B6. weekly challenge rotation (220.286ms)
+▶ B7. aggregate economy figures (unblocked by 7.1)
+  ✔ the challenge reward config is a strict subset of REWARD_CONFIG (4.9577ms)
+  ✔ a capped reward type pairs its amount key with its own cap key (0.3462ms)
+  ✔ challenge rewards are outside the capped earn set (0.1437ms)
+✔ B7. aggregate economy figures (unblocked by 7.1) (5.6244ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ 7.2.4 request deduplication (src/lib/requestDedup.ts)
+  ✔ collapses concurrent identical calls into a single upstream fetch (2.0952ms)
+  ✔ a settled key is re-issued on the next call (no stale memoisation) (0.3346ms)
+  ✔ a rejected fetch is evicted so the next caller retries (1.1315ms)
+  ✔ distinct keys never share an in-flight slot (0.2905ms)
+✔ 7.2.4 request deduplication (src/lib/requestDedup.ts) (80.9524ms)
+▶ 7.1.2 lyrics provider Redis caching (src/services/lyricsProviders/lyricsCache.ts)
+  ✔ search: second call is served from cache without hitting the provider (7.3984ms)
+  ✔ search: cache key is case- and whitespace-normalised (8.9079ms)
+  ✔ search: positive result cached with a 7-day TTL (5.0656ms)
+  ✔ search: empty result is negatively cached and short-circuits the provider (5.4599ms)
+  ✔ search: a negative-cache hit does not leak stale positives (4.1462ms)
+{"level":40,"time":1791455521133,"service":"afro-genie-server","err":{"type":"SyntaxError","message":"Expected property name or '}' in JSON at position 1 (line 1 column 2)","stack":"SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n    at JSON.parse (<anonymous>)\n    at cachedSearch (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\lyricsProviders\\lyricsCache.ts:48:47)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase6WorkerOptimization.test.ts:328:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"provider":"p6test","msg":"Lyrics search cache read failed"}
+  ✔ search: corrupt cached JSON falls through to the provider instead of throwing (12.8145ms)
+  ✔ fetchLyrics: content cached with a 7-day TTL and provider called once (4.2187ms)
+  ✔ fetchLyrics: null result stored as the __EMPTY__ sentinel (10.3156ms)
+  ✔ fetchLyrics: empty sentinel uses the 24h negative TTL, not 7 days (4.1878ms)
+  ✔ fetchLyricsWithSync: caches both plain and synced payloads (9.062ms)
+  ✔ fetchLyricsWithSync: both-null result uses the __EMPTY_SYNCED__ sentinel (7.0707ms)
+  ✔ the lyrics enrichment job actually routes through the cache layer (3.3935ms)
+✔ 7.1.2 lyrics provider Redis caching (src/services/lyricsProviders/lyricsCache.ts) (84.8503ms)
+▶ 7.1.1 Genius provider bandwidth reduction (src/services/lyricsProviders/geniusProvider.ts)
+  ✔ search and song metadata go through the official API, not an HTML scrape (2.2781ms)
+  ✔ the remaining page fetch requests compressed encoding (1.1257ms)
+{"level":50,"time":1791455521190,"service":"afro-genie-server","provider":"GENIUS","trackId":"1","err":{"type":"Error","message":"GENIUS_ACCESS_TOKEN is not configured","stack":"Error: GENIUS_ACCESS_TOKEN is not configured\n    at GeniusProvider.getAccessToken (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\lyricsProviders\\geniusProvider.ts:85:13)\n    at GeniusProvider.callApi (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\lyricsProviders\\geniusProvider.ts:91:24)\n    at GeniusProvider.fetchLyrics (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\lyricsProviders\\geniusProvider.ts:171:35)\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\phase6WorkerOptimization.test.ts:431:35)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"msg":"Genius lyrics fetch failed"}
+  ✔ every network call is bounded by a timeout (1.1143ms)
+  ✔ an unconfigured token fails fast before any request is made (3.994ms)
+  ✔ seam: the audit-log port is injectable, so the happy path no longer hard-couples to the DB (2.13) (1.3718ms)
+  ✔ wall guard must not reject genuine lyrics pages (5.7 live-page check) (0.8949ms)
+  ✔ extractor 1: data-lyrics-container div (current Genius embed) (0.5749ms)
+  ✔ extractor 2: legacy Lyrics__Container class (0.2871ms)
+  ✔ extractor 3: window.__PRELOADED_STATE__ JSON (0.2339ms)
+  ✔ extractors return null when no markup is present (0.1377ms)
+  ✔ extractor ignores a short contributors header block and takes the verse body (live-page shape) (0.2233ms)
+  ✔ extractors fall through in markup-evolution order (newest first) (0.1184ms)
+✔ 7.1.1 Genius provider bandwidth reduction (src/services/lyricsProviders/geniusProvider.ts) (12.9621ms)
+▶ 7.2.1 + 7.2.3 sync schedules + Phase 4 trim (src/jobs/syncCron.ts)
+  ✔ Phase 4: only backfill-lyrics (5am) and library-enrichment (Tue/Thu 3am) remain (0.566ms)
+  ✔ Phase 4: the Spotify catalog crons are gone (0.25ms)
+  ✔ stale threshold raised from 72h to 7 days (2.3058ms)
+  ✔ 7.2.3 genre discovery cron removed (1.1226ms)
+  ✔ 7.2.3 + Phase 4: worker dispatches only non-Spotify job types, admin trigger preserved (4.5345ms)
+  ✔ repeat jobs are self-healed if Redis loses them (2.6) (1.0725ms)
+✔ 7.2.1 + 7.2.3 sync schedules + Phase 4 trim (src/jobs/syncCron.ts) (14.2933ms)
+▶ 7.4 bandwidth monitoring (src/lib/bandwidthMonitor.ts)
+  ✔ thresholds match the plan: 200GB warn / 500GB critical / 50GB hourly (0.2745ms)
+  ✔ route classification buckets the highest-traffic families (0.2082ms)
+  ✔ recordBandwidth increments daily, hourly and per-group counters (18.5548ms)
+  ✔ buffered writes are not lost when several records are coalesced (7.5615ms)
+  ✔ zero-byte responses are not recorded (2.0583ms)
+  ✔ read endpoints are safe to call and return well-formed data (6.682ms)
+  ✔ counter TTL outlasts the widest query window (2.9) (3.8562ms)
+  ✔ counter writes are buffered rather than issued per request (2.10) (5.3159ms)
+  ✔ middleware is mounted ahead of the routes it measures (1.2869ms)
+✔ 7.4 bandwidth monitoring (src/lib/bandwidthMonitor.ts) (46.6402ms)
+▶ 7.3.2 CDN caching for static assets
+  ✔ /uploads responses carry a long-lived immutable Cache-Control (2.0519ms)
+  ✔ uploads are served as static files at all (1.4443ms)
+✔ 7.3.2 CDN caching for static assets (3.7561ms)
+▶ Phase 6 wiring
+  ✔ bandwidth router is mounted under /api/admin (1.6047ms)
+  ✔ all three bandwidth endpoints exist and are admin-only (0.9512ms)
+  ✔ bandwidth endpoints validate their query params (0.9719ms)
+  ✔ the sync worker still runs the surviving syncQueue, and the popular-tracks queue is gone (Phase 4) (0.9278ms)
+✔ Phase 6 wiring (4.8404ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ playback kill switch (2.3) — flag off stops the YouTube tier over HTTP
+  ✔ flag ON serves the YouTube tier over HTTP (144.2053ms)
+  ✔ the YouTube answer is actually cached, so a flag flip has something to defeat (38.3877ms)
+  ✔ flag OFF stops serving YouTube even when the YouTube answer is cached (59.1684ms)
+  ✔ flag OFF on a cold cache never serves YouTube (24.7265ms)
+  ✔ a song with no fallback resolves to NONE, not YOUTUBE, with the flag off (38.0822ms)
+  ✔ turning the flag back ON serves YouTube again (the switch is not one-way) (40.8178ms)
+  ✔ flag OFF does not touch own-uploaded audio (Tier 1 is not flag-gated) (21.8164ms)
+  ✔ a non-YouTube song keeps working from cache with the flag off, after one re-resolve (52.133ms)
+  ✔ flag OFF makes a YOUTUBE play report a 409, while the served tier is accepted (106.9423ms)
+✔ playback kill switch (2.3) — flag off stops the YouTube tier over HTTP (914.0668ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ playback routes
+  ✔ resolves a playback source for a catalog song (110.7448ms)
+  ✔ caches the resolved source in Redis for the tier fallback (36.8284ms)
+  ✔ 2.18: a source-tier change evicts the cached answer instead of going stale for 1h (84.1003ms)
+  ✔ rejects Spotify-synthesized ids (they are not catalog songs) (11.2674ms)
+  ✔ returns 404 for an unknown song id (12.8968ms)
+  ✔ is publicly readable without authentication (29.318ms)
+  ✔ requires authentication (44.0081ms)
+  ✔ rejects an unknown eventType (22.3615ms)
+  ✔ rejects an unknown source (16.5042ms)
+  ✔ rejects a missing songId (10.2793ms)
+  ✔ rejects a negative positionMs (16.7401ms)
+  ✔ accepts all four documented event types (69.9208ms)
+  ✔ a "play" event records a SongPlay row and increments the Redis view counter (54.1029ms)
+  ✔ non-"play" events do not record a SongPlay or touch the view counter (29.708ms)
+  ✔ a "complete" event enqueues exactly one DAILY_LISTEN reward per user per UTC day (151.3334ms)
+  ✔ the daily listen reward carries a per-user-per-day idempotency key (6.3113ms)
+  ✔ reports for Spotify-synthesized songs are accepted but not persisted (6.9516ms)
+  ✔ returns 404 when reporting against an unknown catalog song (12.9964ms)
+  ✔ 2.16: the report endpoint is rate limited, so view counts cannot be inflated (925.4201ms)
+  ✔ 2.16: a "play" reporting a source the server never served is rejected (34.2675ms)
+  ✔ 2.16: a "play" reporting the served source is accepted (32.6675ms)
+  ✔ 2.17 + 2.18: soft-deleting a song evicts its cached source so it stops resolving (49.5718ms)
+  ✔ admin youtube status requires authentication (2.4936ms)
+  ✔ admin youtube status rejects non-admin roles (2.8861ms)
+  ✔ admin youtube status reports catalog coverage (47.8681ms)
+  ✔ admin youtube match is forbidden for non-admin roles (7.5301ms)
+  ✔ admin youtube match returns NO_MATCH when the API key is absent (35.0638ms)
+  ✔ admin match-all reports queued:false while the rollout flag is off (4.8709ms)
+  ✔ G-3 (2.16 adj.): the admin match limiter is shared, not per-instance (45.3154ms)
+✔ playback routes (2397.8522ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+{"level":30,"time":1791455531745,"service":"afro-genie-server","userId":"cmuzedaug00005c13icprfedj","purchaseId":"cmuzedayw00025c1317zn9xn0","bundleId":"cmuzedaxo00015c13nu0prch0","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455531856,"service":"afro-genie-server","purchaseId":"cmuzedayw00025c1317zn9xn0","userId":"cmuzedaug00005c13icprfedj","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455531857,"service":"afro-genie-server","purchaseId":"cmuzedayw00025c1317zn9xn0","userId":"cmuzedaug00005c13icprfedj","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455531857,"service":"afro-genie-server","recovered":1,"stillUnpaid":0,"msg":"GT purchase recovery sweep finished"}
+▶ recoverStuckPurchases
+  ✔ credits a paid purchase that was left behind at PROCESSING (553.4214ms)
+{"level":30,"time":1791455531921,"service":"afro-genie-server","userId":"cmuzedb3h00065c1384b2k7by","purchaseId":"cmuzedb4900085c13zloh0nme","bundleId":"cmuzedb3s00075c13v8qrqqf1","gtAmount":100,"msg":"GT purchase initialized"}
+  ✔ leaves a recent purchase alone (never races a checkout in progress) (54.1354ms)
+{"level":30,"time":1791455531971,"service":"afro-genie-server","userId":"cmuzedb5100095c13gxxuf0yy","purchaseId":"cmuzedb5l000b5c13sgq1vvy5","bundleId":"cmuzedb58000a5c13g2xr47cd","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532013,"service":"afro-genie-server","purchaseId":"cmuzedb5l000b5c13sgq1vvy5","userId":"cmuzedb5100095c13gxxuf0yy","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532013,"service":"afro-genie-server","purchaseId":"cmuzedb5l000b5c13sgq1vvy5","userId":"cmuzedb5100095c13gxxuf0yy","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532013,"service":"afro-genie-server","recovered":1,"stillUnpaid":0,"msg":"GT purchase recovery sweep finished"}
+  ✔ never re-credits a purchase that is already COMPLETED (89.7015ms)
+{"level":30,"time":1791455532058,"service":"afro-genie-server","userId":"cmuzedb7h000f5c13uoc6lbip","purchaseId":"cmuzedb80000h5c13v8ygp8ng","bundleId":"cmuzedb7n000g5c13eawp66b3","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532100,"service":"afro-genie-server","purchaseId":"cmuzedb80000h5c13v8ygp8ng","userId":"cmuzedb7h000f5c13uoc6lbip","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532101,"service":"afro-genie-server","purchaseId":"cmuzedb80000h5c13v8ygp8ng","userId":"cmuzedb7h000f5c13uoc6lbip","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532101,"service":"afro-genie-server","recovered":1,"stillUnpaid":0,"msg":"GT purchase recovery sweep finished"}
+  ✔ is idempotent: two sweeps credit the purchase exactly once (82.3589ms)
+{"level":30,"time":1791455532223,"service":"afro-genie-server","userId":"cmuzedb9s000l5c13oj0hw129","purchaseId":"cmuzedbcl000n5c13jckjfvq0","bundleId":"cmuzedb9x000m5c13bh220sqx","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532259,"service":"afro-genie-server","recovered":0,"stillUnpaid":1,"msg":"GT purchase recovery sweep finished"}
+  ✔ an unpaid stale purchase is counted as still unpaid, not credited (152.9112ms)
+{"level":30,"time":1791455532284,"service":"afro-genie-server","userId":"cmuzedbe1000o5c13gq1fs764","purchaseId":"cmuzedbed000q5c13i7kuc0fb","bundleId":"cmuzedbe5000p5c130ht6q1j4","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455532300,"service":"afro-genie-server","purchaseId":"cmuzedbed000q5c13i7kuc0fb","expectedAmountKobo":200000,"receivedAmount":1,"expectedCurrency":"NGN","receivedCurrency":"NGN","msg":"Paystack amount/currency mismatch — refusing to credit GT"}
+{"level":40,"time":1791455532305,"service":"afro-genie-server","err":{"type":"ApiError","message":"Payment amount does not match the bundle","stack":"Error: Payment amount does not match the bundle\n    at verifyPayment (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\paymentService.ts:265:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async recoverStuckPurchases (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\reconciliationJob.ts:84:22)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\reconciliationJob.test.ts:165:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)","code":"PAYMENT_AMOUNT_MISMATCH","status":400},"purchaseId":"cmuzedbed000q5c13i7kuc0fb","userId":"cmuzedbe1000o5c13gq1fs764","msg":"Stuck-purchase recovery could not resolve this row; will retry"}
+{"level":30,"time":1791455532309,"service":"afro-genie-server","recovered":0,"stillUnpaid":1,"msg":"GT purchase recovery sweep finished"}
+  ✔ a short stale payment is refused, exactly as on the live path (54.0472ms)
+{"level":30,"time":1791455532335,"service":"afro-genie-server","userId":"cmuzedbfj000r5c13rx98jenv","purchaseId":"cmuzedbfu000t5c13ci09qs26","bundleId":"cmuzedbfm000s5c13km98rfhw","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532358,"service":"afro-genie-server","userId":"cmuzedbg0000u5c1378aw64c7","purchaseId":"cmuzedbgh000w5c13ldogex10","bundleId":"cmuzedbg8000v5c13gm2gm1m6","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532377,"service":"afro-genie-server","userId":"cmuzedbgm000x5c13b0jppqh6","purchaseId":"cmuzedbgw000z5c132jlo9yre","bundleId":"cmuzedbgp000y5c138skeuoah","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455532395,"service":"afro-genie-server","err":{"type":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\reconciliationJob.test.ts:190:24)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"path":"/transaction/verify/cmuzedbfu000t5c13ci09qs26","msg":"Paystack request error"}
+{"level":40,"time":1791455532396,"service":"afro-genie-server","err":{"type":"ApiError","message":"Payment provider unreachable","stack":"Error: Payment provider unreachable\n    at paystackFetch (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\paymentService.ts:89:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async verifyPayment (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\services\\paymentService.ts:214:16)\n    at async recoverStuckPurchases (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\src\\jobs\\reconciliationJob.ts:84:22)\n    at async TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\reconciliationJob.test.ts:194:20)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)","code":"PAYMENT_PROVIDER_ERROR","status":502},"purchaseId":"cmuzedbfu000t5c13ci09qs26","userId":"cmuzedbfj000r5c13rx98jenv","msg":"Stuck-purchase recovery could not resolve this row; will retry"}
+{"level":30,"time":1791455532448,"service":"afro-genie-server","purchaseId":"cmuzedbgw000z5c132jlo9yre","userId":"cmuzedbgm000x5c13b0jppqh6","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532448,"service":"afro-genie-server","purchaseId":"cmuzedbgw000z5c132jlo9yre","userId":"cmuzedbgm000x5c13b0jppqh6","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532448,"service":"afro-genie-server","recovered":1,"stillUnpaid":2,"msg":"GT purchase recovery sweep finished"}
+  ✔ a provider outage on one row does not abort the sweep (152.8857ms)
+{"level":30,"time":1791455532497,"service":"afro-genie-server","userId":"cmuzedbjt00135c13q9fnzzy6","purchaseId":"cmuzedbkb00155c13aw7rjx6r","bundleId":"cmuzedbk100145c13osdl3gwu","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":50,"time":1791455532513,"service":"afro-genie-server","err":{"type":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\reconciliationJob.test.ts:211:24)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"path":"/transaction/verify/cmuzedbfu000t5c13ci09qs26","msg":"Paystack request error"}
+{"level":50,"time":1791455532517,"service":"afro-genie-server","err":{"type":"TypeError","message":"fetch failed","stack":"TypeError: fetch failed\n    at TestContext.<anonymous> (C:\\Users\\tidar\\Documents\\Web Dev Projects\\afro-genie\\afro-genie-backend\\test\\reconciliationJob.test.ts:211:24)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Test.run (node:internal/test_runner/test:1313:7)\n    at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7)"},"path":"/transaction/verify/cmuzedbkb00155c13aw7rjx6r","msg":"Paystack request error"}
+{"level":30,"time":1791455532518,"service":"afro-genie-server","recovered":0,"stillUnpaid":2,"msg":"GT purchase recovery sweep finished"}
+  ✔ a provider outage is swallowed and logged, never thrown at the caller (53.5647ms)
+{"level":30,"time":1791455532541,"service":"afro-genie-server","userId":"cmuzedbla00165c13no6ttxoz","purchaseId":"cmuzedblk00185c13f6c5hvh3","bundleId":"cmuzedbld00175c13j52dyltw","gtAmount":100,"msg":"GT purchase initialized"}
+{"level":30,"time":1791455532584,"service":"afro-genie-server","purchaseId":"cmuzedblk00185c13f6c5hvh3","userId":"cmuzedbla00165c13no6ttxoz","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532584,"service":"afro-genie-server","purchaseId":"cmuzedblk00185c13f6c5hvh3","userId":"cmuzedbla00165c13no6ttxoz","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532615,"service":"afro-genie-server","purchaseId":"cmuzedbfu000t5c13ci09qs26","userId":"cmuzedbfj000r5c13rx98jenv","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532616,"service":"afro-genie-server","purchaseId":"cmuzedbfu000t5c13ci09qs26","userId":"cmuzedbfj000r5c13rx98jenv","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532650,"service":"afro-genie-server","purchaseId":"cmuzedbkb00155c13aw7rjx6r","userId":"cmuzedbjt00135c13q9fnzzy6","gtAmount":100,"msg":"GT purchase credited"}
+{"level":30,"time":1791455532650,"service":"afro-genie-server","purchaseId":"cmuzedbkb00155c13aw7rjx6r","userId":"cmuzedbjt00135c13q9fnzzy6","msg":"Recovered a paid-but-uncredited GT purchase"}
+{"level":30,"time":1791455532650,"service":"afro-genie-server","recovered":3,"stillUnpaid":0,"msg":"GT purchase recovery sweep finished"}
+  ✔ a very old abandoned purchase is still swept (133.367ms)
+✔ recoverStuckPurchases (1329.5373ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ referralService
+  ✔ getOrCreateReferralCode mints a stable unique code (5.2675ms)
+  ✔ self-referral is rejected (12.7924ms)
+  ✔ unknown code is rejected (5.8597ms)
+{"level":30,"time":1791455534345,"service":"afro-genie-server","metric":"reward_queued","userId":"cmuzedcs10000ac139pt0uhc5","amount":10,"reason":"Referral bonus: cmuzedcv","msg":"metric:reward_queued"}
+{"level":30,"time":1791455534356,"service":"afro-genie-server","metric":"reward_queued","userId":"cmuzedcvo0001ac13vkw8czqe","amount":10,"reason":"Welcome bonus via referral","msg":"metric:reward_queued"}
+{"level":30,"time":1791455534356,"service":"afro-genie-server","referrerId":"cmuzedcs10000ac139pt0uhc5","newUserId":"cmuzedcvo0001ac13vkw8czqe","msg":"Referral completed"}
+  ✔ valid code records the referral edge and links the user once (107.611ms)
+  ✔ getMyReferrals lists the referred user against the referrer (13.1859ms)
+  ✔ hasMutualReferral is false for a one-way referral (113.3354ms)
+✔ referralService (758.5839ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+{"level":30,"time":1791455536119,"service":"afro-genie-server","metric":"reward_queued","userId":"user-no-such","amount":10,"reason":"Welcome bonus via referral","msg":"metric:reward_queued"}
+▶ rewardJob — retry and deleted-user handling
+  ✔ queueReward asks BullMQ for retries instead of a single attempt (329.2439ms)
+{"level":30,"time":1791455536243,"service":"afro-genie-server","jobId":"test-job","userId":"cmuzededn0000zs13t101mgfo","amount":10,"reason":"Welcome bonus via referral","event":"REFERRAL_BONUS","idempotencyKey":"deleted-user:8be02d7e","msg":"Processing reward job"}
+prisma:error 
+Invalid `tx.userWallet.upsert()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:102:44
+
+   99 for (let attempt = 0; ; attempt += 1) {
+  100   try {
+  101     const ledger = await prisma.$transaction(async (tx) => {
+→ 102       const wallet = await tx.userWallet.upsert(
+Foreign key constraint violated on the constraint: `UserWallet_userId_fkey`
+{"level":40,"time":1791455536324,"service":"afro-genie-server","jobId":"test-job","userId":"cmuzededn0000zs13t101mgfo","reason":"Welcome bonus via referral","event":"REFERRAL_BONUS","msg":"Reward discarded — user no longer exists"}
+  ✔ a reward for a deleted user completes instead of throwing (209.8276ms)
+{"level":30,"time":1791455536340,"service":"afro-genie-server","jobId":"replay-0","userId":"cmuzedej00002zs13snmc80ny","amount":25,"reason":"Community moderation action","event":"MODERATOR_ACTION","idempotencyKey":"replay:fadd6d99","msg":"Processing reward job"}
+{"level":30,"time":1791455536392,"service":"afro-genie-server","metric":"tokens_credited","rewardId":"cmuzedek20004zs13gy93y4wl","userId":"cmuzedej00002zs13snmc80ny","amount":25,"reason":"Community moderation action","idempotencyKey":"replay:fadd6d99","msg":"metric:tokens_credited"}
+{"level":30,"time":1791455536491,"service":"afro-genie-server","jobId":"replay-0","userId":"cmuzedej00002zs13snmc80ny","amount":25,"newBadges":[],"msg":"Reward job completed"}
+{"level":30,"time":1791455536491,"service":"afro-genie-server","jobId":"replay-1","userId":"cmuzedej00002zs13snmc80ny","amount":25,"reason":"Community moderation action","event":"MODERATOR_ACTION","idempotencyKey":"replay:fadd6d99","msg":"Processing reward job"}
+{"level":30,"time":1791455536511,"service":"afro-genie-server","metric":"reward_dedup_blocked","userId":"cmuzedej00002zs13snmc80ny","reason":"Community moderation action","idempotencyKey":"replay:fadd6d99","msg":"metric:reward_dedup_blocked"}
+{"level":30,"time":1791455536511,"service":"afro-genie-server","jobId":"replay-1","userId":"cmuzedej00002zs13snmc80ny","reason":"Community moderation action","msg":"Reward skipped — duplicate"}
+{"level":30,"time":1791455536512,"service":"afro-genie-server","jobId":"replay-2","userId":"cmuzedej00002zs13snmc80ny","amount":25,"reason":"Community moderation action","event":"MODERATOR_ACTION","idempotencyKey":"replay:fadd6d99","msg":"Processing reward job"}
+{"level":30,"time":1791455536522,"service":"afro-genie-server","metric":"reward_dedup_blocked","userId":"cmuzedej00002zs13snmc80ny","reason":"Community moderation action","idempotencyKey":"replay:fadd6d99","msg":"metric:reward_dedup_blocked"}
+{"level":30,"time":1791455536523,"service":"afro-genie-server","jobId":"replay-2","userId":"cmuzedej00002zs13snmc80ny","reason":"Community moderation action","msg":"Reward skipped — duplicate"}
+  ✔ replaying a reward cannot double-credit (why retries are safe) (248.9361ms)
+✔ rewardJob — retry and deleted-user handling (789.5285ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ seasonService
+  ✔ periodKeyOf formats UTC YYYY-MM (1.4162ms)
+{"level":30,"time":1791455537976,"service":"afro-genie-server","metric":"badge_awarded","userId":"cmuzedfk300008413wkun0tb7","badgeType":"SEASON_CHAMPION","msg":"metric:badge_awarded"}
+{"level":30,"time":1791455538027,"service":"afro-genie-server","metric":"badge_awarded","userId":"cmuzedfn200018413xy6zyxpo","badgeType":"SEASON_CHAMPION","msg":"metric:badge_awarded"}
+{"level":30,"time":1791455538030,"service":"afro-genie-server","period":"1999-07","entries":2,"msg":"season snapshot frozen"}
+  ✔ freezeSeason snapshots the period and rewards the top 3 (238.0537ms)
+  ✔ re-freezing the same period is idempotent (no double pay) (11.5926ms)
+  ✔ getSeasons lists the frozen period and getSeason returns it (8.999ms)
+✔ seasonService (711.7536ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ scan-secrets: detects planted credentials
+  ✔ flags Neon API key in a connection string (443.4637ms)
+  ✔ flags Postgres password in a URL (396.5164ms)
+  ✔ flags Redis Cloud password in a URL (378.7958ms)
+  ✔ flags API key assigned as a bare literal (542.8084ms)
+  ✔ flags AWS access key id (377.4806ms)
+  ✔ flags PEM private key block (358.1192ms)
+  ✔ flags GitHub personal access token (349.3482ms)
+✔ scan-secrets: detects planted credentials (2849.1742ms)
+▶ scan-secrets: does not cry wolf
+  ✔ passes the .env.example placeholder contract (449.6615ms)
+  ✔ passes the shadow-URL example in the prisma config doc comment (453.4289ms)
+  ✔ passes a connection URL with no password component (366.8513ms)
+  ✔ passes a credential read from process.env (375.5677ms)
+  ✔ passes ordinary application source (365.4783ms)
+✔ scan-secrets: does not cry wolf (2012.0562ms)
+▶ scan-secrets: invariants
+  ✔ refuses to report a pass when it cannot scan (458.2487ms)
+  ✔ does not reprint the secret it found (432.3459ms)
+  ✔ names the file and line so the finding is actionable (385.5523ms)
+✔ scan-secrets: invariants (1276.6121ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ Stage 6.1 dead-letter selection
+  ✔ a fresh song is an enrichment candidate (1.6747ms)
+  ✔ a song at the attempt cap is NOT a candidate (0.2989ms)
+  ✔ a song one attempt below the cap IS still a candidate (0.3706ms)
+  ✔ candidate and dead-letter predicates are exact complements (0.406ms)
+  ✔ database state matches the predicates (97.0828ms)
+  ✔ a matched song leaves the candidate set for two independent reasons (52.6206ms)
+  ✔ the counter column is NOT NULL with a 0 default (25.942ms)
+✔ Stage 6.1 dead-letter selection (626.1122ms)
+▶ Stage 6.2 test-account archival
+  ✔ the archived account is absent from the token leaderboard (57.4024ms)
+  ✔ the archived account cannot claim a rank (16.5532ms)
+  ✔ the archived account is absent from a period leaderboard (27.4523ms)
+  ✔ the archived account is absent from abuse earnings aggregates (12.3222ms)
+  ✔ the archived account is absent from the abnormal-ear detector (16.531ms)
+  ✔ archival is reversible and non-destructive (27.4148ms)
+✔ Stage 6.2 test-account archival (242.1776ms)
+▶ Regression: detectAbnormalEarnRate NULL provenance
+  ✔ the query parses and runs (it previously failed 42601 on every call) (14.5841ms)
+  ✔ a NULL sourceType is KEPT — unknown provenance is what we want to see (12.2947ms)
+  ✔ a GT purchase is NOT flagged (8.6601ms)
+  ✔ an amount under the threshold is NOT flagged (16.7934ms)
+✔ Regression: detectAbnormalEarnRate NULL provenance (79.5767ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ Stage 7.3 host classification
+  ▶ isDeclaredTestHost
+    ✔ reads the allowlist from the env it is given, not from process.env (0.7526ms)
+    ✔ still refuses a host absent from the env it is given (0.1684ms)
+    ✔ defaults to process.env so existing no-arg callers keep working (0.3036ms)
+    ✔ matches case-insensitively and ignores surrounding whitespace (0.1401ms)
+  ✔ isDeclaredTestHost (2.2707ms)
+  ▶ assertIsolatedTargets
+    ✔ accepts a hosted branch declared in the env it is given (0.7025ms)
+    ✔ accepts the loopback containers without an allowlist entry (0.227ms)
+    ✔ refuses a hosted branch that is not declared disposable (0.5255ms)
+    ✔ refuses when DIRECT_URL points at a different host than DATABASE_URL (0.3076ms)
+    ✔ refuses when REDIS_URL is missing entirely (0.3883ms)
+    ✔ refuses when ALLOW_PROD_TESTS is set (0.4002ms)
+    ✔ honours PRISMA_PROTECTED_HOSTS even for an otherwise-declared host (0.251ms)
+  ✔ assertIsolatedTargets (3.2616ms)
+  ▶ hostOf
+    ✔ lowercases the hostname and tolerates junk (0.203ms)
+  ✔ hostOf (0.2778ms)
+✔ Stage 7.3 host classification (6.329ms)
+▶ third-party credentials cannot leak into a test run
+  ✔ every credential .env.test does not declare resolves falsy, even when .env supplies one (1.0904ms)
+  ✔ assigns an empty string rather than deleting, so dotenv cannot restore it (0.5255ms)
+  ✖ preserves the placeholders .env.test declares, including schema-required ones (4.1408ms)
+  ✔ keeps the payment suites hermetic: Paystack is configured by .env.test alone (0.5227ms)
+  ✔ no placeholder is a real credential shape (0.9943ms)
+✖ third-party credentials cannot leak into a test run (7.5704ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ storeService
+  ✔ getStoreItems lists the active item with its token cost (22.8948ms)
+{"level":30,"time":1791455548430,"service":"afro-genie-server","userId":"cmuzednis00004813kcmjnlbh","itemId":"cmuzednkx000148136mzmjbgk","itemName":"R3 Digital Pass 242b4b68","cost":30,"msg":"Store purchase completed"}
+  ✔ purchaseItem debits balance and records the purchase atomically (240.9222ms)
+  ✔ purchaseItem is idempotent per user+item (no double charge) (19.2691ms)
+  ✔ purchaseItem rejects when balance is insufficient (79.4008ms)
+  ✔ purchaseItem rejects unknown or inactive items (6.2583ms)
+{"level":30,"time":1791455548596,"service":"afro-genie-server","purchaseId":"cmuzednuj0005481326b8uacg","userId":"cmuzednis00004813kcmjnlbh","msg":"Store purchase fulfilled"}
+  ✔ fulfillPurchase flips status to fulfilled (17.364ms)
+✔ storeService (863.4429ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ streakService
+  ✔ first login creates a streak of 1 and awards the daily base (238.3694ms)
+  ✔ same-day login is a no-op (no bonus, no extra award) (37.7603ms)
+  ✔ consecutive-day login increments streak and pays the bonus (138.5421ms)
+  ✔ gap resets the streak to 1 (41.9726ms)
+  ✔ ledger award is keyed by calendar day (replay-safe) (6.1205ms)
+✔ streakService (864.2598ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ tierService
+  ✔ resolveTier boundary: 0 -> LISTENER, 5 -> SCRIBE, 50 -> MASTER_TRANSLATOR (1.9151ms)
+  ✔ tier thresholds and multipliers are consistent (2.86ms)
+  ✔ recomputeTier stores LISTENER for a user with zero approvals (73.3421ms)
+  ✔ recomputeTier promotes to SCRIBE at 5 approved translations (47.6333ms)
+  ✔ pending translations do not count toward tier (26.0437ms)
+  ✔ idempotent recompute does not change existing tier (22.5892ms)
+✔ tierService (626.4191ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ tokenService
+  ✔ awardTokens credits the wallet and appends a ledger row (106.5519ms)
+  ✔ same sourceId award is idempotent (no double credit) (61.3331ms)
+  ✔ explicit idempotencyKey wins over derived key (149.6073ms)
+  ✔ spendTokens rejects when balance is insufficient (15.5474ms)
+  ✔ spendTokens validates negative amount (0.8965ms)
+  ✔ spendTokens debits balance atomically (58.5152ms)
+  ✔ penalizeTokens requires negative amount (0.6611ms)
+  ✔ applyTax debits the tax amount and records a TAX row (65.702ms)
+prisma:error 
+Invalid `tx.tokenLedger.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:114:44
+
+  111   throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+  112 }
+  113 
+→ 114 const entry = await tx.tokenLedger.create(
+Unique constraint failed on the fields: (`"idempotencyKey"`)
+prisma:error 
+Invalid `tx.tokenLedger.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:114:44
+
+  111   throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+  112 }
+  113 
+→ 114 const entry = await tx.tokenLedger.create(
+Unique constraint failed on the fields: (`"idempotencyKey"`)
+prisma:error 
+Invalid `tx.tokenLedger.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:114:44
+
+  111   throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+  112 }
+  113 
+→ 114 const entry = await tx.tokenLedger.create(
+Unique constraint failed on the fields: (`"idempotencyKey"`)
+prisma:error 
+Invalid `tx.tokenLedger.create()` invocation in
+C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\src\services\tokenService.ts:114:44
+
+  111   throw new ApiError('Insufficient token balance', 'INSUFFICIENT_FUNDS', 400);
+  112 }
+  113 
+→ 114 const entry = await tx.tokenLedger.create(
+Unique constraint failed on the fields: (`"idempotencyKey"`)
+  ✔ concurrent same-source awards credit exactly once (race-safe) (136.1124ms)
+  ✔ ledger rows carry balanceAfter that never goes negative (29.0013ms)
+✔ tokenService (1065.4234ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ normalizeText / tokenize
+  ✔ drops upload-describing tokens but keeps identity tokens (2.7851ms)
+  ✔ keeps names that appear inside feature credits (0.2234ms)
+  ✔ folds diacritics and & to "and" (1.1055ms)
+  ✔ is empty-safe (0.3615ms)
+✔ normalizeText / tokenize (5.7409ms)
+▶ scoreCandidate — the Soweto incident
+  ✔ rejects the six-artist remix for a song titled "Soweto" (1.1557ms)
+  ✔ rejects it against the credited artist as well as the lead one (0.4147ms)
+✔ scoreCandidate — the Soweto incident (1.8515ms)
+▶ scoreCandidate — hard gates
+  ✔ a non-embeddable video is rejected before scoring (0.9153ms)
+  ✔ an unchecked embeddable flag is flagged, not rejected (0.5983ms)
+  ✔ a title from a different song is rejected (0.3599ms)
+  ✔ an unrelated channel and title are rejected even at the right duration (0.3676ms)
+  ✔ a remix is allowed when the song itself is a remix (0.364ms)
+  ✔ duration drift beyond the threshold is rejected (0.3132ms)
+  ✔ duration drift within the threshold is accepted (0.1861ms)
+  ✔ an unknown duration is not treated as a mismatch (0.241ms)
+  ✔ recognizes an artist name concatenated into an official channel (0.2049ms)
+  ✔ does not let prefix matching open up arbitrary channels (0.1114ms)
+  ✔ an unknown artist does not gate on artist presence (0.1001ms)
+✔ scoreCandidate — hard gates (4.4996ms)
+▶ selectBestCandidate
+  ✔ skips a rejected leading result and takes a valid later one (0.3599ms)
+  ✔ returns null when nothing survives, rather than the best invalid one (0.1294ms)
+  ✔ prefers an exact title over a higher-scoring partial (0.194ms)
+  ✔ prefers an official channel when titles are otherwise equal (0.1355ms)
+  ✔ is deterministic: the same input yields the same video (0.1626ms)
+  ✔ an empty candidate list yields no match (0.0598ms)
+✔ selectBestCandidate (1.2285ms)
+▶ strictness
+  ✔ strict rejects a drifted duration (0.2255ms)
+  ✔ loose accepts the same candidate, and says so (0.1647ms)
+  ✔ loose does not disable the embeddable gate (0.1119ms)
+✔ strictness (0.6373ms)
+▶ summarizeRejections
+  ✔ counts only rejections, most frequent first (0.324ms)
+  ✔ reports each distinct rejection reason separately (0.3546ms)
+✔ summarizeRejections (0.78ms)
+▶ artist role tokens are not artist identity
+  ✔ a role token alone cannot satisfy the artist gate (0.2312ms)
+  ✔ the same candidate still matches when the artist name is really present (0.1394ms)
+  ✔ an artist name made only of role tokens does not gate on the artist (0.0901ms)
+  ✔ role tokens are dropped from the artist gate but not from title overlap (0.1537ms)
+✔ artist role tokens are not artist identity (0.746ms)
+[test-env] isolated: db=localhost redis=localhost api=localhost (0 key(s) applied from .env.test, 0 third-party credential(s) forced empty)
+▶ youtubeService — playback source fallback
+  ✔ Tier 1: own uploaded audio wins over every other source (429.9151ms)
+  ✔ Tier 2: YouTube match is used when no own audio exists (24.1927ms)
+  ✔ Tier NONE: no own audio and no YouTube match resolves to NONE even with a Spotify preview (28.058ms)
+  ✔ Tier NONE: a song with no source at all reports NONE (29.7019ms)
+  ✔ every tier returns the song metadata block the player needs (22.8199ms)
+  ✔ an unknown song id resolves to NONE with no song block (route layer turns this into 404) (14.2115ms)
+  ✔ FIXED (2.17): a soft-deleted song resolves no playback source (19.2305ms)
+{"level":20,"time":1791455556004,"service":"afro-genie-server","msg":"YouTube search skipped — YOUTUBE_API_KEY is not configured"}
+  ✔ getPlaybackSource always reads live DB state (caching is a route concern) (37.6789ms)
+✔ youtubeService — playback source fallback (609.0968ms)
+▶ youtubeService — searchMatch safety
+  ✔ searchMatch is a no-op returning null when YOUTUBE_API_KEY is absent (1.3607ms)
+{"level":20,"time":1791455556034,"service":"afro-genie-server","msg":"YouTube search skipped — YOUTUBE_API_KEY is not configured"}
+{"level":20,"time":1791455556162,"service":"afro-genie-server","msg":"YouTube search skipped — YOUTUBE_API_KEY is not configured"}
+  ✔ batchMatchSongs is a no-op when unconfigured (writes no youtubeVideoId) (151.4951ms)
+✔ youtubeService — searchMatch safety (153.3713ms)
+▶ youtubeService — parseISO8601Duration
+  ✔ parses minutes + seconds (1.3282ms)
+  ✔ parses hours + minutes + seconds (0.5916ms)
+  ✔ parses seconds only (0.1784ms)
+  ✔ parses hours only (0.1699ms)
+  ✔ FIXED (2.21): null, undefined and unparseable input return null, not 0 (0.1197ms)
+  ✔ FIXED (2.21): day-prefixed ISO durations (P1DT2H) are supported (0.1021ms)
+  ✔ rejects a bare "P"/"PT" and trailing junk instead of guessing 0 (0.2231ms)
+✔ youtubeService — parseISO8601Duration (3.2134ms)
+▶ youtubeService — YouTube API quota budget
+  ✔ FIXED (2.21): the enrichment daily cap is within the YouTube free-tier quota (1.4017ms)
+  ✔ the 30-day match cache absorbs repeat lookups (mitigating factor) (0.6148ms)
+✔ youtubeService — YouTube API quota budget (2.2163ms)
+ℹ tests 515
+ℹ suites 76
+ℹ pass 510
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 3
+ℹ todo 0
+ℹ duration_ms 72692.3291
+
+✖ failing tests:
+
+test at test\phase4PlaybackRollout.test.ts:2:7226
+✖ the rollout flag defaults to OFF when FLAG_PLAYBACK_YOUTUBE is absent (298.9894ms)
+  AssertionError [ERR_ASSERTION]: unset FLAG_PLAYBACK_YOUTUBE must resolve to false
+  
+  true !== false
+  
+      at TestContext.<anonymous> (C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\test\phase4PlaybackRollout.test.ts:331:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test\stage7Isolation.test.ts:2:7829
+✖ preserves the placeholders .env.test declares, including schema-required ones (4.1408ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + ''
+  - 'test-only-spotify-client-id'
+  
+      at TestContext.<anonymous> (C:\Users\tidar\Documents\Web Dev Projects\afro-genie\afro-genie-backend\test\stage7Isolation.test.ts:261:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1306:25)
+      at Suite.processPendingSubtests (node:internal/test_runner/test:897:18)
+      at Test.postRun (node:internal/test_runner/test:1447:19)
+      at Test.run (node:internal/test_runner/test:1372:12)
+      at async Suite.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: 'test-only-spotify-client-id',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

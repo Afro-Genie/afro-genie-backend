@@ -25,14 +25,22 @@ export const LIBRARY_ENRICHMENT_JOB_NAME = 'library-enrichment';
 //    dedupe (jobId per day) prevents stacking duplicate jobs.
 //  - Self-scheduling: anything left unmatched is re-queued for the next day.
 
-// Daily cap, derived from the YouTube Data API free-tier allowance:
-//   search.list = 100 units, videos.list = 1 unit  ->  101 units per song
-//   99 songs x 101 = 9,999 units/day, inside the 10,000 unit free-tier cap.
-// The previous 500 needed 50,500 units/day — 5x the allowance — so after ~99
-// songs every remaining attempt returned `403 quotaExceeded` and was counted as
-// `failed`, burning the full day's budget in the first 20% of the run.
-// A full 923-song catalog therefore needs ~10 days at free tier, which is
-// exactly why the follow-up re-queue exists.
+// Daily cap.
+//
+// Originally derived from a now-obsolete reading of the YouTube quota model:
+//   search.list = 100 units, videos.list = 1 unit -> 101 units per song, and
+//   99 x 101 = 9,999 "inside the 10,000 unit free-tier cap".
+// Both halves of that are wrong under the current model. `search.list` bills
+// against a dedicated "Search Queries per day" bucket (default 100 calls/day)
+// rather than debiting 100 units from the shared 10,000-unit pool, and
+// `videos.list` is 1 unit for up to 50 ids. So the binding constraint is the
+// ~100 search calls, not the unit pool — and the pool is barely touched.
+//
+// This job is still the search-based path, so it remains bounded by the search
+// bucket and the cap stays near it. The full catalog is backfilled by
+// `scripts/backfill-youtube-ids.ts`, which enumerates channel upload playlists
+// (playlistItems.list = 1 unit per 50 items) and therefore spends no search
+// budget at all. This job exists to mop up whatever that script cannot resolve.
 export const DAILY_CAP = 99;
 const MATCH_DELAY_MS = 100; // politeness delay between YouTube API calls
 const PROGRESS_LOG_INTERVAL = 50;
@@ -267,6 +275,7 @@ export const processLibraryEnrichmentJob = async (
       const result = await youtubeService.lookupMatch(
         song.title,
         song.artist?.name ?? 'Unknown Artist',
+        song.durationMs,
       );
 
       if (result.status === 'matched') {
@@ -278,6 +287,13 @@ export const processLibraryEnrichmentJob = async (
             // Reset the streak: a song that matched is no longer a candidate, and
             // if it is ever unmatched again it deserves a full attempt budget.
             youtubeMatchAttempts: 0,
+            // Phase B — persist the duration verified during match validation.
+            // Only written when YouTube actually gave a parseable duration, so a
+            // missing measurement cannot overwrite a good stored value with null
+            // and `null` never becomes a plausible-looking 0 (2.21).
+            ...(result.match.durationSeconds !== null && {
+              durationMs: result.match.durationSeconds * 1000,
+            }),
           },
         });
         // The playback source route caches per-song for 1h — invalidate so the

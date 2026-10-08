@@ -22,11 +22,12 @@
 const { isTestEnvRequested, loadIsolatedTestEnv } = require('./lib/test-env.cjs');
 
 if (isTestEnvRequested()) {
-  const { targets, applied } = loadIsolatedTestEnv();
+  const { targets, applied, neutralised } = loadIsolatedTestEnv();
   process.env.AFRO_TEST_ENV_LOADED = 'true';
   // One line, so a failing test run always shows which infrastructure it used.
   console.log(
     `[test-env] isolated: db=${targets.dbHost} redis=${targets.redisHost} api=${targets.apiHost ?? 'none'} ` +
-      `(${applied.length} key(s) applied from .env.test)`,
+      `(${applied.length} key(s) applied from .env.test, ` +
+      `${neutralised.length} third-party credential(s) forced empty)`,
   );
 }

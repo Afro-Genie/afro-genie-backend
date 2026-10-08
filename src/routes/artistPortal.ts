@@ -9,7 +9,6 @@ import { ApiError } from '../middleware/errorHandler';
 import {
   sendArtistApplicationConfirmation,
 } from '../services/emailService';
-import { searchSpotify } from '../services/spotifyService';
 import { enqueueIndexSong } from '../jobs/searchIndexJob';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
 import type { Prisma } from '@prisma/client';
@@ -27,7 +26,6 @@ artistPortalRouter.post(
     body('genre').isString().trim().notEmpty().withMessage('Genre is required'),
     body('bio').isString().trim().notEmpty().withMessage('Bio is required'),
     body('socialLinks').optional().isObject(),
-    body('spotifyArtistId').optional({ nullable: true }).isString(),
     body('imageUrl').optional({ nullable: true }).isString(),
   ],
   validateRequest,
@@ -52,7 +50,7 @@ artistPortalRouter.post(
         );
       }
 
-      const { stageName, genre, bio, socialLinks, spotifyArtistId, imageUrl } = req.body;
+      const { stageName, genre, bio, socialLinks, imageUrl } = req.body;
 
       const application = await prisma.artistApplication.create({
         data: {
@@ -62,7 +60,6 @@ artistPortalRouter.post(
           bio: bio.trim(),
           socialLinks: socialLinks ?? {},
           imageUrl: imageUrl ?? null,
-          spotifyArtistId: spotifyArtistId ?? null,
         },
         select: { id: true, status: true },
       });
@@ -165,8 +162,6 @@ artistPortalRouter.get(
           profileImageUrl: true,
           bannerImageUrl: true,
           socialLinks: true,
-          spotifyId: true,
-          spotifyArtistId: true,
           genres: true,
           verified: true,
           suspended: true,
@@ -225,7 +220,6 @@ artistPortalRouter.put(
     body('bannerImageUrl').optional({ nullable: true }).isString(),
     body('socialLinks').optional().isObject(),
     body('contact').optional().isObject(),
-    body('spotifyArtistId').optional({ nullable: true }).isString(),
     body('stageName').optional({ nullable: true }).isString(),
   ],
   validateRequest,
@@ -242,7 +236,7 @@ artistPortalRouter.put(
         throw new ApiError('Artist profile not found', 'NOT_FOUND', 404);
       }
 
-      const { bio, profileImageUrl, bannerImageUrl, socialLinks, spotifyArtistId, stageName } = req.body;
+      const { bio, profileImageUrl, bannerImageUrl, socialLinks, stageName } = req.body;
 
       const updated = await prisma.artist.update({
         where: { id: artist.id },
@@ -251,7 +245,6 @@ artistPortalRouter.put(
           ...(profileImageUrl !== undefined && { profileImageUrl }),
           ...(bannerImageUrl !== undefined && { bannerImageUrl }),
           ...(socialLinks !== undefined && { socialLinks }),
-          ...(spotifyArtistId !== undefined && { spotifyArtistId }),
           ...(stageName !== undefined && { name: stageName }),
         },
         select: {
@@ -261,42 +254,11 @@ artistPortalRouter.put(
           profileImageUrl: true,
           bannerImageUrl: true,
           socialLinks: true,
-          spotifyArtistId: true,
           verified: true,
         },
       });
 
       res.status(200).json(updated);
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-// ─── POST /api/artists/me/spotify-search ─────────────────────────────────────
-// Proxy Spotify artist search for onboarding link-up.
-
-artistPortalRouter.post(
-  '/artists/me/spotify-search',
-  authenticate,
-  requireRole('ARTIST'),
-  [body('query').isString().trim().notEmpty().withMessage('Search query is required')],
-  validateRequest,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { query } = req.body;
-
-      const result = await searchSpotify(query, 'artist', 5);
-
-      const artists = (result.artists?.items ?? []).map((a) => ({
-        spotifyArtistId: a.id,
-        name: a.name,
-        imageUrl: a.images?.[0]?.url ?? null,
-        genres: a.genres ?? [],
-        followers: a.followers?.total ?? 0,
-      }));
-
-      res.status(200).json({ artists });
     } catch (error) {
       next(error);
     }
@@ -549,9 +511,8 @@ artistPortalRouter.put(
       });
 
       // 2.18 — this is the audio-upload path. Without the eviction an artist
-      // uploaded audio and the song kept playing from the Spotify preview for up
-      // to an hour, because `playback:source:<id>` was already populated with
-      // the SPOTIFY_PREVIEW answer.
+      // uploaded audio and the song kept playing from the stale cached source for
+      // up to an hour, because `playback:source:<id>` was already populated.
       await invalidatePlaybackSourceCache(song.id);
 
       // Update lyrics

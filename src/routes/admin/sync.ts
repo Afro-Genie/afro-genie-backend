@@ -4,14 +4,14 @@ import rateLimit from 'express-rate-limit';
 import { body } from 'express-validator';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
-import { syncQueue, syncPopularTracksQueue } from '../../lib/queue';
-import { getLastSyncStatus, getSyncDashboard } from '../../services/syncEngine';
+import { syncQueue } from '../../lib/queue';
+import { getLastSyncStatus, getSyncDashboard } from '../../services/syncStatusService';
 
 export const adminSyncRouter = Router();
 
 adminSyncRouter.use(authenticate, requireRole('ADMIN'));
 
-const SYNC_JOB_TYPES = ['artist', 'artist-albums', 'artist-full', 'sync-all', 'refresh-stale', 'sync-genres', 'sync-popular-tracks', 'sync-new-releases', 'sync-genre-discovery', 'curated-playlists', 'backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm', 'library-enrichment'];
+const SYNC_JOB_TYPES = ['backfill-lyrics', 'backfill-artists-lastfm', 'enrich-artist-lastfm', 'library-enrichment'];
 
 const syncRunLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -56,7 +56,7 @@ adminSyncRouter.post(
         artistId?: string;
       };
 
-      const needsArtistId = type === 'artist' || type === 'artist-albums' || type === 'artist-full' || type === 'enrich-artist-lastfm';
+      const needsArtistId = type === 'enrich-artist-lastfm';
       if (needsArtistId && !artistId) {
         res.status(400).json({
           error: `artistId is required when type is "${type}"`,
@@ -65,34 +65,17 @@ adminSyncRouter.post(
         return;
       }
 
-      const jobName =
-        type === 'sync-all'
-          ? 'sync-all'
-          : type === 'refresh-stale'
-            ? 'refresh-stale'
-            : type === 'sync-genres'
-              ? 'sync-genres'
-              : type === 'sync-popular-tracks'
-                ? 'sync-popular-tracks'
-                : type === 'sync-new-releases'
-                  ? 'sync-new-releases'
-                  : type === 'sync-genre-discovery'
-                    ? 'sync-genre-discovery'
-                    : type === 'curated-playlists'
-                      ? 'curated-playlists'
-                      : type === 'backfill-lyrics'
-                        ? 'backfill-lyrics'
-                    : type === 'backfill-artists-lastfm'
-                      ? 'backfill-artists-lastfm'
-                      : type === 'enrich-artist-lastfm'
-                        ? 'enrich-artist-lastfm'
-                        : type === 'library-enrichment'
-                          ? 'library-enrichment'
-                          : `sync-${type}-${artistId}`;
+      const jobName = type === 'backfill-lyrics'
+        ? 'backfill-lyrics'
+        : type === 'backfill-artists-lastfm'
+          ? 'backfill-artists-lastfm'
+          : type === 'enrich-artist-lastfm'
+            ? 'enrich-artist-lastfm'
+            : type === 'library-enrichment'
+              ? 'library-enrichment'
+              : type;
 
-      const targetQueue = type === 'sync-popular-tracks' ? syncPopularTracksQueue : syncQueue;
-
-      const job = await targetQueue.add(jobName, { type, artistId }, {
+      const job = await syncQueue.add(jobName, { type, artistId }, {
         attempts: 3,
         backoff: { type: 'exponential', delay: 10000 },
         removeOnComplete: 100,
