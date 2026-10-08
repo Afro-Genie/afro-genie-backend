@@ -257,8 +257,10 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
     return { success: false, message: err instanceof Error ? err.message : 'Purchase failed' };
   }
 
-  // Update Redis balance
-  await safeRedisOp('decrby', () => redis.decrby(balanceKey, cost), undefined);
+  // Update Redis balance — invalidate so the next check refills from
+  // UserWallet (a blind DECRBY drifts from the DB when credits land
+  // between the balance check and this call).
+  await safeRedisOp('del', () => redis.del(balanceKey), undefined);
 
   // Update leaderboard ZSET
   await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, -cost, userId), undefined);
@@ -487,8 +489,8 @@ export async function refundPurchase(purchaseId: string, adminReason?: string): 
   // Mirror of the post-commit Redis upkeep in purchaseItem (the inverse signs).
   // Only the caller that won the status flip adjusts them, so concurrent
   // refunds can't double-apply the Redis side effects either.
+  // (The user:tokens: balance cache is already invalidated by refundTokens.)
   if (winner) {
-    await safeRedisOp('incrby', () => redis.incrby(`${BALANCE_PREFIX}${userId}`, amount), undefined);
     await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, amount, userId), undefined);
     await safeRedisOp('del leaderboards', () => redis.del('leaderboard:all', 'leaderboard:week', 'leaderboard:month'), undefined);
   }

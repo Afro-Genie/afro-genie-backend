@@ -146,6 +146,15 @@ async function applyTransaction(
       // Invalidate the cached ledger summary (fires on every ledger write).
       await invalidateLedgerSummaryCache(params.userId);
 
+      // Invalidate the store's balance cache (user:tokens:). Readers refill
+      // from UserWallet on the next purchase check; blind INCRBY/DECRBY here
+      // would double-count against concurrent writers.
+      try {
+        await redis.del(`user:tokens:${params.userId}`);
+      } catch (err) {
+        logger.warn({ err, userId: params.userId }, 'balance cache invalidation failed');
+      }
+
       return ledger;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;

@@ -5,9 +5,7 @@ import { logger } from '../lib/logger';
 import { awardTokens, getBalance } from './tokenService';
 import { isRewardPaused } from './abuseService';
 
-const TOKEN_CACHE_TTL = 3600;
 const LEADERBOARD_CACHE_TTL = 900;
-const TOKEN_BALANCE_PREFIX = 'user:tokens:';
 const LEADERBOARD_PREFIX = 'leaderboard:';
 const LEADERBOARD_ZSET = 'leaderboard:zset';
 const LEADERBOARD_MAX_MEMBERS = 1000;
@@ -46,9 +44,8 @@ export async function creditTokens(userId: string, amount: number, reason: strin
     idempotencyKey,
   });
 
-  const key = `${TOKEN_BALANCE_PREFIX}${userId}`;
-  await safeRedisOp('incrby', () => redis.incrby(key, amount), undefined);
-  await safeRedisOp('expire', () => redis.expire(key, TOKEN_CACHE_TTL), undefined);
+  // Balance cache (user:tokens:) is invalidated inside awardTokens; readers
+  // refill from UserWallet so no INCRBY is needed here.
 
   await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, amount, userId), undefined);
 
