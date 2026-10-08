@@ -9,6 +9,7 @@ import {
   getLimitedTimeOffers,
   purchaseItem,
   getUserPurchases,
+  getUserEntitlements,
 } from '../services/storeService';
 import { ApiError } from '../middleware/errorHandler';
 
@@ -84,6 +85,19 @@ storeRouter.get(
     try {
       const purchases = await getUserPurchases(req.user!.id);
       res.json(purchases);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+storeRouter.get(
+  '/store/entitlements',
+  authenticate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const entitlements = await getUserEntitlements(req.user!.id);
+      res.json(entitlements);
     } catch (error) {
       next(error);
     }

@@ -13,7 +13,6 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const MODE = process.argv[2] || 'lyrics';
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
@@ -58,11 +57,13 @@ async function backfillLyrics() {
   const start = Date.now();
 
   const songs = await prisma.$queryRawUnsafe<{ id: string; title: string; artistName: string }[]>(
-    `SELECT s."id", s."title", a."name" as "artistName"
+     `SELECT s."id", s."title", a."name" as "artistName"
      FROM "Song" s
      JOIN "Artist" a ON a.id = s."artistId"
-     JOIN "Lyric" l ON l."songId" = s."id"
-     WHERE l."content" IS NULL
+     LEFT JOIN "Lyric" l ON l."songId" = s."id"
+     WHERE s."youtubeVideoId" IS NOT NULL
+     AND s."softDeleted" = false
+     AND (l."id" IS NULL OR l."content" IS NULL)
      ORDER BY RANDOM()`
   );
 
@@ -103,9 +104,17 @@ async function backfillLyrics() {
     const lyricLines = synced ? parseLrc(synced) : null;
 
     try {
-      await prisma.lyric.update({
+      await prisma.lyric.upsert({
         where: { songId: s.id },
-        data: {
+        create: {
+          songId: s.id,
+          content,
+          syncedLyrics: synced,
+          lyricLines: lyricLines ? (lyricLines as any) : undefined,
+          sourceProvider: 'LRCLIB',
+          licenseStatus: 'LICENSED',
+        },
+        update: {
           content,
           syncedLyrics: synced,
           lyricLines: lyricLines ? (lyricLines as any) : undefined,
@@ -131,6 +140,7 @@ async function backfillLyrics() {
 async function backfillLang() {
   console.log('\n═══ LANGUAGE BACKFILL ═══\n');
   const start = Date.now();
+  const { GoogleGenerativeAI } = await import('@google/generative-ai');
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
   const songs = await prisma.$queryRawUnsafe<{ songId: string; content: string }[]>(
@@ -218,7 +228,7 @@ Lyrics: ${chunk.substring(0, 1200)}`;
 async function clearCatalogCache(): Promise<void> {
   try {
     const mod = await import('../src/services/catalogService.js');
-    await mod.clearCache();
+    await mod.catalogService.clearCache();
     console.log('Catalog cache cleared');
   } catch (err) {
     console.warn('Failed to clear catalog cache (non-fatal):', err);

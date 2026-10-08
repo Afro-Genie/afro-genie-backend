@@ -3,7 +3,7 @@ import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
 import { sendBalanceUpdate } from '../lib/balanceSse';
-import { invalidateLedgerSummaryCache } from './tokenService';
+import { invalidateLedgerSummaryCache, refundTokens } from './tokenService';
 
 const BALANCE_PREFIX = 'user:tokens:';
 const BALANCE_TTL = 3600;
@@ -257,8 +257,10 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
     return { success: false, message: err instanceof Error ? err.message : 'Purchase failed' };
   }
 
-  // Update Redis balance
-  await safeRedisOp('decrby', () => redis.decrby(balanceKey, cost), undefined);
+  // Update Redis balance — invalidate so the next check refills from
+  // UserWallet (a blind DECRBY drifts from the DB when credits land
+  // between the balance check and this call).
+  await safeRedisOp('del', () => redis.del(balanceKey), undefined);
 
   // Update leaderboard ZSET
   await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, -cost, userId), undefined);
@@ -290,6 +292,8 @@ export async function getUserPurchases(userId: string) {
     select: {
       id: true,
       spentAmount: true,
+      status: true,
+      fulfilledAt: true,
       createdAt: true,
       item: {
         select: { id: true, name: true, description: true, category: true, metadata: true },
@@ -298,26 +302,216 @@ export async function getUserPurchases(userId: string) {
   });
 }
 
-export async function fulfillPurchase(purchaseId: string) {
-  const purchase = await prisma.storePurchase.update({
-    where: { id: purchaseId },
-    data: { status: 'FULFILLED', fulfilledAt: new Date() },
-    include: {
-      item: { select: { id: true, name: true } },
-      user: { select: { id: true } },
-    },
-  });
+export interface UserEntitlementResponse {
+  id: string;
+  type: string;
+  metadata: unknown;
+  grantedAt: Date;
+}
 
-  await prisma.notification.create({
-    data: {
-      userId: purchase.user.id,
-      title: 'Purchase fulfilled',
-      message: `Your purchase of ${purchase.item.name} has been fulfilled!`,
-      type: 'STORE',
-    },
+/** Entitlements (store decorations, titles, passes) owned by a user. */
+export async function getUserEntitlements(userId: string): Promise<UserEntitlementResponse[]> {
+  return prisma.userEntitlement.findMany({
+    where: { userId },
+    orderBy: { grantedAt: 'desc' },
+    select: { id: true, type: true, metadata: true, grantedAt: true },
+  });
+}
+
+const readEntitlementType = (metadata: unknown): string | null => {
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    const value = (metadata as Record<string, unknown>).entitlementType;
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+/**
+ * Marks a purchase FULFILLED, grants the item's entitlement (if it has one)
+ * and notifies the buyer - all in one transaction so the reward, the status
+ * and the notification can never drift apart.
+ */
+export async function fulfillPurchase(purchaseId: string) {
+  const purchase = await prisma.$transaction(async (tx) => {
+    const existing = await tx.storePurchase.findUnique({
+      where: { id: purchaseId },
+      select: { status: true },
+    });
+    if (!existing) {
+      throw new ApiError('Purchase not found', 'NOT_FOUND', 404);
+    }
+    // Re-fulfilling is allowed (it repairs rows that were fulfilled before
+    // entitlements existed) but must not re-notify the buyer.
+    const alreadyFulfilled = existing.status === 'FULFILLED';
+
+    const updated = await tx.storePurchase.update({
+      where: { id: purchaseId },
+      data: { status: 'FULFILLED', fulfilledAt: alreadyFulfilled ? undefined : new Date() },
+      include: {
+        item: { select: { id: true, name: true, category: true, metadata: true } },
+        user: { select: { id: true } },
+      },
+    });
+
+    const entitlementType = readEntitlementType(updated.item.metadata);
+    if (entitlementType) {
+      // Idempotent: re-fulfilling an already-granted purchase is a no-op.
+      await tx.userEntitlement.upsert({
+        where: { userId_type: { userId: updated.user.id, type: entitlementType } },
+        update: {},
+        create: {
+          userId: updated.user.id,
+          type: entitlementType,
+          metadata: { itemName: updated.item.name, itemCategory: updated.item.category },
+        },
+      });
+    }
+
+    if (!alreadyFulfilled) {
+      await tx.notification.create({
+        data: {
+          userId: updated.user.id,
+          title: 'Purchase fulfilled',
+          message: `Your purchase of ${updated.item.name} has been fulfilled!`,
+          type: 'STORE',
+        },
+      });
+    }
+
+    return updated;
   });
 
   logger.info({ purchaseId, userId: purchase.user.id }, 'Store purchase fulfilled');
 
   return purchase;
+}
+
+export interface RefundPurchaseResult {
+  purchase: {
+    id: string;
+    status: string;
+    spentAmount: number;
+    refundedAt: Date | null;
+    userId: string;
+    itemId: string;
+  };
+  refund: { ledgerId: string; amount: number; balanceAfter: number; idempotencyKey: string };
+}
+
+/**
+ * Reverses a store purchase (GT plan item 9).
+ *
+ * Order matters: the GT credit goes first through `refundTokens`, which is
+ * idempotent on `store-refund:<purchaseId>` — so a retried or concurrent
+ * refund can never credit twice. The domain flip then runs as a conditional
+ * update (`status != REFUNDED`); only the caller that wins that update
+ * removes the entitlement, restores stock and notifies the buyer, so the
+ * side effects happen exactly once.
+ */
+export async function refundPurchase(purchaseId: string, adminReason?: string): Promise<RefundPurchaseResult> {
+  const purchase = await prisma.storePurchase.findUnique({
+    where: { id: purchaseId },
+    include: {
+      item: { select: { id: true, name: true, category: true, metadata: true, stock: true } },
+      user: { select: { id: true } },
+    },
+  });
+  if (!purchase) {
+    throw new ApiError('Purchase not found', 'NOT_FOUND', 404);
+  }
+  if (purchase.status === 'REFUNDED') {
+    throw new ApiError('Purchase already refunded', 'CONFLICT', 409);
+  }
+
+  const userId = purchase.user.id;
+  const amount = purchase.spentAmount;
+
+  const ledger = await refundTokens({
+    userId,
+    amount,
+    reason: `Refund: ${purchase.item.name}`,
+    sourceType: 'STORE_REFUND',
+    sourceId: purchase.id,
+    idempotencyKey: `store-refund:${purchase.id}`,
+    metadata: {
+      purchaseId: purchase.id,
+      itemId: purchase.item.id,
+      ...(adminReason ? { adminReason } : {}),
+    },
+  });
+
+  const winner = await prisma.$transaction(async (tx) => {
+    const flipped = await tx.storePurchase.updateMany({
+      where: { id: purchaseId, status: { not: 'REFUNDED' } },
+      data: { status: 'REFUNDED', refundedAt: new Date() },
+    });
+    if (flipped.count === 0) {
+      return false;
+    }
+
+    // Drop the decoration/title entitlement — unless another fulfilled
+    // purchase still grants the same entitlement type.
+    const entitlementType = readEntitlementType(purchase.item.metadata);
+    if (entitlementType) {
+      const stillOwned = await tx.storePurchase.count({
+        where: {
+          userId,
+          id: { not: purchaseId },
+          status: 'FULFILLED',
+          item: { is: { metadata: { path: ['entitlementType'], equals: entitlementType } } },
+        },
+      });
+      if (stillOwned === 0) {
+        await tx.userEntitlement.deleteMany({ where: { userId, type: entitlementType } });
+      }
+    }
+
+    if (purchase.item.stock !== null) {
+      await tx.storeItem.update({
+        where: { id: purchase.item.id },
+        data: { stock: { increment: 1 } },
+      });
+    }
+
+    await tx.notification.create({
+      data: {
+        userId,
+        title: 'Purchase refunded',
+        message: `Your purchase of ${purchase.item.name} has been refunded. ${amount} GT was returned to your balance.`,
+        type: 'STORE',
+      },
+    });
+    return true;
+  });
+
+  // Mirror of the post-commit Redis upkeep in purchaseItem (the inverse signs).
+  // Only the caller that won the status flip adjusts them, so concurrent
+  // refunds can't double-apply the Redis side effects either.
+  // (The user:tokens: balance cache is already invalidated by refundTokens.)
+  if (winner) {
+    await safeRedisOp('zincrby', () => redis.zincrby(LEADERBOARD_ZSET, amount, userId), undefined);
+    await safeRedisOp('del leaderboards', () => redis.del('leaderboard:all', 'leaderboard:week', 'leaderboard:month'), undefined);
+  }
+
+  const current = await prisma.storePurchase.findUnique({
+    where: { id: purchaseId },
+    select: { id: true, status: true, spentAmount: true, refundedAt: true, userId: true, itemId: true },
+  });
+
+  logger.info(
+    { purchaseId, userId, amount, ledgerId: ledger.id, sideEffectsApplied: winner },
+    'Store purchase refunded',
+  );
+
+  return {
+    purchase: current!,
+    refund: {
+      ledgerId: ledger.id,
+      amount,
+      balanceAfter: ledger.balanceAfter,
+      idempotencyKey: ledger.idempotencyKey,
+    },
+  };
 }

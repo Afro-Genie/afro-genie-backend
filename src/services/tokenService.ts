@@ -146,6 +146,15 @@ async function applyTransaction(
       // Invalidate the cached ledger summary (fires on every ledger write).
       await invalidateLedgerSummaryCache(params.userId);
 
+      // Invalidate the store's balance cache (user:tokens:). Readers refill
+      // from UserWallet on the next purchase check; blind INCRBY/DECRBY here
+      // would double-count against concurrent writers.
+      try {
+        await redis.del(`user:tokens:${params.userId}`);
+      } catch (err) {
+        logger.warn({ err, userId: params.userId }, 'balance cache invalidation failed');
+      }
+
       return ledger;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
@@ -229,6 +238,19 @@ export function adjustTokens(params: Omit<TokenTransactionParams, 'type'>) {
     throw new ApiError('Adjustment amount cannot be zero', 'VALIDATION_ERROR', 400);
   }
   return applyTransaction({ ...params, type: 'ADMIN_ADJUST' });
+}
+
+/**
+ * REFUND credit — returns GT the user already spent. Positive amount, never
+ * balance-constrained (a refund can only raise the balance). The caller must
+ * pass a deterministic idempotencyKey (or sourceType+sourceId) so a retried
+ * refund can never credit twice.
+ */
+export function refundTokens(params: Omit<TokenTransactionParams, 'type'>) {
+  if (params.amount <= 0) {
+    throw new ApiError('Refund amount must be positive', 'VALIDATION_ERROR', 400);
+  }
+  return applyTransaction({ ...params, type: 'REFUND' });
 }
 
 export async function getBalance(userId: string): Promise<number> {
@@ -325,6 +347,7 @@ async function computeSummary(userId: string, type?: string) {
     spent: byType.get('SPEND') ?? 0,
     penalized: (byType.get('PENALTY') ?? 0) + (byType.get('TAX') ?? 0),
     adjusted: byType.get('ADMIN_ADJUST') ?? 0,
+    refunded: byType.get('REFUND') ?? 0,
   } as const;
 }
 

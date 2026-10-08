@@ -772,6 +772,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
   const uploadsStub = (items: unknown[], nextPageToken?: string) => {
     let pagesServed = 0;
     return {
+      search: {},
       channels: {
         items: [
           {
@@ -870,6 +871,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
   test('a repeated nextPageToken terminates the walk instead of looping', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
     installYouTubeStub({
+      search: {},
       channels: {
         items: [
           {
@@ -916,6 +918,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
   test('unions every candidate handle, not just the first that resolves', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
     installYouTubeStub({
+      search: {},
       channels: {
         items: [
           {
@@ -950,6 +953,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
   test('dedupes a video that appears on more than one channel', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
     installYouTubeStub({
+      search: {},
       channels: {
         items: [
           {
@@ -980,7 +984,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
 
   test('returns null when no handle spelling resolves to a channel', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ channels: { items: [] }, videos: {} });
+    installYouTubeStub({ search: {}, channels: { items: [] }, videos: {} });
 
     const candidates = await youtubeService.listArtistUploads('Nobody At All', 50);
 
@@ -989,7 +993,7 @@ describe('Phase C — youtubeService.listArtistUploads', () => {
 
   test('an API error on channels.list degrades to null instead of throwing', async () => {
     env.YOUTUBE_API_KEY = 'phase4-stub-key';
-    installYouTubeStub({ channels: {}, channelsStatus: 403, videos: {} });
+    installYouTubeStub({ search: {}, channels: {}, channelsStatus: 403, videos: {} });
 
     const candidates = await youtubeService.listArtistUploads('Some Artist', 50);
 

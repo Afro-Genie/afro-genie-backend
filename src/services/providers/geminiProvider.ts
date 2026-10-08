@@ -132,6 +132,13 @@ function splitLyricsIntoChunks(lyrics: string): string[] {
   return chunks.length > 0 ? chunks : [lyrics];
 }
 
+const countNewlines = (text: string): number => (text.match(/\n/g) || []).length;
+
+// Detects when a model collapsed multi-line lyrics into a single (or near-single) line.
+// Only triggers when the source clearly had structure to preserve.
+const isNewlinesCollapsed = (source: string, output: string): boolean =>
+  countNewlines(source) >= 5 && countNewlines(output) < countNewlines(source) * 0.5;
+
 function buildTranslationPrompt(
   artist: string,
   title: string,
@@ -162,6 +169,7 @@ TRANSLATION GUIDELINES:
 4. Preserve proper nouns (artist names, place names, deity names) but explain them in culturalContext.
 5. In culturalContext, explain all: cultural idioms, proverbs, code-switching patterns, slang terms, and any reference that a non-Nigerian reader would miss.
 6. CRITICAL: Every single line of the input lyrics must appear in the translatedLyrics output. Do NOT skip, summarize, or omit any lines.
+7. CRITICAL: The "translatedLyrics" JSON string MUST contain literal newline escapes (\\n) exactly where the input has line breaks. NEVER return the whole translation as one continuous line.
 
 LYRICS TO TRANSLATE:
 ${lyrics}
@@ -357,8 +365,42 @@ export class GeminiProvider implements TranslationProvider {
       throw new Error(`Gemini returned invalid JSON for translation: ${rawText.slice(0, 300)}`);
     }
 
-    const tokensInput = geminiResult.usageMetadata?.promptTokenCount ?? 0;
-    const tokensOutput = geminiResult.usageMetadata?.candidatesTokenCount ?? 0;
+    let retryTokensInput = 0;
+    let retryTokensOutput = 0;
+    let resultModel = geminiResult.model;
+
+    // Guard: models occasionally collapse all lines into one continuous string,
+    // which breaks the frontend's line-by-line pairing. Retry once if that happens.
+    if (isNewlinesCollapsed(lyrics, parsed.translatedLyrics)) {
+      logger.warn(
+        { title, collapsedLines: countNewlines(parsed.translatedLyrics), sourceLines: countNewlines(lyrics) },
+        'Gemini translation lost line breaks — retrying once',
+      );
+      const retryResult = await this.generateWithFallback(
+        `${prompt}\n\nREMINDER: The "translatedLyrics" string MUST use \\n between every line so the line count matches the input lyrics. Do NOT merge lines into one continuous block.`,
+        {
+          responseMimeType: 'application/json',
+          responseSchema: TRANSLATION_SCHEMA,
+          maxOutputTokens: 16384,
+        },
+      );
+      try {
+        const retryParsed = JSON.parse(extractJson(retryResult.text)) as typeof parsed;
+        if (!isNewlinesCollapsed(lyrics, retryParsed.translatedLyrics)) {
+          parsed = retryParsed;
+          retryTokensInput = retryResult.usageMetadata?.promptTokenCount ?? 0;
+          retryTokensOutput = retryResult.usageMetadata?.candidatesTokenCount ?? 0;
+          resultModel = retryResult.model;
+        } else {
+          logger.warn({ title }, 'Retry still collapsed — accepting first result');
+        }
+      } catch {
+        logger.warn({ title }, 'Retry returned invalid JSON — accepting first result');
+      }
+    }
+
+    const tokensInput = (geminiResult.usageMetadata?.promptTokenCount ?? 0) + retryTokensInput;
+    const tokensOutput = (geminiResult.usageMetadata?.candidatesTokenCount ?? 0) + retryTokensOutput;
 
     return {
       translatedLyrics: parsed.translatedLyrics,
@@ -366,7 +408,7 @@ export class GeminiProvider implements TranslationProvider {
       tokensInput,
       tokensOutput,
       tokensUsed: tokensInput + tokensOutput,
-      model: geminiResult.model,
+      model: resultModel,
       promptVersion,
     };
   }
@@ -419,8 +461,16 @@ export class GeminiProvider implements TranslationProvider {
       totalTokensInput += mergeResult.usageMetadata?.promptTokenCount ?? 0;
       totalTokensOutput += mergeResult.usageMetadata?.candidatesTokenCount ?? 0;
 
+      // Guard: if the merge call collapsed the line breaks, keep the
+      // concatenation (which preserves every chunk's line structure).
+      const mergedLyrics = isNewlinesCollapsed(mergedTranslation, mergeParsed.translatedLyrics)
+        ? (logger.warn({ lost: countNewlines(mergedTranslation), got: countNewlines(mergeParsed.translatedLyrics) },
+            'Chunk merge collapsed line breaks — using concatenated chunks'),
+          mergedTranslation)
+        : mergeParsed.translatedLyrics;
+
       return {
-        translatedLyrics: mergeParsed.translatedLyrics,
+        translatedLyrics: mergedLyrics,
         culturalContext: mergeParsed.culturalContext,
         tokensInput: totalTokensInput,
         tokensOutput: totalTokensOutput,
