@@ -2,20 +2,28 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../src/lib/prisma';
 import { awardTokens, getBalance } from '../src/services/tokenService';
-import { getStoreItems, purchaseItem, getUserPurchases, fulfillPurchase } from '../src/services/storeService';
+import {
+  getStoreItems,
+  purchaseItem,
+  getUserPurchases,
+  getUserEntitlements,
+  fulfillPurchase,
+} from '../src/services/storeService';
 import { createUser, cleanupUser, uid } from './helpers';
 
 describe('storeService', () => {
   let user: Awaited<ReturnType<typeof createUser>>;
   let itemId: string;
+  let itemName: string;
   let purchaseId: string;
 
   before(async () => {
     user = await createUser();
+    itemName = `R3 Digital Pass ${uid()}`;
     itemId = (
       await prisma.storeItem.create({
         data: {
-          name: `R3 Digital Pass ${uid()}`,
+          name: itemName,
           tokenCost: 30,
           category: 'DIGITAL',
           metadata: { digital: true, entitlementType: 'TRANSLATION_PASS' },
@@ -52,6 +60,8 @@ describe('storeService', () => {
     assert.ok(mine);
     purchaseId = mine.id;
     assert.equal(mine.spentAmount, 30);
+    assert.equal(mine.status, 'PENDING_FULFILLMENT');
+    assert.equal(mine.fulfilledAt, null);
 
     const ledger = await prisma.tokenLedger.findFirst({
       where: { userId: user.id, type: 'SPEND', sourceId: null },
@@ -92,5 +102,42 @@ describe('storeService', () => {
     const fulfilled = await fulfillPurchase(purchaseId);
     assert.equal(fulfilled.status, 'FULFILLED');
     assert.ok(fulfilled.fulfilledAt);
+
+    // The buyer's own purchase list must agree immediately — status and
+    // fulfilledAt are what the store page renders.
+    const purchases = await getUserPurchases(user.id);
+    const mine = purchases.find((p) => p.id === purchaseId);
+    assert.ok(mine);
+    assert.equal(mine.status, 'FULFILLED');
+    assert.ok(mine.fulfilledAt);
+  });
+
+  test('fulfillPurchase grants the reward entitlement the profile reads', async () => {
+    const entitlements = await getUserEntitlements(user.id);
+    const reward = entitlements.find((e) => e.type === 'TRANSLATION_PASS');
+    assert.ok(reward, 'expected TRANSLATION_PASS entitlement after fulfilment');
+    const metadata = reward.metadata as { itemName?: string };
+    assert.equal(metadata.itemName, itemName);
+    assert.ok(new Date(reward.grantedAt).getTime() > 0);
+  });
+
+  test('fulfillPurchase notifies the buyer exactly once', async () => {
+    const countStoreNotifications = () =>
+      prisma.notification.count({ where: { userId: user.id, type: 'STORE' } });
+
+    const before = await countStoreNotifications();
+    assert.ok(before >= 1);
+
+    await fulfillPurchase(purchaseId);
+
+    assert.equal(await countStoreNotifications(), before, 're-fulfilment must not re-notify');
+    const entitlements = await prisma.userEntitlement.findMany({
+      where: { userId: user.id, type: 'TRANSLATION_PASS' },
+    });
+    assert.equal(entitlements.length, 1, 're-fulfilment must not duplicate the reward');
+  });
+
+  test('fulfillPurchase rejects unknown purchases', async () => {
+    await assert.rejects(() => fulfillPurchase('does-not-exist'), /Purchase not found/);
   });
 });

@@ -145,6 +145,7 @@ enum TokenTransactionType {
   PENALTY
   TAX
   ADMIN_ADJUST
+  REFUND
 }
 
 enum ChallengeType {
@@ -1197,6 +1198,7 @@ model StorePurchase {
   status        PurchaseStatus @default(PENDING_FULFILLMENT)
   purchaseToken String?        @unique
   fulfilledAt   DateTime?
+  refundedAt    DateTime?
   createdAt     DateTime       @default(now())
   item          StoreItem      @relation(fields: [itemId], references: [id], onDelete: Restrict)
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)

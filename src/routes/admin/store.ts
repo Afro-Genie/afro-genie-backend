@@ -6,7 +6,8 @@ import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../middleware/errorHandler';
-import { applyDiscount, clearDiscount, fulfillPurchase } from '../../services/storeService';
+import { applyDiscount, clearDiscount, fulfillPurchase, refundPurchase } from '../../services/storeService';
+import { logModAction } from '../../services/moderationAuditService';
 
 export const adminStoreRouter = Router();
 
@@ -298,6 +299,44 @@ adminStoreRouter.patch(
     try {
       const purchase = await fulfillPurchase(req.params.id);
       return res.status(200).json(purchase);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/admin/store/purchases/:id/refund
+// Reverses a purchase: credits the GT back, flips status to REFUNDED,
+// removes the entitlement and restores stock. Idempotent per purchase.
+// ---------------------------------------------------------------------------
+adminStoreRouter.patch(
+  '/store/purchases/:id/refund',
+  [
+    param('id').isString().notEmpty().withMessage('Purchase id is required'),
+    body('reason').optional().isString().isLength({ max: 500 }).withMessage('reason must be <= 500 chars'),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const reason = typeof req.body.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : undefined;
+      const result = await refundPurchase(req.params.id, reason);
+
+      await logModAction({
+        moderatorId: req.user!.id,
+        actionType: 'STORE_REFUND',
+        targetId: result.purchase.userId,
+        targetType: 'USER',
+        details: JSON.stringify({
+          purchaseId: result.purchase.id,
+          itemId: result.purchase.itemId,
+          amount: result.refund.amount,
+          ledgerId: result.refund.ledgerId,
+          ...(reason ? { reason } : {}),
+        }),
+      });
+
+      return res.status(200).json(result);
     } catch (err) {
       return next(err);
     }

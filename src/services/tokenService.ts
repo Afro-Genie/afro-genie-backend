@@ -231,6 +231,19 @@ export function adjustTokens(params: Omit<TokenTransactionParams, 'type'>) {
   return applyTransaction({ ...params, type: 'ADMIN_ADJUST' });
 }
 
+/**
+ * REFUND credit — returns GT the user already spent. Positive amount, never
+ * balance-constrained (a refund can only raise the balance). The caller must
+ * pass a deterministic idempotencyKey (or sourceType+sourceId) so a retried
+ * refund can never credit twice.
+ */
+export function refundTokens(params: Omit<TokenTransactionParams, 'type'>) {
+  if (params.amount <= 0) {
+    throw new ApiError('Refund amount must be positive', 'VALIDATION_ERROR', 400);
+  }
+  return applyTransaction({ ...params, type: 'REFUND' });
+}
+
 export async function getBalance(userId: string): Promise<number> {
   const wallet = await prisma.userWallet.findUnique({ where: { userId } });
   return wallet?.balance ?? 0;
@@ -325,6 +338,7 @@ async function computeSummary(userId: string, type?: string) {
     spent: byType.get('SPEND') ?? 0,
     penalized: (byType.get('PENALTY') ?? 0) + (byType.get('TAX') ?? 0),
     adjusted: byType.get('ADMIN_ADJUST') ?? 0,
+    refunded: byType.get('REFUND') ?? 0,
   } as const;
 }
 
