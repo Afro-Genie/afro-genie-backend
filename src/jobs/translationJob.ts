@@ -1,7 +1,7 @@
 import type { Job } from 'bullmq';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
-import { estimateCostUsd } from '../services/providers/geminiProvider';
+import { estimateCostUsd } from '../services/aiProviders/geminiProvider';
 import { logAICall, translateWithFallback } from '../services/translationService';
 import { onAiTranslationCompleted } from '../services/rewardHooks';
 import type { TranslationJobData } from '../types/translation';
