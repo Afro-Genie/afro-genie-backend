@@ -7,7 +7,7 @@ import { prisma } from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
 import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
-import { estimateCostUsd, CURRENT_PROMPT_VERSION } from '../services/providers/geminiProvider';
+import { estimateCostUsd, CURRENT_PROMPT_VERSION } from '../services/aiProviders/geminiProvider';
 import { logger } from '../lib/logger';
 import { queueReward } from '../services/rewardService';
 import { evaluateVoterBadges } from '../services/badgeService';
