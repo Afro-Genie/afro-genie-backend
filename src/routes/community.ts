@@ -71,7 +71,10 @@ communityRouter.post(
     body('forumCategoryId').isString().withMessage('Forum category is required'),
     body('songId').optional().isString(),
     body('artistId').optional().isString(),
-    body('imageUrl').optional().isString(),
+    body('imageUrl').optional({ values: 'falsy' }).isString(),
+    body('image').optional({ values: 'falsy' }).isString(),
+    body('attachmentUrl').optional({ values: 'falsy' }).isString(),
+    body('fileUrl').optional({ values: 'falsy' }).isString(),
     body('isModeratorOnly').optional().isBoolean(),
     validateRequest,
   ],
@@ -82,7 +85,8 @@ communityRouter.post(
       if (isModeratorOnly && user.role !== 'MODERATOR' && user.role !== 'ADMIN') {
         return res.status(403).json({ error: 'Only moderators can create moderator-only topics', code: 'FORBIDDEN' });
       }
-      const topic = await communityService.createTopic({ ...req.body, isModeratorOnly }, user.id);
+      const imageUrl = req.body.imageUrl || req.body.image || req.body.attachmentUrl || req.body.fileUrl || null;
+      const topic = await communityService.createTopic({ ...req.body, imageUrl, isModeratorOnly }, user.id);
       res.status(201).json(topic);
     } catch (error) {
       next(error);
@@ -98,6 +102,12 @@ communityRouter.get(
     try {
       const userId = (req.user as AuthUser | undefined)?.id;
       const topic = await communityService.getTopic(req.params.id, userId);
+      try {
+        const { communityRedesignService } = await import('../services/communityRedesignService');
+        await communityRedesignService.recordTopicView(req.params.id, userId);
+      } catch (e) {
+        // ignore view tracking errors
+      }
       res.json(topic);
     } catch (error) {
       next(error);
@@ -298,14 +308,15 @@ communityRouter.post(
   '/community/vote/topic',
   authenticate,
   [
-    body('topicId').isString().withMessage('Topic ID is required'),
-    body('voteType').isIn(['UPVOTE', 'DOWNVOTE']).withMessage('Vote type must be UPVOTE or DOWNVOTE'),
+    body('topicId').isString().notEmpty().withMessage('Topic ID is required'),
+    body('voteType').optional().isIn(['UPVOTE', 'DOWNVOTE', 'LIKE']).withMessage('Vote type must be UPVOTE, DOWNVOTE, or LIKE'),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user as AuthUser;
-      const result = await communityService.voteOnTopic(user.id, req.body.topicId, req.body.voteType);
+      const voteType = req.body.voteType === 'LIKE' ? 'UPVOTE' : req.body.voteType || 'UPVOTE';
+      const result = await communityService.voteOnTopic(user.id, req.body.topicId, voteType);
       res.json(result);
     } catch (error) {
       next(error);
@@ -318,13 +329,14 @@ communityRouter.post(
   authenticate,
   [
     body('commentId').isString().withMessage('Comment ID is required'),
-    body('voteType').isIn(['UPVOTE', 'DOWNVOTE']).withMessage('Vote type must be UPVOTE or DOWNVOTE'),
+    body('voteType').optional().isIn(['UPVOTE', 'DOWNVOTE', 'LIKE']).withMessage('Vote type must be UPVOTE, DOWNVOTE, or LIKE'),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = req.user as AuthUser;
-      const result = await communityService.voteOnComment(user.id, req.body.commentId, req.body.voteType);
+      const voteType = req.body.voteType === 'LIKE' ? 'UPVOTE' : req.body.voteType || 'UPVOTE';
+      const result = await communityService.voteOnComment(user.id, req.body.commentId, voteType);
       res.json(result);
     } catch (error) {
       next(error);
