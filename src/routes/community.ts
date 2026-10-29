@@ -103,7 +103,7 @@ communityRouter.get(
       const userId = (req.user as AuthUser | undefined)?.id;
       const topic = await communityService.getTopic(req.params.id, userId);
       try {
-        const { communityRedesignService } = await import('../services/communityRedesignService');
+        const { communityRedesignService } = await import('../services/communityRedesignService.js');
         await communityRedesignService.recordTopicView(req.params.id, userId);
       } catch (e) {
         // ignore view tracking errors
