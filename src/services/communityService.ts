@@ -113,7 +113,7 @@ class CommunityService {
       prisma.topic.count({ where }),
     ]);
 
-    // Fetch user votes if logged in
+    // Fetch user likes if logged in
     let userVotes = new Map<string, string>();
     if (userId) {
       const votes = await prisma.topicVote.findMany({
@@ -121,7 +121,7 @@ class CommunityService {
         select: { topicId: true, voteType: true },
       });
       for (const v of votes) {
-        userVotes.set(v.topicId, v.voteType);
+        userVotes.set(v.topicId, 'UPVOTE');
       }
     }
 
@@ -141,6 +141,7 @@ class CommunityService {
       updatedAt: t.updatedAt,
       hotScore: 0,
       userVote: userVotes.get(t.id) || null,
+      liked: userVotes.has(t.id),
     }));
 
     if (params.sort === 'hot') {
@@ -173,7 +174,7 @@ class CommunityService {
         forumCategoryId: data.forumCategoryId,
         songId: data.songId || null,
         artistId: data.artistId || null,
-        imageUrl: data.imageUrl || null,
+        imageUrl: (data as any).imageUrl || (data as any).image || (data as any).attachmentUrl || (data as any).fileUrl || null,
         isModeratorOnly: data.isModeratorOnly || false,
       },
     });
@@ -209,14 +210,35 @@ class CommunityService {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
-    // Fetch current user's vote on this topic
+    try {
+      if (userId) {
+        const existingView = await prisma.topicView.findFirst({
+          where: { topicId: id, userId },
+        });
+        if (!existingView) {
+          await prisma.topic.update({
+            where: { id },
+            data: { viewCount: { increment: 1 } },
+          });
+          await prisma.topicView.create({
+            data: { topicId: id, userId },
+          }).catch(() => {});
+        }
+      } else {
+        // For anonymous users, don't auto-increment here to avoid double counting
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Fetch current user's like status on this topic
     let userVote: string | null = null;
     if (userId) {
       const vote = await prisma.topicVote.findUnique({
         where: { userId_topicId: { userId, topicId: id } },
         select: { voteType: true },
       });
-      userVote = vote?.voteType || null;
+      userVote = vote ? 'UPVOTE' : null;
     }
 
     // Fetch all comments for this topic, build nested tree
@@ -225,6 +247,7 @@ class CommunityService {
       include: {
         user: { select: { id: true, displayName: true, photoUrl: true, role: true } },
         _count: { select: { replies: true } },
+        votes: { select: { userId: true, voteType: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -233,7 +256,13 @@ class CommunityService {
     const rootComments: any[] = [];
 
     for (const c of comments) {
-      commentMap.set(c.id, { ...c, replies: [], replyCount: c._count.replies });
+      const { votes, ...rest } = c as any;
+      let userVote: string | null = null;
+      if (userId && votes) {
+        const v = votes.find((x: any) => x.userId === userId);
+        userVote = v?.voteType || null;
+      }
+      commentMap.set(c.id, { ...rest, replies: [], replyCount: c._count?.replies || 0, userVote, votes: undefined });
     }
 
     for (const c of commentMap.values()) {
@@ -316,61 +345,43 @@ class CommunityService {
   }
 
   // ── Voting ──────────────────────────────────────────────────
-  async voteOnTopic(userId: string, topicId: string, voteType: VoteType) {    const topic = await prisma.topic.findUnique({ where: { id: topicId } });
+  async voteOnTopic(userId: string, topicId: string, voteType: VoteType) {
+    const topic = await prisma.topic.findUnique({ where: { id: topicId } });
     if (!topic || topic.softDeleted) {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
+    // Treat any vote as like/unlike toggle (single like per user)
     const existing = await prisma.topicVote.findUnique({
       where: { userId_topicId: { userId, topicId } },
     });
 
-    const isNewUpvote = voteType === 'UPVOTE' && (!existing || existing.voteType === 'DOWNVOTE');
+    const isNewLike = !existing;
 
     if (existing) {
-      if (existing.voteType === voteType) {
-        // Toggle off: remove the vote entirely
-        await prisma.$transaction(async (tx) => {
-          await tx.topicVote.delete({ where: { id: existing.id } });
-
-          const delta = voteType === 'UPVOTE' ? -1 : 1;
-          await tx.topic.update({
-            where: { id: topicId },
-            data: { likes: { increment: delta } },
-          });
-        });
-      } else {
-        // Change vote: adjust likes by +2 (remove -1, add +1)
-        await prisma.$transaction(async (tx) => {
-          await tx.topicVote.update({
-            where: { id: existing.id },
-            data: { voteType },
-          });
-
-          const delta = voteType === 'UPVOTE' ? 2 : -2;
-          await tx.topic.update({
-            where: { id: topicId },
-            data: { likes: { increment: delta } },
-          });
-        });
-      }
-    } else {
-      // New vote
+      // Unlike - remove the vote entirely
       await prisma.$transaction(async (tx) => {
-        await tx.topicVote.create({
-          data: { userId, topicId, voteType },
-        });
-
-        const delta = voteType === 'UPVOTE' ? 1 : -1;
+        await tx.topicVote.delete({ where: { id: existing.id } });
         await tx.topic.update({
           where: { id: topicId },
-          data: { likes: { increment: delta } },
+          data: { likes: { decrement: 1 } },
+        });
+      });
+    } else {
+      // Like - add vote
+      await prisma.$transaction(async (tx) => {
+        await tx.topicVote.create({
+          data: { userId, topicId, voteType: 'UPVOTE' },
+        });
+        await tx.topic.update({
+          where: { id: topicId },
+          data: { likes: { increment: 1 } },
         });
       });
     }
 
-    if (isNewUpvote && topic.authorId !== userId) {
-      await queueReward(topic.authorId, 1, 'Topic upvoted', 'TOPIC_UPVOTED', `topic-upvote:${topicId}:${userId}`);
+    if (isNewLike && topic.authorId !== userId) {
+      await queueReward(topic.authorId, 1, 'Topic liked', 'TOPIC_UPVOTED', `topic-upvote:${topicId}:${userId}`);
     }
 
     const updated = await prisma.topic.findUnique({
@@ -380,7 +391,7 @@ class CommunityService {
 
     await evaluateVoterBadges(userId);
 
-    return { likes: updated!.likes };
+    return { likes: updated!.likes, liked: isNewLike };
   }
 
   async voteOnComment(userId: string, commentId: string, voteType: VoteType) {

@@ -495,19 +495,23 @@ class CommunityRedesignService {
       throw new ApiError('Topic not found', 'NOT_FOUND', 404);
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.topic.update({
-        where: { id: topicId },
-        data: { viewCount: { increment: 1 } },
-      });
-
-      await tx.topicView.create({
-        data: {
-          topicId,
-          userId: userId || null,
-        },
-      });
-    });
+    try {
+      if (userId) {
+        const existingView = await prisma.topicView.findFirst({ where: { topicId, userId } });
+        if (existingView) return { success: true };
+        await prisma.topic.update({
+          where: { id: topicId },
+          data: { viewCount: { increment: 1 } },
+        });
+        await prisma.topicView.create({
+          data: { topicId, userId },
+        }).catch(() => {});
+      } else {
+        // skip for anonymous to avoid duplicates
+      }
+    } catch (e) {
+      // ignore
+    }
 
     return { success: true };
   }
