@@ -4,7 +4,7 @@ import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { translationQueue } from '../lib/queue';
-import { CURRENT_PROMPT_VERSION, GeminiProvider } from './providers/geminiProvider';
+import { CURRENT_PROMPT_VERSION, GeminiProvider } from './aiProviders/geminiProvider';
 import type { TranslationJobData, TranslationProvider } from '../types/translation';
 
 // ---------------------------------------------------------------------------

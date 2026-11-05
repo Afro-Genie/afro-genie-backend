@@ -54,3 +54,8 @@ seed-progress.json
 
 # Audit reports
 audit-artists-report.json
+
+# Local game feature documentation
+/docs/GAMES_IMPLEMENTATION.md
+/docs/GAMES_IMPLEMENTATION_CHECKLIST.md
+/docs/GAMES_PUZZLE_DATA_BREAKDOWN.md
