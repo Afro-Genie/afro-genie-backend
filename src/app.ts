@@ -43,6 +43,7 @@ import { playbackRouter } from './routes/playback';
 import { referralsRouter } from './routes/referrals';
 import { leaderboardHistoryRouter } from './routes/leaderboardHistory';
 import { challengesRouter } from './routes/challenges';
+import { gamesRouter } from './routes/games';
 import { moderationRouter } from './routes/moderation';
 import { adminModerationRouter } from './routes/admin/moderation';
 import { adminTranslationsRouter } from './routes/admin/translations';
@@ -157,6 +158,7 @@ if (featureFlags.REFERRALS) {
 }
 app.use('/api', leaderboardHistoryRouter);
 app.use('/api', challengesRouter);
+app.use('/api', gamesRouter);
 app.use('/api/admin', adminModerationRouter);
 app.use('/api/admin', adminTranslationsRouter);
 app.use('/api/admin', adminLyricsRouter);

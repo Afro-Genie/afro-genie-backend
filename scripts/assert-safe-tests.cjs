@@ -78,6 +78,26 @@ const ALLOWLIST = new Map([
       'namespaced to a provider name no real provider uses; shared counters ' +
       'snapshot and restored; post-run residue zero.',
   ],
+  [
+    'test/gameContent.test.ts',
+    'Pure Zod schema tests: imports only the game-content validator, Zod, and ' +
+      'node:test; no Prisma client, network access, or database writes.',
+  ],
+  [
+    'test/gameSchedule.test.ts',
+    'Pure UTC date and level-rotation tests: imports only the schedule helper ' +
+      'and node:test; no Prisma client, network access, or database writes.',
+  ],
+  [
+    'test/gamePresentation.test.ts',
+    'Pure public-payload and initial-state tests: imports only game schemas, ' +
+      'presentation helpers, generated Prisma enums, and node:test; no client instance, network access, or database writes.',
+  ],
+  [
+    'test/gameRules.test.ts',
+    'Pure authoritative game-rule tests: imports only Zod-validated transition functions, ' +
+      'game schemas, generated Prisma enums, and node:test; no client instance, network access, or database writes.',
+  ],
 ]);
 
 /** Collect argv entries that look like test files, ignoring flags and their values. */

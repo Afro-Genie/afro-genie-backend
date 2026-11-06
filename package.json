@@ -37,6 +37,7 @@
     "secrets:scan:staged": "node scripts/scan-secrets.cjs --staged",
     "secrets:scan:history": "node scripts/scan-secrets.cjs --history",
     "prisma:seed": "prisma db seed",
+    "seed:games": "tsx prisma/seed-games.ts",
     "seed:batch": "tsx scripts/batch-seed.ts",
     "seed:resume": "tsx scripts/batch-seed.ts --resume",
     "seed:monitor": "tsx scripts/seed-monitor.ts",
@@ -131,4 +132,3 @@
     "typescript": "^5.7.2"
   }
 }
-

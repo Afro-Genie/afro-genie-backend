@@ -188,6 +188,26 @@ enum ReleaseStatus {
   PUBLISHED
 }
 
+enum GameType {
+  LYRIC_GENIE
+  STAR_SEEKER
+  RHYTHM_GROUPS
+  DAILY_BEADS
+}
+
+enum GamePuzzleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum GamePlayStatus {
+  IN_PROGRESS
+  WON
+  LOST
+  COMPLETED
+}
+
 model User {
   id                         String                            @id @default(cuid())
   email                      String                            @unique
@@ -209,6 +229,7 @@ model User {
   isTestAccount              Boolean                           @default(false)
   referralCode               String?                           @unique
   referredByUserId           String?
+  gamePlays                  GamePlay[]
   createdAt                  DateTime                          @default(now())
   updatedAt                  DateTime                          @updatedAt
   lastLoginAt                DateTime?
@@ -1348,4 +1369,46 @@ model Challenge {
 
   @@unique([type, startsAt])
   @@index([active, expiresAt])
+}
+
+model GamePuzzle {
+  id          String           @id
+  game        GameType
+  level       Int
+  status      GamePuzzleStatus @default(DRAFT)
+  content     Json
+  publishedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  plays       GamePlay[]
+
+  @@unique([game, level])
+  @@index([game, status, level])
+}
+
+model GamePlay {
+  id             String         @id @default(cuid())
+  userId         String?
+  guestTokenHash String?        @db.Char(64)
+  game           GameType
+  puzzleId       String
+  puzzleDate     DateTime       @db.Date
+  status         GamePlayStatus @default(IN_PROGRESS)
+  state          Json
+  actionResults  Json           @default("{}")
+  version        Int            @default(0)
+  won            Boolean?
+  score          Int?
+  completedAt    DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  puzzle         GamePuzzle     @relation(fields: [puzzleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, game, puzzleDate])
+  @@unique([guestTokenHash, game, puzzleDate])
+  @@index([userId, puzzleDate])
+  @@index([game, puzzleDate])
+  @@index([expiresAt])
 }
