@@ -25,6 +25,22 @@ export const authRouter = Router();
 
 configureGoogleStrategy();
 
+const PASSWORD_REQUIREMENTS_MESSAGE =
+  'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a special character.';
+
+const passwordRule = (field: string) =>
+  body(field)
+    .isString()
+    .withMessage(PASSWORD_REQUIREMENTS_MESSAGE)
+    .isStrongPassword({
+      minLength: 8,
+      minLowercase: 1,
+      minUppercase: 1,
+      minNumbers: 1,
+      minSymbols: 1
+    })
+    .withMessage(PASSWORD_REQUIREMENTS_MESSAGE);
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 5,
@@ -40,7 +56,7 @@ authRouter.post(
   '/auth/register',
   [
     body('email').isEmail().withMessage('Valid email is required'),
-    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    passwordRule('password'),
     body('displayName').trim().isLength({ min: 1, max: 80 }).withMessage('Display name is required')
   ],
   validateRequest,
@@ -64,7 +80,7 @@ authRouter.post(
   '/auth/register-artist',
   [
     body('email').isEmail().withMessage('Valid email is required'),
-    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    passwordRule('password'),
     body('stageName').trim().isLength({ min: 1, max: 80 }).withMessage('Stage name is required'),
     body('genre').trim().isLength({ min: 1 }).withMessage('Genre is required'),
     body('bio').trim().isLength({ min: 1 }).withMessage('Bio is required')
@@ -209,7 +225,7 @@ authRouter.post(
   '/auth/reset-password',
   [
     body('token').isString().notEmpty().withMessage('token is required'),
-    body('newPassword').isLength({ min: 8 }).withMessage('newPassword must be at least 8 characters')
+    passwordRule('newPassword')
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
@@ -228,7 +244,7 @@ authRouter.post(
   requireAuth,
   [
     body('currentPassword').isString().notEmpty().withMessage('currentPassword is required'),
-    body('newPassword').isLength({ min: 8 }).withMessage('newPassword must be at least 8 characters')
+    passwordRule('newPassword')
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {

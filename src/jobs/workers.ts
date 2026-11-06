@@ -50,15 +50,15 @@ import type { SyncJobData } from './syncWorker';
 // but they are identical at runtime (same Redis protocol).
 const connection = sharedConnection as any;
 
-// Translation worker has its own Redis connection with a longer commandTimeout (15s)
-// so long-running Gemini AI calls don't trigger heartbeat timeouts on other workers.
+// Translation worker has its own Redis connection so long-running Gemini AI
+// calls don't block other workers. It must not set commandTimeout: BullMQ uses
+// blocking reads on this connection, and those waits are not command failures.
 const translationConnection = new IORedis(env.REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
   lazyConnect: true,
   enableOfflineQueue: true,
   connectTimeout: 10000,
-  commandTimeout: 15000,
   retryStrategy(times: number) {
     if (times > 15) return null;
     return Math.min(times * 300, 10000);
