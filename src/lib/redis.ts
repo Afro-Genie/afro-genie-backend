@@ -31,7 +31,10 @@ function buildRedisClient(): IORedis {
     lazyConnect: true,
     enableOfflineQueue: true,
     connectTimeout: 5000,
-    commandTimeout: 5000,
+    // No commandTimeout here: BullMQ workers duplicate this client for their
+    // blocking reads (BRPOPLPUSH/BZPOPMIN), and those commands legitimately wait
+    // longer than any fixed timeout while the queue is idle. A commandTimeout is
+    // inherited by the duplicate and was surfacing as "Command timed out" errors.
     // Bound total reconnect backoff (~35s max) so a genuinely unreachable Redis
     // ends the connection and flushes queued commands with an error instead of
     // queueing them forever (which previously hung tests and health checks).

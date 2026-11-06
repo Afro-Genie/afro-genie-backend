@@ -227,7 +227,12 @@ const ensureCollections = async (): Promise<void> => {
     }
   })();
 
-  await collectionsReadyPromise;
+  try {
+    await collectionsReadyPromise;
+  } catch (error) {
+    collectionsReadyPromise = null;
+    throw error;
+  }
 };
 
 const buildSongDocument = async (songId: string): Promise<SongDocument | null> => {
@@ -435,7 +440,7 @@ const runCollectionSearch = async (
     return { found: 0, page: Number(params.page) || 1, hits: [] };
   }
   try {
-    return client.collections(collection).documents().search(params) as Promise<SearchResponse>;
+    return (await client.collections(collection).documents().search(params)) as SearchResponse;
   } catch (error) {
     logger.warn({ error }, 'Typesense search failed; returning empty results');
     return { found: 0, page: Number(params.page) || 1, hits: [] };
@@ -443,7 +448,11 @@ const runCollectionSearch = async (
 };
 
 export const searchCatalog = async (input: SearchParams) => {
-  await ensureCollections();
+  try {
+    await ensureCollections();
+  } catch (error) {
+    logger.warn({ error }, 'Typesense collections unavailable; search may return no results');
+  }
 
   const start = Date.now();
   const q = input.q?.trim() ? input.q.trim() : EMPTY_Q;
@@ -540,7 +549,11 @@ export const searchCatalog = async (input: SearchParams) => {
 };
 
 export const suggestCatalog = async (query: string) => {
-  await ensureCollections();
+  try {
+    await ensureCollections();
+  } catch (error) {
+    logger.warn({ error }, 'Typesense collections unavailable; suggest may return no results');
+  }
 
   const start = Date.now();
   const q = query.trim();
