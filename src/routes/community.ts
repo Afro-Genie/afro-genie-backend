@@ -148,7 +148,6 @@ communityRouter.patch(
     try {
       const user = req.user as AuthUser;
       const result = await communityService.pinTopic(req.params.id, user.id);
-      await queueReward(user.id, 2, 'Topic pinned', 'MODERATOR_ACTION', `mod-pin:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -165,7 +164,6 @@ communityRouter.patch(
     try {
       const user = req.user as AuthUser;
       const result = await communityService.lockTopic(req.params.id, user.id);
-      await queueReward(user.id, 2, 'Topic locked', 'MODERATOR_ACTION', `mod-lock:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
@@ -182,7 +180,6 @@ communityRouter.delete(
     try {
       const user = req.user as AuthUser;
       const result = await communityService.softDeleteTopic(req.params.id, user.id);
-      await queueReward(user.id, 1, 'Topic deleted', 'MODERATOR_ACTION', `mod-delete:${req.params.id}:${user.id}`);
       res.json(result);
     } catch (error) {
       next(error);
