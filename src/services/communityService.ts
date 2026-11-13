@@ -484,15 +484,15 @@ class CommunityService {
     action: ModerationAction,
     moderatorId: string | undefined,
     id: string,
-  ) {
-    if (!moderatorId) return;
+  ): Promise<{ amount: number; balance: number } | null> {
+    if (!moderatorId) return null;
     if (await isRewardPaused(moderatorId)) {
       logger.warn({ moderatorId, action }, 'Community moderation reward skipped — moderator paused');
-      return;
+      return null;
     }
     const amount = (await getRewardConfig()).COMMUNITY_MODERATION_REWARD;
     try {
-      await awardTokens({
+      const award = await awardTokens({
         userId: moderatorId,
         type: 'EARN',
         amount,
@@ -502,20 +502,26 @@ class CommunityService {
         idempotencyKey: `moderation:${action}:${id}:${moderatorId}`,
       });
 
-      await createNotification({
+      // The in-app notification is a side effect: fire it off without holding
+      // up the HTTP response (and the balance update) that the moderator is
+      // waiting on.
+      void createNotification({
         userId: moderatorId,
         title: 'Community moderation reward',
         message: `You earned +${amount} tokens for a community moderation action.`,
         type: 'REWARD',
-      });
+      }).catch((err) => logger.warn({ err, moderatorId, action }, 'community moderation reward notification failed'));
 
-      await contributeTax({
+      const tax = await contributeTax({
         userId: moderatorId,
         rewardAmount: amount,
         sourceId: `moderation:${action}:${id}`,
       });
+
+      return { amount, balance: tax?.balanceAfter ?? award.balanceAfter };
     } catch (err) {
       logger.error({ err, action, moderatorId, targetId: id }, 'community moderation reward failed');
+      return null;
     }
   }
 
@@ -530,12 +536,13 @@ class CommunityService {
       data: { isPinned: !topic.isPinned },
     });
 
+    let reward: { amount: number; balance: number } | null = null;
     if (updated.isPinned) {
       await this.logAction('TOPIC_PINNED', moderatorId, id);
-      await this.moderationReward('TOPIC_PINNED', moderatorId, id);
+      reward = await this.moderationReward('TOPIC_PINNED', moderatorId, id);
     }
 
-    return { isPinned: updated.isPinned };
+    return { isPinned: updated.isPinned, reward };
   }
 
   async lockTopic(id: string, moderatorId?: string) {
@@ -549,12 +556,13 @@ class CommunityService {
       data: { isLocked: !topic.isLocked },
     });
 
+    let reward: { amount: number; balance: number } | null = null;
     if (updated.isLocked) {
       await this.logAction('TOPIC_LOCKED', moderatorId, id);
-      await this.moderationReward('TOPIC_LOCKED', moderatorId, id);
+      reward = await this.moderationReward('TOPIC_LOCKED', moderatorId, id);
     }
 
-    return { isLocked: updated.isLocked };
+    return { isLocked: updated.isLocked, reward };
   }
 
   async softDeleteTopic(id: string, moderatorId?: string) {
@@ -569,9 +577,9 @@ class CommunityService {
     });
 
     await this.logAction('TOPIC_DELETED', moderatorId, id);
-    await this.moderationReward('TOPIC_DELETED', moderatorId, id);
+    const reward = await this.moderationReward('TOPIC_DELETED', moderatorId, id);
 
-    return { deleted: true };
+    return { deleted: true, reward };
   }
 
   // ── Topic Updates ────────────────────────────────────────────

@@ -40,10 +40,10 @@ export async function contributeTax(params: {
   userId: string;
   rewardAmount: number;
   sourceId: string;
-}): Promise<void> {
+}): Promise<{ balanceAfter: number } | null> {
   const config = await getRewardConfig();
   const taxAmount = Math.max(1, Math.round(params.rewardAmount * config.MOD_POOL_TAX_PERCENT));
-  if (taxAmount <= 0) return;
+  if (taxAmount <= 0) return null;
 
   const ledger = await applyTax({
     userId: params.userId,
@@ -59,6 +59,10 @@ export async function contributeTax(params: {
     { userId: params.userId, taxAmount, sourceId: params.sourceId, ledgerId: ledger.id },
     'mod pool tax collected',
   );
+
+  // Return the post-tax balance so the caller can surface the authoritative
+  // wallet value in the same response as the moderation action.
+  return { balanceAfter: ledger.balanceAfter };
 }
 
 const startOfWeekUtc = (now = new Date()): Date => {
