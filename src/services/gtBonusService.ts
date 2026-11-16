@@ -1,6 +1,6 @@
 import { logger } from '../lib/logger';
 import { getRewardConfig } from '../config/rewards';
-import { awardTokens } from './tokenService';
+import { awardTokensWithResult } from './tokenService';
 import { createNotification } from './notificationService';
 import { prisma } from '../lib/prisma';
 
@@ -16,7 +16,7 @@ import { prisma } from '../lib/prisma';
 export async function awardWelcomeBonus(userId: string): Promise<void> {
   try {
     const config = await getRewardConfig();
-    const { idempotencyKey } = await awardTokens({
+    const { ledger, created } = await awardTokensWithResult({
       userId,
       type: 'EARN',
       amount: config.WELCOME_BONUS,
@@ -26,6 +26,8 @@ export async function awardWelcomeBonus(userId: string): Promise<void> {
       idempotencyKey: `welcome:${userId}`,
     });
 
+    if (!created) return;
+
     await createNotification({
       userId,
       title: 'Welcome to Genie Tokens',
@@ -33,7 +35,7 @@ export async function awardWelcomeBonus(userId: string): Promise<void> {
       type: 'REWARD',
     });
 
-    logger.info({ userId, idempotencyKey }, 'welcome bonus awarded');
+    logger.info({ userId, idempotencyKey: ledger.idempotencyKey }, 'welcome bonus awarded');
   } catch (err) {
     logger.error({ err, userId }, 'welcome bonus failed');
   }
@@ -42,7 +44,7 @@ export async function awardWelcomeBonus(userId: string): Promise<void> {
 export async function awardProfileBonus(userId: string): Promise<void> {
   try {
     const config = await getRewardConfig();
-    await awardTokens({
+    const { created } = await awardTokensWithResult({
       userId,
       type: 'EARN',
       amount: config.PROFILE_BONUS,
@@ -51,6 +53,8 @@ export async function awardProfileBonus(userId: string): Promise<void> {
       sourceId: userId,
       idempotencyKey: `profile-complete:${userId}`,
     });
+
+    if (!created) return;
 
     await createNotification({
       userId,

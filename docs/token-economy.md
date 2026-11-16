@@ -92,11 +92,23 @@ Frontend flags that gate nav/routes: `tokensPage`, `leaderboardPage`, `storePage
 | # | Decision | Resolved as |
 |---|---|---|
 | D1 | Pool tax rate/scope | **5%** on **all moderator EARN** (translation approval, report resolve, community moderation) |
-| D2 | Community moderation reward | **+5 EARN** with `moderation:<action>:<targetId>:<moderatorId>` idempotency |
+| D2 | Community moderation reward | **+5 EARN once per topic/action** for pin/lock; other moderation rewards remain idempotent per moderator and target |
 | D3 | Referral reward | **Referrer +10, no friend bonus**; `ReferralsPage` copy matches |
 | D4 | Tier counting | `APPROVED` **+ `PUBLISHED`** translations (benign; documented) |
 | D5 | `Translation.publishedAt` | Not in schema; not required by any §5 endpoint/UI (skipped) |
 | D6 | ModPool cadence | Job repeats every 30 days; service fn `distributeWeekly` (idempotent per week); manual `POST /admin/moderation/pool/distribute` trigger |
+
+Topic pin and lock rewards are awarded only on the first successful pin/lock for
+that topic, regardless of which moderator performs it. Unpinning or unlocking
+does not earn a reward, and later pin/lock cycles do not repeat it. The ledger
+source (`COMMUNITY_MODERATION` plus action and topic ID) also prevents awards
+that were recorded before this rule was deployed.
+
+If repeat rewards are intentionally introduced later, each eligible moderation
+event needs a persisted, unique event ID. Use that ID in the award and tax
+idempotency keys; do not key a repeatable reward only by topic/action or by
+moderator. This lets retries of the same event remain safe while genuinely new
+events can be rewarded.
 
 ---
 

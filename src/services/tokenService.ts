@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Prisma, TokenTransactionType } from '@prisma/client';
+import { Prisma, TokenTransactionType, type TokenLedger } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
@@ -86,7 +86,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 async function applyTransaction(
   params: TokenTransactionParams,
   opts: { requireSufficientBalance?: boolean } = {},
-) {
+): Promise<{ ledger: TokenLedger; created: boolean }> {
   const idempotencyKey = buildIdempotencyKey(
     params.sourceType,
     params.sourceId,
@@ -94,7 +94,7 @@ async function applyTransaction(
   );
 
   const existing = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
-  if (existing) return existing;
+  if (existing) return { ledger: existing, created: false };
 
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -155,7 +155,7 @@ async function applyTransaction(
         logger.warn({ err, userId: params.userId }, 'balance cache invalidation failed');
       }
 
-      return ledger;
+      return { ledger, created: true };
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
 
@@ -163,14 +163,14 @@ async function applyTransaction(
       // their row so callers observe a stable balanceAfter instead of an error.
       if (uniqueViolationTarget(err).includes('idempotencyKey')) {
         const duplicate = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
-        if (duplicate) return duplicate;
+        if (duplicate) return { ledger: duplicate, created: false };
       }
 
       // Some other unique index (today: UserWallet.userId from a concurrent
       // upsert) blocked us. Re-read our own key to be sure it wasn't a duplicate
       // credit, then retry now that the conflicting row exists.
       const maybeDuplicate = await prisma.tokenLedger.findUnique({ where: { idempotencyKey } });
-      if (maybeDuplicate) return maybeDuplicate;
+      if (maybeDuplicate) return { ledger: maybeDuplicate, created: false };
 
       if (attempt >= UNIQUE_CONFLICT_RETRIES) throw err;
 
@@ -185,6 +185,11 @@ async function applyTransaction(
 
 /** EARN-style credit. Positive amount. */
 export function awardTokens(params: TokenTransactionParams) {
+  return applyTransaction(params).then(({ ledger }) => ledger);
+}
+
+/** EARN-style credit that also reports whether this call created the ledger row. */
+export function awardTokensWithResult(params: TokenTransactionParams) {
   return applyTransaction(params);
 }
 
@@ -193,7 +198,8 @@ export function spendTokens(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount >= 0) {
     throw new ApiError('Spend amount must be negative', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'SPEND' }, { requireSufficientBalance: true });
+  return applyTransaction({ ...params, type: 'SPEND' }, { requireSufficientBalance: true })
+    .then(({ ledger }) => ledger);
 }
 
 /** PENALTY-style debit. Negative amount. */
@@ -201,7 +207,8 @@ export function penalizeTokens(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount >= 0) {
     throw new ApiError('Penalty amount must be negative', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'PENALTY' }, { requireSufficientBalance: true });
+  return applyTransaction({ ...params, type: 'PENALTY' }, { requireSufficientBalance: true })
+    .then(({ ledger }) => ledger);
 }
 
 /**
@@ -213,11 +220,19 @@ export function forcePenalizeTokens(params: Omit<TokenTransactionParams, 'type'>
   if (params.amount >= 0) {
     throw new ApiError('Penalty amount must be negative', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'PENALTY' });
+  return applyTransaction({ ...params, type: 'PENALTY' }).then(({ ledger }) => ledger);
 }
 
 /** TAX-style debit (moderator pool contribution). Negative amount. */
 export function applyTax(params: Omit<TokenTransactionParams, 'type'>) {
+  if (params.amount >= 0) {
+    throw new ApiError('Tax amount must be negative', 'VALIDATION_ERROR', 400);
+  }
+  return applyTaxWithResult(params).then(({ ledger }) => ledger);
+}
+
+/** TAX-style debit that also reports whether this call created the ledger row. */
+export function applyTaxWithResult(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount >= 0) {
     throw new ApiError('Tax amount must be negative', 'VALIDATION_ERROR', 400);
   }
@@ -229,7 +244,7 @@ export function clawbackTokens(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount >= 0) {
     throw new ApiError('Clawback amount must be negative', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'TAX' });
+  return applyTransaction({ ...params, type: 'TAX' }).then(({ ledger }) => ledger);
 }
 
 /** ADMIN_ADJUST credit/debit. Amount may be positive or negative. */
@@ -237,7 +252,7 @@ export function adjustTokens(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount === 0) {
     throw new ApiError('Adjustment amount cannot be zero', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'ADMIN_ADJUST' });
+  return applyTransaction({ ...params, type: 'ADMIN_ADJUST' }).then(({ ledger }) => ledger);
 }
 
 /**
@@ -250,7 +265,7 @@ export function refundTokens(params: Omit<TokenTransactionParams, 'type'>) {
   if (params.amount <= 0) {
     throw new ApiError('Refund amount must be positive', 'VALIDATION_ERROR', 400);
   }
-  return applyTransaction({ ...params, type: 'REFUND' });
+  return applyTransaction({ ...params, type: 'REFUND' }).then(({ ledger }) => ledger);
 }
 
 export async function getBalance(userId: string): Promise<number> {

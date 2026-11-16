@@ -106,30 +106,6 @@ roleRequestsRouter.get(
   },
 );
 
-roleRequestsRouter.get(
-  '/:id',
-  [param('id').isString().notEmpty().withMessage('Request ID is required')],
-  validateRequest,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).user.id;
-      const { id } = req.params;
-
-      const roleRequest = await prisma.roleRequest.findFirst({
-        where: { id, userId },
-      });
-
-      if (!roleRequest) {
-        throw new ApiError('Role request not found', 'NOT_FOUND', 404);
-      }
-
-      res.status(200).json(roleRequest);
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
 // ─── GET /roles/pending ──────────────────────────────────────────────────────
 // Check if user has pending/under-review role requests.
 
@@ -149,6 +125,30 @@ roleRequestsRouter.get(
       });
 
       res.status(200).json({ requests });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+roleRequestsRouter.get(
+  '/:id',
+  [param('id').isString().notEmpty().withMessage('Request ID is required')],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user.id;
+      const { id } = req.params;
+
+      const roleRequest = await prisma.roleRequest.findFirst({
+        where: { id, userId },
+      });
+
+      if (!roleRequest) {
+        throw new ApiError('Role request not found', 'NOT_FOUND', 404);
+      }
+
+      res.status(200).json(roleRequest);
     } catch (error) {
       next(error);
     }

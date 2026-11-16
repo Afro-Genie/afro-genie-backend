@@ -9,6 +9,7 @@ import { queueReward, getUserTokenBalance } from '../../services/rewardService';
 import { logger } from '../../lib/logger';
 import { logModAction } from '../../services/moderationAuditService';
 import { getGuidelines, upsertGuidelines } from '../../services/guidelinesService';
+import { sendWelcomeMessage } from '../../services/moderationService';
 
 export const adminModerationRouter = Router();
 
@@ -828,7 +829,7 @@ adminModerationRouter.get(
       const since = new Date();
       since.setDate(since.getDate() - days);
 
-      const where = { createdAt: { gte: since } };
+      const where = { createdAt: { gte: since }, moderatorWelcomedAt: null };
 
       const [users, total] = await Promise.all([
         prisma.user.findMany({
@@ -860,6 +861,35 @@ adminModerationRouter.get(
         data: users,
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminModerationRouter.post(
+  '/moderation/users/:id/welcome',
+  [
+    param('id').isString().notEmpty(),
+    body('message').isString().trim().notEmpty().isLength({ max: 5000 }),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id: userId } = req.params;
+      const { message } = req.body as { message: string };
+      const moderatorId = req.user!.id;
+
+      const result = await sendWelcomeMessage(userId, message);
+
+      await logModAction({
+        moderatorId,
+        actionType: 'WELCOME_MESSAGE_SENT',
+        targetId: userId,
+        targetType: 'user',
+      });
+
+      res.json(result);
     } catch (error) {
       next(error);
     }

@@ -3,7 +3,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
 import { getRewardConfig } from '../config/rewards';
-import { awardTokens } from './tokenService';
+import { awardTokensWithResult } from './tokenService';
 import { contributeTax } from './modPoolService';
 import { createNotification } from './notificationService';
 import { onTopicShare } from './rewardHooks';
@@ -132,6 +132,7 @@ class CommunityService {
       authorId: t.authorId,
       author: t.author,
       category: t.forumCategory,
+      imageUrl: t.imageUrl,
       likes: t.likes,
       shares: t.shares,
       commentCount: t._count.comments,
@@ -476,9 +477,9 @@ class CommunityService {
   }
 
   /**
-   * +5 EARN (idempotent per action/target/moderator) for a community
-   * governance action, with the 5% moderation-pool tax applied. Replays are
-   * safe: the unique idempotencyKey prevents double-awarding.
+   * Pays the community moderation reward with the configured pool tax.
+   * Pin/lock rewards are one-time per topic/action; other moderation rewards
+   * remain idempotent per action, target, and moderator.
    */
   private async moderationReward(
     action: ModerationAction,
@@ -486,21 +487,35 @@ class CommunityService {
     id: string,
   ): Promise<{ amount: number; balance: number } | null> {
     if (!moderatorId) return null;
+    const sourceId = `${action}:${id}`;
+    const oneTimeTopicAction = action === 'TOPIC_PINNED' || action === 'TOPIC_LOCKED';
+    if (
+      oneTimeTopicAction &&
+      await prisma.tokenLedger.findFirst({
+        where: { sourceType: 'COMMUNITY_MODERATION', sourceId },
+        select: { id: true },
+      })
+    ) {
+      return null;
+    }
     if (await isRewardPaused(moderatorId)) {
       logger.warn({ moderatorId, action }, 'Community moderation reward skipped — moderator paused');
       return null;
     }
     const amount = (await getRewardConfig()).COMMUNITY_MODERATION_REWARD;
     try {
-      const award = await awardTokens({
+      const { ledger: award, created } = await awardTokensWithResult({
         userId: moderatorId,
         type: 'EARN',
         amount,
         reason: 'Community moderation action',
         sourceType: 'COMMUNITY_MODERATION',
-        sourceId: `${action}:${id}`,
-        idempotencyKey: `moderation:${action}:${id}:${moderatorId}`,
+        sourceId,
+        idempotencyKey: oneTimeTopicAction
+          ? `moderation:${action}:${id}`
+          : `moderation:${action}:${id}:${moderatorId}`,
       });
+      if (!created) return null;
 
       // The in-app notification is a side effect: fire it off without holding
       // up the HTTP response (and the balance update) that the moderator is

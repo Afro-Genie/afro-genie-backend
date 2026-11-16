@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { sendNotificationUpdate } from '../lib/notificationSse';
 import { NotificationType } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -18,7 +19,7 @@ export interface CreateNotificationParams {
 
 export async function createNotification(params: CreateNotificationParams): Promise<void> {
   try {
-    await prisma.notification.create({
+    const notification = await prisma.notification.create({
       data: {
         userId: params.userId,
         title: params.title,
@@ -26,6 +27,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
         type: params.type ?? 'REWARD',
       },
     });
+    sendNotificationUpdate(notification);
   } catch (err) {
     logger.error({ err, ...params }, 'createNotification failed');
   }

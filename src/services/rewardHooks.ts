@@ -1,7 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getRewardConfig } from '../config/rewards';
-import { awardTokens } from './tokenService';
+import { awardTokensWithResult } from './tokenService';
 import { getMultiplier, recomputeTier } from './tierService';
 import { createNotification } from './notificationService';
 import { contributeTax } from './modPoolService';
@@ -76,7 +76,7 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
     ]);
 
     if (!reviewerPaused) {
-      await awardTokens({
+      const { created: reviewerRewardCreated } = await awardTokensWithResult({
         userId: event.reviewerId,
         type: 'EARN',
         amount: config.TRANSLATION_APPROVED_AMOUNT,
@@ -86,14 +86,17 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
         idempotencyKey: `translation-approved:${event.translationId}:${event.reviewerId}`,
       });
 
-      await createNotification({
-        userId: event.reviewerId,
-        title: 'Review reward',
-        message: `You earned +${config.TRANSLATION_APPROVED_AMOUNT} tokens for approving a translation.`,
-        type: 'REWARD',
-      });
+      if (reviewerRewardCreated) {
+        await createNotification({
+          userId: event.reviewerId,
+          title: 'Review reward',
+          message: `You earned +${config.TRANSLATION_APPROVED_AMOUNT} tokens for approving a translation.`,
+          type: 'REWARD',
+        });
+      }
 
-      // 10% of the reviewer reward flows into the moderation pool.
+      // The tax operation is independently idempotent, so retries can repair
+      // a failed tax write without repeating the reward notification.
       await contributeTax({
         userId: event.reviewerId,
         rewardAmount: config.TRANSLATION_APPROVED_AMOUNT,
@@ -112,7 +115,7 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
 
     // Contributor (translator) GT for approved work (Phase 1, 2.2.3).
     if (!contributorPaused) {
-      await awardTokens({
+      const { created: contributorRewardCreated } = await awardTokensWithResult({
         userId: event.userId,
         type: 'EARN',
         amount: config.TRANSLATOR_APPROVED_AMOUNT,
@@ -122,12 +125,14 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
         idempotencyKey: `translation-contributor:${event.translationId}`,
       });
 
-      await createNotification({
-        userId: event.userId,
-        title: 'Tokens earned',
-        message: `Your translation was approved. You earned +${config.TRANSLATOR_APPROVED_AMOUNT} tokens.`,
-        type: 'REWARD',
-      });
+      if (contributorRewardCreated) {
+        await createNotification({
+          userId: event.userId,
+          title: 'Tokens earned',
+          message: `Your translation was approved. You earned +${config.TRANSLATOR_APPROVED_AMOUNT} tokens.`,
+          type: 'REWARD',
+        });
+      }
     } else {
       logger.warn({ event }, 'reward hook onTranslationApproved skipped contributor reward — contributor paused');
     }
@@ -169,7 +174,7 @@ export async function onCorrectionApproved(event: CorrectionApprovedEvent): Prom
     const multiplier = await getMultiplier(event.userId);
     const amount = Math.round(config.CORRECTION_APPROVED_AMOUNT * multiplier);
 
-    await awardTokens({
+    const { created } = await awardTokensWithResult({
       userId: event.userId,
       type: 'EARN',
       amount,
@@ -179,12 +184,14 @@ export async function onCorrectionApproved(event: CorrectionApprovedEvent): Prom
       idempotencyKey: `correction:${event.correctionId}`,
     });
 
-    await createNotification({
-      userId: event.userId,
-      title: 'Correction approved',
-      message: `Your correction was approved. You earned +${amount} tokens.`,
-      type: 'REWARD',
-    });
+    if (created) {
+      await createNotification({
+        userId: event.userId,
+        title: 'Correction approved',
+        message: `Your correction was approved. You earned +${amount} tokens.`,
+        type: 'REWARD',
+      });
+    }
   } catch (err) {
     logger.error({ err, event }, 'reward hook onCorrectionApproved failed');
   }
@@ -220,7 +227,7 @@ export async function onAiTranslationCompleted(event: AiTranslationCompletedEven
     const multiplier = await getMultiplier(event.userId);
     const amount = Math.round(config.AI_TRANSLATION_AMOUNT * multiplier);
 
-    await awardTokens({
+    const { created } = await awardTokensWithResult({
       userId: event.userId,
       type: 'EARN',
       amount,
@@ -230,12 +237,14 @@ export async function onAiTranslationCompleted(event: AiTranslationCompletedEven
       idempotencyKey: `ai-trigger:${event.jobId}`,
     });
 
-    await createNotification({
-      userId: event.userId,
-      title: 'Tokens earned',
-      message: `You earned +${amount} tokens for generating an AI translation.`,
-      type: 'REWARD',
-    });
+    if (created) {
+      await createNotification({
+        userId: event.userId,
+        title: 'Tokens earned',
+        message: `You earned +${amount} tokens for generating an AI translation.`,
+        type: 'REWARD',
+      });
+    }
   } catch (err) {
     logger.error({ err, event }, 'reward hook onAiTranslationCompleted failed');
   }
@@ -254,7 +263,7 @@ export async function onTopicShare(event: TopicShareEvent): Promise<void> {
       return;
     }
 
-    await awardTokens({
+    const { created } = await awardTokensWithResult({
       userId: event.userId,
       type: 'EARN',
       amount: config.TOPIC_SHARE_AMOUNT,
@@ -264,12 +273,14 @@ export async function onTopicShare(event: TopicShareEvent): Promise<void> {
       idempotencyKey: `share:${event.topicId}:${event.userId}`,
     });
 
-    await createNotification({
-      userId: event.userId,
-      title: 'Tokens earned',
-      message: `You earned +${config.TOPIC_SHARE_AMOUNT} tokens for sharing a topic.`,
-      type: 'REWARD',
-    });
+    if (created) {
+      await createNotification({
+        userId: event.userId,
+        title: 'Tokens earned',
+        message: `You earned +${config.TOPIC_SHARE_AMOUNT} tokens for sharing a topic.`,
+        type: 'REWARD',
+      });
+    }
   } catch (err) {
     logger.error({ err, event }, 'reward hook onTopicShare failed');
   }

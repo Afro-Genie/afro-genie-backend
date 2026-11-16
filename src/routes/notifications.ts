@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { param, query } from 'express-validator';
-import { authenticate } from '../middleware/auth';
+import { authenticate, authenticateStream } from '../middleware/auth';
+import { registerNotificationClient } from '../lib/notificationSse';
 import { validateRequest } from '../middleware/validateRequest';
 import {
   getUnreadCount,
@@ -11,6 +12,25 @@ import {
 import type { AuthUser } from '../types/auth';
 
 export const notificationsRouter = Router();
+
+notificationsRouter.get(
+  '/users/me/notifications/stream',
+  authenticateStream,
+  (req: Request, res: Response) => {
+    const user = req.user as AuthUser;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const cleanup = registerNotificationClient(user.id, res);
+    const onClose = () => cleanup();
+    req.on('close', onClose);
+    res.on('close', onClose);
+    res.on('error', onClose);
+  },
+);
 
 // ---------------------------------------------------------------------------
 // GET /api/users/me/notifications?page=&limit=
