@@ -4,7 +4,7 @@ import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
 import { REWARD_CONFIG } from '../config/rewards';
 import { getLeaderboardBetween } from './leaderboardService';
-import { awardTokens } from './tokenService';
+import { awardTokensWithResult } from './tokenService';
 import { awardBadge } from './badgeService';
 import { createNotification } from './notificationService';
 
@@ -98,7 +98,7 @@ async function rewardTopThree(
     const bonus = REWARD_CONFIG.SEASON_TOP3_BONUS[entry.rank - 1];
     if (!bonus || bonus <= 0) continue;
 
-    await awardTokens({
+    const { created } = await awardTokensWithResult({
       userId: entry.userId,
       type: 'EARN',
       amount: bonus,
@@ -108,14 +108,16 @@ async function rewardTopThree(
       idempotencyKey: `season:${period}:bonus:${entry.userId}`,
     });
 
-    await awardBadge(entry.userId, 'SEASON_CHAMPION');
+    if (created) {
+      await createNotification({
+        userId: entry.userId,
+        title: 'Season champion',
+        message: `You finished #${entry.rank} in season ${period} and earned a ${bonus} token bonus!`,
+        type: 'REWARD',
+      });
+    }
 
-    await createNotification({
-      userId: entry.userId,
-      title: 'Season champion',
-      message: `You finished #${entry.rank} in season ${period} and earned a ${bonus} token bonus!`,
-      type: 'REWARD',
-    });
+    await awardBadge(entry.userId, 'SEASON_CHAMPION');
   }
 }
 

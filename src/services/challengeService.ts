@@ -2,7 +2,8 @@ import { Prisma, type Challenge } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { awardTokens } from './tokenService';
+import { awardTokensWithResult } from './tokenService';
+import { createNotification } from './notificationService';
 
 // ---------------------------------------------------------------------------
 // Challenges service (Phase 5 / 6.3).
@@ -226,7 +227,7 @@ export async function claimChallengeReward(
   }
 
   // Idempotent award (safe to retry; unique idempotencyKey).
-  await awardTokens({
+  const { created } = await awardTokensWithResult({
     userId,
     type: 'EARN',
     amount: challenge.gtReward,
@@ -236,6 +237,15 @@ export async function claimChallengeReward(
     idempotencyKey: `challenge:${challenge.id}:${userId}`,
     metadata: { challengeId: challenge.id, challengeType: challenge.type },
   });
+
+  if (created) {
+    await createNotification({
+      userId,
+      title: 'Challenge complete!',
+      message: `You earned +${challenge.gtReward} GT for completing "${challenge.title}".`,
+      type: 'REWARD',
+    });
+  }
 
   try {
     await prisma.userEntitlement.create({
@@ -253,17 +263,6 @@ export async function claimChallengeReward(
     }
     throw err;
   }
-
-  await prisma.notification
-    .create({
-      data: {
-        userId,
-        title: 'Challenge complete!',
-        message: `You earned +${challenge.gtReward} GT for completing "${challenge.title}".`,
-        type: 'REWARD',
-      },
-    })
-    .catch((err) => logger.warn({ err, userId, challengeId }, 'Challenge notification failed'));
 
   return { challengeId, gtReward: challenge.gtReward, claimed: true };
 }

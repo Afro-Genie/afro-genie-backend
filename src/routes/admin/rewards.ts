@@ -7,6 +7,7 @@ import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { ApiError } from '../../middleware/errorHandler';
 import { adjustTokens } from '../../services/tokenService';
+import { createNotification } from '../../services/notificationService';
 import { checkAndAwardBadges } from '../../services/badgeService';
 
 export const adminRewardsRouter = Router();
@@ -41,14 +42,14 @@ adminRewardsRouter.post(
         logger.warn({ err, userId }, 'Badge evaluation after admin adjustment failed');
       });
 
-      await prisma.notification.create({
-        data: {
+      if (amount !== 0) {
+        await createNotification({
           userId,
           title: amount > 0 ? 'Tokens Awarded' : 'Tokens Deducted',
           message: `An admin ${amount > 0 ? 'awarded you' : 'deducted'} ${Math.abs(amount)} token${Math.abs(amount) === 1 ? '' : 's'}: ${reason}`,
           type: 'REWARD',
-        },
-      });
+        });
+      }
 
       res.status(200).json({
         success: true,

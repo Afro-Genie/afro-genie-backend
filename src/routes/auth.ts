@@ -186,13 +186,15 @@ authRouter.get(
         email: string;
         displayName: string | null;
         role: 'USER' | 'ADMIN' | 'MODERATOR' | 'ARTIST';
+        photoUrl: string | null;
       };
 
       const redirectUrl = await buildGoogleRedirectUrl({
         id: authUser.id,
         email: authUser.email,
         displayName: authUser.displayName,
-        role: authUser.role
+        role: authUser.role,
+        photoUrl: authUser.photoUrl
       });
 
       res.redirect(redirectUrl);

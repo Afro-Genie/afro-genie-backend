@@ -6,6 +6,7 @@ import { creditTokens, dedupeCreditTokens } from '../services/rewardService';
 import { checkAndAwardBadges } from '../services/badgeService';
 import { isRewardPaused } from '../services/abuseService';
 import { hasMutualReferral } from '../services/referralService';
+import { createNotification } from '../services/notificationService';
 
 const REFERRAL_COMMISSION_RATE = 0.1;
 
@@ -58,13 +59,11 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
     }
 
     if (appliedArtistBonus) {
-      await prisma.notification.create({
-        data: {
-          userId,
-          title: 'Artist Bonus!',
-          message: 'You earned a 1.5× bonus as a verified artist on this translation reward.',
-          type: 'REWARD',
-        },
+      await createNotification({
+        userId,
+        title: 'Artist Bonus!',
+        message: 'You earned a 1.5× bonus as a verified artist on this translation reward.',
+        type: 'REWARD',
       });
     }
 
@@ -82,23 +81,25 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
         } else {
           const commissionAmount = Math.max(1, Math.floor(amount * REFERRAL_COMMISSION_RATE));
           const commissionKey = idempotencyKey ? `${idempotencyKey}:commission` : undefined;
+          let commissionCredited: boolean;
           if (commissionKey) {
-            await dedupeCreditTokens(commissionKey, referrerId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+            commissionCredited = await dedupeCreditTokens(commissionKey, referrerId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
           } else {
             await creditTokens(referrerId, commissionAmount, `REFERRAL_COMMISSION:${reason}`);
+            commissionCredited = true;
           }
-          await prisma.notification.create({
-            data: {
+          if (commissionCredited) {
+            await createNotification({
               userId: referrerId,
               title: 'Referral Commission',
               message: `You earned ${commissionAmount} tokens from a referred user's reward.`,
               type: 'REWARD',
-            },
-          });
-          logger.info(
-            { jobId: job.id, referrerId, commissionAmount, originalUserId: userId },
-            'Referral commission credited',
-          );
+            });
+            logger.info(
+              { jobId: job.id, referrerId, commissionAmount, originalUserId: userId },
+              'Referral commission credited',
+            );
+          }
         }
       }
     }

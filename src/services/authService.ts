@@ -34,6 +34,7 @@ interface AuthUserDto {
   email: string;
   displayName: string;
   role: UserRole;
+  photoUrl: string | null;
 }
 
 export interface AuthTokens {
@@ -59,11 +60,12 @@ const refreshKey = (userId: string): string => `refresh:${userId}`;
 
 const resetKey = (tokenHash: string): string => `reset:${tokenHash}`;
 
-const toAuthUser = (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): AuthUserDto => ({
+const toAuthUser = (user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'photoUrl'>): AuthUserDto => ({
   id: user.id,
   email: user.email,
   displayName: user.displayName ?? user.email.split('@')[0],
   role: user.role,
+  photoUrl: user.photoUrl,
 });
 
 const signAccessToken = (payload: Omit<TokenPayload, 'iat' | 'exp'>): string => {
@@ -103,7 +105,7 @@ const issueTokenPair = async (user: Pick<User, 'id' | 'email' | 'role'>): Promis
 };
 
 const buildAuthResult = async (
-  user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>
+  user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'photoUrl'>
 ): Promise<AuthResult> => {
   const tokens = await issueTokenPair(user);
   return {
@@ -166,6 +168,7 @@ export const registerArtist = async (
       email: true,
       displayName: true,
       role: true,
+      photoUrl: true,
     }
   });
 
@@ -210,6 +213,7 @@ export const register = async (email: string, password: string, displayName: str
       email: true,
       displayName: true,
       role: true,
+      photoUrl: true,
     }
   });
 
@@ -230,6 +234,7 @@ export const login = async (email: string, password: string): Promise<AuthResult
       email: true,
       displayName: true,
       role: true,
+      photoUrl: true,
       passwordHash: true
     }
   });
@@ -245,7 +250,8 @@ export const login = async (email: string, password: string): Promise<AuthResult
 
   await prisma.user.update({
     where: { id: user.id },
-    data: { lastLoginAt: new Date() }
+    data: { lastLoginAt: new Date() },
+    select: { id: true }
   });
 
   await recordLogin(user.id);
@@ -269,7 +275,7 @@ export const refresh = async (refreshToken: string): Promise<AuthResult> => {
 
   const user = await prisma.user.findUnique({
     where: { id: claims.userId },
-select: { id: true, email: true, displayName: true, role: true }
+select: { id: true, email: true, displayName: true, role: true, photoUrl: true }
   });
 
   if (!user) {
@@ -422,6 +428,7 @@ export const configureGoogleStrategy = () => {
               email: true,
               displayName: true,
               role: true,
+              photoUrl: true,
               googleId: true
             }
           });
@@ -441,6 +448,7 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
+                photoUrl: true,
                 googleId: true
               }
             });
@@ -460,6 +468,7 @@ export const configureGoogleStrategy = () => {
                 email: true,
                 displayName: true,
                 role: true,
+                photoUrl: true,
                 googleId: true
               }
             });
@@ -478,7 +487,7 @@ export const configureGoogleStrategy = () => {
   googleStrategyInitialized = true;
 };
 
-export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role'>): Promise<string> => {
+export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | 'displayName' | 'role' | 'photoUrl'>): Promise<string> => {
   const auth = await buildAuthResult(user);
   const query = new URLSearchParams({
     accessToken: auth.accessToken,
@@ -487,6 +496,7 @@ export const buildGoogleRedirectUrl = async (user: Pick<User, 'id' | 'email' | '
     email: auth.user.email,
     displayName: auth.user.displayName,
     role: auth.user.role,
+    photoUrl: auth.user.photoUrl ?? '',
   });
 
   return `${env.CLIENT_URL}/auth/callback?${query.toString()}`;

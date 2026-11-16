@@ -4,7 +4,6 @@ import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
 import { env } from '../lib/env';
 import { createMailTransporter } from './authService';
-import { createNotification } from './notificationService';
 import { updateLyrics } from './reviewService';
 import { onCorrectionApproved, onCorrectionRejected } from './rewardHooks';
 
@@ -280,40 +279,58 @@ export async function updateGuidelines(content: string, userId: string) {
 // Welcome messages
 // ---------------------------------------------------------------------------
 export async function sendWelcomeMessage(userId: string, message: string) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, displayName: true },
-  });
-  if (!user) {
-    throw new ApiError('User not found', 'NOT_FOUND', 404);
-  }
+  const user = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.user.updateMany({
+      where: { id: userId, moderatorWelcomedAt: null },
+      data: { moderatorWelcomedAt: new Date() },
+    });
 
-  await createNotification({
-    userId,
-    title: 'Welcome to Afro Genie!',
-    message,
-    type: 'SYSTEM',
-  });
-
-  try {
-    const transporter = createMailTransporter();
-    if (!transporter || !env.SMTP_FROM_EMAIL) {
-      logger.warn({ email: user.email }, 'SMTP not configured; welcome email was not sent');
-      return { ok: true };
+    if (claimed.count === 0) {
+      const existingUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, moderatorWelcomedAt: true },
+      });
+      if (!existingUser) throw new ApiError('User not found', 'NOT_FOUND', 404);
+      throw new ApiError('This user has already been welcomed', 'CONFLICT', 409);
     }
 
-    await transporter.sendMail({
-      from: env.SMTP_FROM_EMAIL,
-      to: user.email,
-      subject: 'Welcome to Afro Genie!',
-      text: `Hi ${user.displayName ?? 'there'}, welcome to Afro Genie! ${message}`,
-      html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Welcome to Afro Genie!</p><p>${message}</p><p>Start translating songs and earning tokens today.</p>`,
+    const welcomedUser = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, email: true, displayName: true },
     });
+
+    await tx.notification.create({
+      data: {
+        userId,
+        title: 'Welcome to Afro Genie!',
+        message,
+        type: 'SYSTEM',
+      },
+    });
+
+    return welcomedUser;
+  });
+
+  let emailSent = false;
+  try {
+    const transporter = createMailTransporter();
+    if (transporter && env.SMTP_FROM_EMAIL) {
+      await transporter.sendMail({
+        from: env.SMTP_FROM_EMAIL,
+        to: user.email,
+        subject: 'Welcome to Afro Genie!',
+        text: `Hi ${user.displayName ?? 'there'}, welcome to Afro Genie! ${message}`,
+        html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Welcome to Afro Genie!</p><p>${message}</p><p>Start translating songs and earning tokens today.</p>`,
+      });
+      emailSent = true;
+    } else {
+      logger.warn({ email: user.email }, 'SMTP not configured; welcome email was not sent');
+    }
   } catch (err) {
     logger.error({ err, userId }, 'welcome email send failed');
   }
 
-  return { ok: true };
+  return { ok: true, emailSent };
 }
 
 // ---------------------------------------------------------------------------

@@ -2,13 +2,13 @@ import { ModerationAction } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getRewardConfig } from '../config/rewards';
-import { applyTax, awardTokens } from './tokenService';
+import { applyTaxWithResult, awardTokens } from './tokenService';
 
 // ---------------------------------------------------------------------------
 // Moderation pool (Phase 2 governance).
 //
-// A 10% tax on moderator translation rewards flows into a shared pool. Each
-// week the pool is split among moderators/arbiters who actually took
+// The configured tax on moderator rewards flows into a shared pool. Each week
+// the pool is split among moderators/arbiters who actually took
 // moderation action, proportional to the number of actions they took. The
 // pool balance is cached on the ModPool row; the source of truth is the sum
 // of TAX ledger rows so the cache can always be repaired.
@@ -32,9 +32,8 @@ export async function creditPool(amount: number): Promise<void> {
 }
 
 /**
- * 10% tax on a moderator reward. Writes the TAX ledger row (idempotent) and
- * then credits the pool cache. Safe to call on replays: the ledger's unique
- * idempotencyKey prevents double-charging.
+ * Tax a moderator reward. Writes the TAX ledger row (idempotent) and credits
+ * the pool cache only when this call creates the ledger row.
  */
 export async function contributeTax(params: {
   userId: string;
@@ -45,16 +44,16 @@ export async function contributeTax(params: {
   const taxAmount = Math.max(1, Math.round(params.rewardAmount * config.MOD_POOL_TAX_PERCENT));
   if (taxAmount <= 0) return null;
 
-  const ledger = await applyTax({
+  const { ledger, created } = await applyTaxWithResult({
     userId: params.userId,
     amount: -taxAmount,
-    reason: 'Moderation pool contribution (10% of review reward)',
+    reason: 'Moderation pool contribution',
     sourceType: 'MOD_POOL_TAX',
     sourceId: params.sourceId,
     idempotencyKey: `mod-pool-tax:${params.sourceId}:${params.userId}`,
   });
 
-  await creditPool(taxAmount);
+  if (created) await creditPool(taxAmount);
   logger.debug(
     { userId: params.userId, taxAmount, sourceId: params.sourceId, ledgerId: ledger.id },
     'mod pool tax collected',

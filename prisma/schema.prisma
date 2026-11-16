@@ -233,6 +233,7 @@ model User {
   createdAt                  DateTime                          @default(now())
   updatedAt                  DateTime                          @updatedAt
   lastLoginAt                DateTime?
+  moderatorWelcomedAt        DateTime?
   moderatorPinnedAt          DateTime?
   translations               Translation[]
   translationsApproved       Translation[]                     @relation("TranslationApprovedBy")
