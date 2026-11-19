@@ -36,6 +36,9 @@ const envSchema = z.object({
   SYNC_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(60),
   APP_VERSION: z.string().default('1.0.0'),
   ENABLE_WORKERS: z.string().default('true').transform((v) => v === 'true' || v === '1'),
+  // Phase 5 catalog growth scheduling defaults
+  CATALOG_GROWTH_MAX_RESULTS: z.coerce.number().int().positive().default(30),
+  CATALOG_GROWTH_MAX_PAGES: z.coerce.number().int().positive().default(80),
   // GT payments (Paystack). Optional at the schema level so dev and test can run
   // without keys; REQUIRED in production by the cross-field check below. See
   // `assertPaymentsConfigured` for why a runtime 503 is not good enough.

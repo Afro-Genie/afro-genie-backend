@@ -39,13 +39,24 @@ const periodBounds = (
   };
 };
 
+const previousCompletedUtcMonth = (date: Date): string => {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth(); // 0-indexed; if month === 0 (January), previous is December of previous year
+  const prevMonth = month === 0 ? 12 : month;
+  const prevYear = month === 0 ? year - 1 : year;
+  return `${prevYear}-${String(prevMonth).padStart(2, '0')}`;
+};
+
 /**
- * Freeze the current monthly leaderboard into a SeasonalSnapshot. Idempotent
- * per period: re-running for an already-frozen month returns the existing
- * snapshot and never re-awards.
+ * Freeze the previous completed UTC monthly leaderboard into a SeasonalSnapshot.
+ * Idempotent per period (YYYY-MM): re-running for an already-frozen month
+ * returns the existing snapshot and never re-awards bonuses or badges.
+ * 
+ * The period key is embedded in the snapshot data so a delayed/retried job
+ * cannot accidentally freeze a different month.
  */
 export async function freezeSeason(date = new Date()) {
-  const period = periodKeyOf(date);
+  const period = previousCompletedUtcMonth(date);
   const { start, end } = periodBounds(period);
 
   const existing = await prisma.seasonalSnapshot.findUnique({ where: { period } });

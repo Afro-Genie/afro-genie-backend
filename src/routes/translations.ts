@@ -406,20 +406,55 @@ translationsRouter.get(
       }
 
       const state = await job.getState();
+      const progress = job.progress;
+      const attemptsMade = job.attemptsMade;
 
-      return res.status(200).json({
+      // Build response with explicit state and timing
+      const response: Record<string, any> = {
         jobId,
         state,
-        progress: job.progress,
+        progress,
+        attemptsMade,
         data: job.data,
-        ...(state === 'failed' && {
-          userMessage: 'Translation failed after multiple attempts. Please try again.',
-        }),
-        ...(job.failedReason && { failedReason: job.failedReason }),
-        ...(job.finishedOn && { finishedOn: new Date(job.finishedOn) }),
-        ...(job.timestamp && { queuedAt: new Date(job.timestamp) }),
-        attemptsMade: job.attemptsMade,
-      });
+      };
+
+      // Explicit stage mapping for client UX
+      const stageMap: Record<string, string> = {
+        fetching_song: 'Fetching song data',
+        translating: 'Translating lyrics',
+        saving: 'Saving translation',
+        completed: 'Translation complete',
+      };
+      // BullMQ progress can be a number (percentage) or { stage: string, percent: number }
+      if (progress && typeof progress === 'object' && !Array.isArray(progress)) {
+        const pg = progress as { stage?: string; percent?: number };
+        if (pg.stage) {
+          response.stageLabel = stageMap[pg.stage] || pg.stage;
+        }
+        if (pg.percent !== undefined) {
+          response.stagePercent = pg.percent;
+        }
+      } else if (typeof progress === 'number') {
+        response.stagePercent = progress;
+      }
+
+      // Explicit retry / failure information
+      if (state === 'failed' && attemptsMade >= 3) {
+        response.userMessage = 'Translation failed after 3 attempts. Please try again.';
+      }
+      if (job.failedReason) {
+        response.failedReason = job.failedReason;
+      }
+      if (job.timestamp) {
+        response.queuedAt = new Date(job.timestamp);
+      }
+      // progress percent check - BullMQ progress type is loose, use safe access
+      const pg = progress as { percent?: number; stage?: string } | undefined;
+      if (pg?.percent === 100) {
+        response.completedAt = new Date();
+      }
+
+      return res.status(200).json(response);
     } catch (err) {
       return next(err);
     }

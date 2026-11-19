@@ -1,37 +1,38 @@
 import 'dotenv/config';
 import { prisma } from '../src/lib/prisma';
-import { backfillMissingLyrics, backfillArtistLastFm } from '../src/services/syncEngine';
+import { lyricsEnrichmentQueue } from '../src/lib/queue';
+import { redis } from '../src/lib/redis';
+import { backfillMissingLyrics } from '../src/services/syncStatusService';
 
 async function main() {
-  console.log('\n=== Starting backfills ===\n');
+  console.log('\n=== Starting YouTube-linked lyrics backfill ===\n');
 
-  console.log('--- Step 1: Backfill Lyrics ---');
   const lyricsResult = await backfillMissingLyrics((completed, total) => {
     process.stdout.write(`\r  Enqueuing lyrics enrichment: ${completed}/${total}`);
   });
   console.log(`\n  ${lyricsResult.enqueued} lyrics enrichment jobs enqueued\n`);
 
-  console.log('--- Step 2: Backfill Artist LastFM Metadata ---');
-  const artistResult = await backfillArtistLastFm((completed, total) => {
-    process.stdout.write(`\r  Processing artists: ${completed}/${total}`);
-  });
-  console.log(`\n  ${artistResult.updated} artists updated, ${artistResult.skipped} skipped\n`);
-
   const songsMissing = await prisma.song.count({
-    where: { softDeleted: false, spotifyId: { not: null }, lyrics: { none: {} } },
-  });
-  const artistsNeeding = await prisma.artist.count({
     where: {
       softDeleted: false,
-      spotifyId: { not: null },
-      OR: [{ popularity: 0 }, { followers: 0 }, { bio: null }],
+      youtubeVideoId: { not: null },
+      OR: [
+        { lyrics: { none: {} } },
+        { lyrics: { some: { content: null } } },
+      ],
     },
   });
 
-  console.log('=== Final Status ===');
-  console.log(`Songs still missing lyrics:    ${songsMissing} (enrichment workers processing in background)`);
-  console.log(`Artists still needing LastFM:  ${artistsNeeding}`);
+  console.log(`YouTube-linked songs still missing lyrics: ${songsMissing} (workers process queued jobs in background)`);
   console.log('Done.');
 }
 
-main().catch(console.error).finally(() => prisma.$disconnect());
+main()
+  .catch(error => {
+    console.error('Lyrics backfill failed:', error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await Promise.all([prisma.$disconnect(), lyricsEnrichmentQueue.close()]);
+    if (process.env.DISABLE_REDIS !== 'true') redis.disconnect();
+  });

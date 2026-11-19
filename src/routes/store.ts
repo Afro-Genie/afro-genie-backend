@@ -62,12 +62,27 @@ storeRouter.get(
 storeRouter.post(
   '/store/purchase',
   authenticate,
-  [body('itemId').isString().notEmpty().withMessage('Item ID is required')],
+  [
+    body('itemId').isString().notEmpty().withMessage('Item ID is required'),
+    body('shippingName')
+      .optional({ nullable: true })
+      .isString()
+      .withMessage('shippingName must be a string when provided'),
+    body('shippingAddress')
+      .optional({ nullable: true })
+      .isString()
+      .withMessage('shippingAddress must be a string when provided'),
+    validateRequest,
+  ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { itemId } = req.body as { itemId: string };
-      const result = await purchaseItem(req.user!.id, itemId);
+      const { itemId, shippingName, shippingAddress } = req.body as {
+        itemId: string;
+        shippingName?: string;
+        shippingAddress?: string;
+      };
+      const result = await purchaseItem({ userId: req.user!.id, itemId, shippingName, shippingAddress });
       if (!result.success) {
         throw new ApiError(result.message, 'PURCHASE_FAILED', 400);
       }

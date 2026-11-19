@@ -1213,17 +1213,19 @@ model StoreItem {
 }
 
 model StorePurchase {
-  id            String         @id @default(cuid())
-  itemId        String
-  userId        String
-  spentAmount   Int
-  status        PurchaseStatus @default(PENDING_FULFILLMENT)
-  purchaseToken String?        @unique
-  fulfilledAt   DateTime?
-  refundedAt    DateTime?
-  createdAt     DateTime       @default(now())
-  item          StoreItem      @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String            @id @default(cuid())
+  itemId            String
+  userId            String
+  spentAmount       Int
+  status            PurchaseStatus  @default(PENDING_FULFILLMENT)
+  purchaseToken     String?         @unique
+  fulfilledAt       DateTime?
+  refundedAt        DateTime?
+  createdAt         DateTime        @default(now())
+  item              StoreItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shippingName      String?         // Recipient name for physical shipping
+  shippingAddress   String?         // Full shipping address
 
   @@index([userId, createdAt])
   @@index([status])

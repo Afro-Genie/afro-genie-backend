@@ -41,5 +41,10 @@ export const scheduleSyncJobs = async (): Promise<void> => {
     }
   );
 
-  logger.info('Sync cron jobs scheduled: daily 5am lyrics backfill, Tue/Thu 3am library enrichment');
+  logger.info({
+    lyricsJob: 'backfill-lyrics-daily',
+    lyricsRepeat: '0 5 * * *',
+    libraryJob: 'library-enrichment-tue-thu',
+    libraryRepeat: '0 3 * * 2,4',
+  }, 'Sync cron jobs scheduled: daily 5am lyrics backfill, Tue/Thu 3am library enrichment');
 };

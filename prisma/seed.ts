@@ -5,7 +5,6 @@ import {
   BadgeType,
   CorrectionStatus,
   LicenseStatus,
-  LyricSourceProvider,
   NotificationType,
   PrismaClient,
   RequestStatus,
@@ -16,7 +15,6 @@ import {
 } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import { lyricsEnrichmentQueue } from '../src/lib/queue';
 import { seedGtBundles } from './seedGtBundles';
 import { seedChallenges } from './seed-challenges';
 import { seedStoreItems } from './seedStore';
@@ -31,87 +29,6 @@ const prisma = new PrismaClient({
   adapter
 });
 
-const SPOTIFY_API = 'https://api.spotify.com/v1';
-
-// ─── Spotify Auth (Client Credentials) ───────────────────────────────────────
-
-let currentToken = '';
-
-async function getSpotifyToken(): Promise<string> {
-  const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    throw new Error('SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set');
-  }
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-    },
-    body: 'grant_type=client_credentials',
-  });
-  if (!res.ok) throw new Error(`Spotify token error: ${res.status}`);
-  const data = await res.json();
-  currentToken = data.access_token;
-  return currentToken;
-}
-
-async function refreshSpotifyToken(): Promise<string> {
-  console.log('  ⏳ Refreshing Spotify token...');
-  return getSpotifyToken();
-}
-
-async function spotifyFetch(url: string, retries: number = 3): Promise<Response> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    let res = await fetch(url, { headers: { Authorization: `Bearer ${currentToken}` } });
-    if (res.status === 401) {
-      await refreshSpotifyToken();
-      res = await fetch(url, { headers: { Authorization: `Bearer ${currentToken}` } });
-    }
-    if (res.status === 429) {
-      const retryAfter = parseInt(res.headers.get('retry-after') || '5', 10);
-      console.log(`    Rate limited, waiting ${retryAfter}s...`);
-      await new Promise((r) => setTimeout(r, retryAfter * 1000));
-      continue;
-    }
-    return res;
-  }
-  throw new Error(`Spotify API rate limited after ${retries} retries`);
-}
-
-// ─── Search Queries (Client Credentials can't access playlists) ────────────────
-
-const SEARCH_QUERIES = [
-  'afrobeats',
-  'amapiano',
-  'afropop',
-  'nigerian music',
-  'african music',
-  'afro fusion',
-  'highlife',
-  'bongo flava',
-  'gengetone',
-  'afro r&b',
-  'dancehall africa',
-  'naija hits',
-  'burna boy',
-  'wizkid',
-  'davido',
-  'tems',
-  'asake',
-  'rema',
-  'fireboy dml',
-  'ayra starr',
-  'black sherif',
-  'tiwa savage',
-  'sauti sol',
-  'sarkodie',
-  'diamond platnumz',
-];
-
-// ─── Seed Data ───────────────────────────────────────────────────────────────
-
 const languageSeed = [
   { code: 'en', name: 'English', isActive: true },
   { code: 'pcm', name: 'Nigerian Pidgin', isActive: true },
@@ -124,16 +41,30 @@ const languageSeed = [
 ];
 
 const genreSeed = [
+  { name: 'Afrobeat', imageUrl: '' },
   { name: 'Afrobeats', imageUrl: '' },
   { name: 'Afropop', imageUrl: '' },
   { name: 'Afro-fusion', imageUrl: '' },
+  { name: 'Afro-R&B', imageUrl: '' },
+  { name: 'African Hip-Hop', imageUrl: '' },
   { name: 'Amapiano', imageUrl: '' },
-  { name: 'Alt-R&B', imageUrl: '' },
-  { name: 'R&B', imageUrl: '' },
   { name: 'Highlife', imageUrl: '' },
   { name: 'Banku', imageUrl: '' },
   { name: 'Dancehall', imageUrl: '' },
-  { name: 'Hip-Hop', imageUrl: '' }
+  { name: 'Fuji', imageUrl: '' },
+  { name: 'Juju', imageUrl: '' },
+  { name: 'Bongo Flava', imageUrl: '' },
+  { name: 'Gengetone', imageUrl: '' },
+  { name: 'Gqom', imageUrl: '' },
+  { name: 'Coupé-Décalé', imageUrl: '' },
+  { name: 'Kizomba', imageUrl: '' },
+  { name: 'Kuduro', imageUrl: '' },
+  { name: 'Kwaito', imageUrl: '' },
+  { name: 'Makossa', imageUrl: '' },
+  { name: 'Mbalax', imageUrl: '' },
+  { name: 'Ndombolo', imageUrl: '' },
+  { name: 'Soukous', imageUrl: '' },
+  { name: 'Taarab', imageUrl: '' },
 ];
 
 const forumCategorySeed = [
@@ -150,390 +81,45 @@ const forumCategorySeed = [
   { name: 'Fuji', description: 'Discuss Fuji music, artists, and trends', icon: 'music', order: 11 }
 ];
 
-// ─── Spotify Seeding Functions ───────────────────────────────────────────────
-
-interface TrackData {
-  track: any;
-  artistId: string;
-  artistName: string;
-  artistSpotifyId: string;
-  albumId: string | null;
-  albumName: string | null;
-  albumSpotifyId: string | null;
-  albumImage: string | null;
-  albumYear: number | null;
-}
-
-async function fetchTracksFromSpotify(
-  queries: string[],
-  limitPerQuery: number = 30,
-): Promise<TrackData[]> {
-  const seenTrackIds = new Set<string>();
-  const artistIdsSeen = new Set<string>();
-  const albumIdsSeen = new Set<string>();
-  const allTracks: TrackData[] = [];
-
-  for (const query of queries) {
-    console.log(`  Searching: "${query}"`);
-    let offset = 0;
-    let querySongs = 0;
-
-    while (querySongs < limitPerQuery) {
-      const limit = 10;
-      const url = `${SPOTIFY_API}/search?q=${encodeURIComponent(query)}&type=track&limit=${limit}&offset=${offset}`;
-      let res: Response;
-      try {
-        res = await spotifyFetch(url);
-      } catch (err) {
-        console.warn(`  Network error for "${query}" at offset ${offset}, retrying in 2s`);
-        await new Promise((r) => setTimeout(r, 2000));
-        try {
-          res = await spotifyFetch(url);
-        } catch {
-          break;
-        }
-      }
-      if (!res.ok) {
-        if (res.status === 429) {
-          const retryAfter = parseInt(res.headers.get('retry-after') || '10', 10);
-          console.log(`    Rate limited at "${query}" offset ${offset}, waiting ${retryAfter}s...`);
-          await new Promise((r) => setTimeout(r, retryAfter * 1000));
-          continue;
-        }
-        const errBody = await res.text();
-        console.warn(`  Failed "${query}" at offset ${offset}: ${res.status} — ${errBody.substring(0, 200)}`);
-        break;
-      }
-      const data = await res.json();
-      const tracks = data?.tracks?.items || [];
-      if (!tracks.length) break;
-
-      for (const track of tracks) {
-        if (!track?.id || seenTrackIds.has(track.id) || !track.artists?.[0]) continue;
-        seenTrackIds.add(track.id);
-
-        const primaryArtist = track.artists[0];
-        const albumData = track.album;
-
-        allTracks.push({
-          track,
-          artistId: primaryArtist.id,
-          artistName: primaryArtist.name,
-          artistSpotifyId: primaryArtist.id,
-          albumId: albumData?.id || null,
-          albumName: albumData?.name || null,
-          albumSpotifyId: albumData?.id || null,
-          albumImage: albumData?.images?.[0]?.url || null,
-          albumYear: albumData?.release_date
-            ? parseInt(albumData.release_date.substring(0, 4), 10)
-            : null,
-        });
-
-        artistIdsSeen.add(primaryArtist.id);
-        if (albumData?.id) albumIdsSeen.add(albumData.id);
-        querySongs++;
-      }
-
-      offset += tracks.length;
-      if (tracks.length < limit) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
-    await new Promise((r) => setTimeout(r, 500));
-  }
-
-  console.log(`  Fetched ${allTracks.length} tracks from Spotify (${artistIdsSeen.size} unique artists, ${albumIdsSeen.size} unique albums)`);
-  return allTracks;
-}
-
-async function bulkInsertToDb(
-  allTracks: TrackData[],
-  shouldUpdate = false,
-): Promise<{ songsCreated: number; artistsCreated: number }> {
-  if (!allTracks.length) return { songsCreated: 0, artistsCreated: 0 };
-
-  // ── Phase 1: Collect unique artists, fetch details from Spotify ──
-  const artistMap = new Map<string, { name: string; spotifyId: string }>();
-  for (const t of allTracks) {
-    if (!artistMap.has(t.artistSpotifyId)) {
-      artistMap.set(t.artistSpotifyId, { name: t.artistName, spotifyId: t.artistSpotifyId });
-    }
-  }
-  console.log(`  Fetching details for ${artistMap.size} artists...`);
-
-  const artistDetails = new Map<string, any>();
-  const artistEntries = [...artistMap.entries()];
-  for (let i = 0; i < artistEntries.length; i++) {
-    const [spotifyId] = artistEntries[i];
-    try {
-      const res = await spotifyFetch(`${SPOTIFY_API}/artists/${spotifyId}`);
-      artistDetails.set(spotifyId, res.ok ? await res.json() : {});
-    } catch {
-      artistDetails.set(spotifyId, {});
-    }
-    if (i % 50 === 49) {
-      console.log(`    ...${i + 1}/${artistEntries.length} artist details fetched`);
-      await new Promise((r) => setTimeout(r, 500));
-    }
-  }
-
-  const BATCH = 50;
-
-  // ── Phase 2: Upsert artists (insert or update) ──
-  console.log(`  Upserting artists into DB...`);
-  const existingArtistRows = await prisma.artist.findMany({
-    where: { spotifyId: { in: [...artistMap.keys()] } },
-    select: { id: true, spotifyId: true },
-  });
-  const existingArtistMap = new Map(existingArtistRows.map(r => [r.spotifyId, r.id]));
-  console.log(`    ${existingArtistMap.size} artists already exist`);
-
-  let artistsUpserted = 0;
-  const artistEntriesForDb = [...artistMap.entries()];
-  for (let i = 0; i < artistEntriesForDb.length; i += BATCH) {
-    const batch = artistEntriesForDb.slice(i, i + BATCH);
-    const ops = batch.map(([spotifyId, info]) => {
-      const details = artistDetails.get(spotifyId) || {};
-      return prisma.artist.upsert({
-        where: { spotifyId },
-        create: {
-          name: info.name,
-          spotifyId,
-          imageUrl: details.images?.[0]?.url || null,
-          genres: details.genres || [],
-          popularity: details.popularity || 0,
-          followers: details.followers?.total || 0,
-          verified: false,
-        },
-        update: shouldUpdate ? {
-          name: info.name,
-          imageUrl: details.images?.[0]?.url ?? undefined,
-          genres: details.genres ?? [],
-          popularity: details.popularity ?? 0,
-          followers: details.followers?.total ?? 0,
-        } : {},
-      });
-    });
-    try {
-      await prisma.$transaction(ops);
-      artistsUpserted += batch.length;
-    } catch (err: any) {
-      if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
-        console.log(`    DB connection lost, retrying in 3s...`);
-        await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.$transaction(ops); } catch { /* skip */ }
-      } else { throw err; }
-    }
-    if ((i / BATCH + 1) % 5 === 0) {
-      console.log(`    ...${Math.min(i + BATCH, artistEntriesForDb.length)}/${artistEntriesForDb.length} artists`);
-    }
-  }
-
-  const allArtistRows = await prisma.artist.findMany({
-    where: { spotifyId: { in: [...artistMap.keys()] } },
-    select: { id: true, spotifyId: true },
-  });
-  const dbArtistMap = new Map(allArtistRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Artists: ${artistsUpserted} upserted, ${existingArtistMap.size} existed (total ${allArtistRows.length})`);
-
-  // ── Phase 3: Upsert albums (insert or update) ──
-  const albumMap = new Map<string, { name: string; spotifyId: string; artistSpotifyId: string; image: string | null; year: number | null }>();
-  for (const t of allTracks) {
-    if (t.albumSpotifyId && !albumMap.has(t.albumSpotifyId)) {
-      albumMap.set(t.albumSpotifyId, {
-        name: t.albumName || 'Unknown',
-        spotifyId: t.albumSpotifyId,
-        artistSpotifyId: t.artistSpotifyId,
-        image: t.albumImage,
-        year: t.albumYear,
-      });
-    }
-  }
-
-  const existingAlbumRows = await prisma.album.findMany({
-    where: { spotifyId: { in: [...albumMap.keys()] } },
-    select: { id: true, spotifyId: true },
-  });
-  const existingAlbumMap = new Map(existingAlbumRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Upserting albums (${albumMap.size} total, ${existingAlbumMap.size} exist)...`);
-
-  let albumsUpserted = 0;
-  const albumEntriesForDb = [...albumMap.entries()];
-  for (let i = 0; i < albumEntriesForDb.length; i += BATCH) {
-    const batch = albumEntriesForDb.slice(i, i + BATCH);
-    const ops = batch.map(([spotifyId, info]) => {
-      const dbArtistId = dbArtistMap.get(info.artistSpotifyId);
-      if (!dbArtistId) return null;
-      return prisma.album.upsert({
-        where: { spotifyId },
-        create: {
-          name: info.name,
-          artistId: dbArtistId,
-          spotifyId,
-          imageUrl: info.image,
-          releaseYear: info.year,
-          totalTracks: null,
-          popularity: 0,
-          genres: [],
-        },
-        update: shouldUpdate ? {
-          name: info.name,
-          imageUrl: info.image ?? undefined,
-          releaseYear: info.year ?? undefined,
-        } : {},
-      });
-    }).filter(Boolean) as Array<ReturnType<typeof prisma.album.upsert>>;
-    if (ops.length === 0) continue;
-    try {
-      await prisma.$transaction(ops);
-      albumsUpserted += batch.length;
-    } catch (err: any) {
-      if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
-        console.log(`    DB connection lost at albums, retrying in 3s...`);
-        await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.$transaction(ops); } catch { /* skip */ }
-      } else { throw err; }
-    }
-  }
-
-  const allAlbumRows = await prisma.album.findMany({
-    where: { spotifyId: { in: [...albumMap.keys()] } },
-    select: { id: true, spotifyId: true },
-  });
-  const dbAlbumMap = new Map(allAlbumRows.map(r => [r.spotifyId, r.id]));
-  console.log(`  Albums: ${albumsUpserted} upserted, ${existingAlbumMap.size} existed`);
-
-  // ── Phase 4: Upsert songs (insert or update) ──
-  console.log(`  Upserting songs...`);
-  const existingSongIds = new Set(
-    (await prisma.song.findMany({
-      where: { spotifyId: { in: allTracks.map(t => t.track.id) } },
-      select: { spotifyId: true },
-    })).map(r => r.spotifyId)
-  );
-  console.log(`    ${existingSongIds.size} songs already exist`);
-
-  const songEntries: {
-    title: string; artistId: string; albumId: string | null; albumName: string | null;
-    imageUrl: string | null; spotifyId: string; spotifyPreviewUrl: string | null;
-    previewAvailable: boolean; durationMs: number | null; trackNumber: number | null;
-    releaseYear: number | null; views: number;
-  }[] = [];
-  for (const t of allTracks) {
-    const dbArtistId = dbArtistMap.get(t.artistSpotifyId);
-    if (!dbArtistId) continue;
-    const dbAlbumId = t.albumSpotifyId ? dbAlbumMap.get(t.albumSpotifyId) || null : null;
-    songEntries.push({
-      title: t.track.name,
-      artistId: dbArtistId,
-      albumId: dbAlbumId || null,
-      albumName: t.albumName || null,
-      imageUrl: t.albumImage || null,
-      spotifyId: t.track.id,
-      spotifyPreviewUrl: t.track.preview_url || null,
-      previewAvailable: !!t.track.preview_url,
-      durationMs: t.track.duration_ms || null,
-      trackNumber: t.track.track_number || null,
-      releaseYear: t.albumYear,
-      views: Math.floor(Math.random() * 5000),
-    });
-  }
-
-  // In --update mode, upsert all songs including existing ones
-  const songsToProcess = shouldUpdate ? songEntries : songEntries.filter(s => !existingSongIds.has(s.spotifyId));
-
-  for (let i = 0; i < songsToProcess.length; i += BATCH) {
-    const batch = songsToProcess.slice(i, i + BATCH);
-    const ops = batch.map(s =>
-      prisma.song.upsert({
-        where: { spotifyId: s.spotifyId },
-        create: s,
-        update: shouldUpdate ? {
-          title: s.title,
-          albumName: s.albumName,
-          imageUrl: s.imageUrl,
-          spotifyPreviewUrl: s.spotifyPreviewUrl ?? undefined,
-          previewAvailable: s.previewAvailable,
-          durationMs: s.durationMs ?? undefined,
-          trackNumber: s.trackNumber ?? undefined,
-          releaseYear: s.releaseYear ?? undefined,
-        } : {},
-      })
-    );
-    try {
-      await prisma.$transaction(ops);
-    } catch (err: any) {
-      if (err?.code === 'P1001' || err?.message?.includes('terminated')) {
-        console.log(`    DB connection lost at songs, retrying in 3s...`);
-        await new Promise((r) => setTimeout(r, 3000));
-        try { await prisma.$transaction(ops); } catch { /* skip */ }
-      } else { throw err; }
-    }
-    if ((i / BATCH + 1) % 5 === 0) {
-      console.log(`    ...${Math.min(i + BATCH, songsToProcess.length)}/${songsToProcess.length} songs`);
-    }
-  }
-
-  console.log(`  Songs: ${songsToProcess.length} processed (${existingSongIds.size} existed)`);
-  return { songsCreated: songsToProcess.length, artistsCreated: artistsUpserted };
-}
-
-async function seedFromSpotifySearch(
-  queries: string[],
-  limitPerQuery: number = 30,
-  shouldUpdate = false,
-): Promise<{ songsCreated: number; artistsCreated: number }> {
-  const allTracks = await fetchTracksFromSpotify(queries, limitPerQuery);
-  return bulkInsertToDb(allTracks, shouldUpdate);
-}
-
-// ─── Database Reset ──────────────────────────────────────────────────────────
-
-async function resetSeededData() {
-  await prisma.translationVote.deleteMany();
-  await prisma.translationCorrection.deleteMany();
-  await prisma.translation.deleteMany();
-  await prisma.translationRequest.deleteMany();
-  await prisma.songRequest.deleteMany();
-  await prisma.topicCommentVote.deleteMany();
-  await prisma.topicVote.deleteMany();
-  await prisma.userCommunityMembership.deleteMany();
-  await prisma.topicComment.deleteMany();
-  await prisma.topic.deleteMany();
-  await prisma.notification.deleteMany();
-  await prisma.userBadge.deleteMany();
-  await prisma.artistApplication.deleteMany();
-  await prisma.songGenre.deleteMany();
-  await prisma.songLanguage.deleteMany();
-  await prisma.lyric.deleteMany();
-  await prisma.album.deleteMany();
-  await prisma.song.deleteMany();
-  await prisma.genre.deleteMany();
-  await prisma.artist.deleteMany();
-  await prisma.forumCategory.deleteMany();
-  await prisma.language.deleteMany();
-  await prisma.user.deleteMany();
-}
-
 // ─── Main Seed ───────────────────────────────────────────────────────────────
 
 async function main() {
-  const shouldUpdate = process.argv.includes('--update');
-
-  const existingSongCount = await prisma.song.count();
-  const existingArtistCount = await prisma.artist.count();
-  const isIdempotentRun = existingSongCount > 0;
+  const [
+    existingSongCount,
+    existingArtistCount,
+    existingUserCount,
+    existingAlbumCount,
+    existingGenreCount,
+    existingLanguageCount,
+    existingForumCategoryCount,
+  ] = await Promise.all([
+    prisma.song.count(),
+    prisma.artist.count(),
+    prisma.user.count(),
+    prisma.album.count(),
+    prisma.genre.count(),
+    prisma.language.count(),
+    prisma.forumCategory.count(),
+  ]);
+  const isIdempotentRun = [
+    existingSongCount,
+    existingArtistCount,
+    existingUserCount,
+    existingAlbumCount,
+    existingGenreCount,
+    existingLanguageCount,
+    existingForumCategoryCount,
+  ].some(count => count > 0);
 
   if (isIdempotentRun) {
-    console.log(`\n📊 DB already has ${existingSongCount} songs, ${existingArtistCount} artists.`);
-    if (shouldUpdate) {
-      console.log('   Running in UPDATE mode — will refresh metadata for existing records.\n');
-    } else {
-      console.log('   Running in idempotent mode — will only add new Spotify data.\n');
-    }
+    console.log(
+      `\n📊 Existing data found (${existingSongCount} songs, ${existingArtistCount} artists, ` +
+      `${existingUserCount} users, ${existingAlbumCount} albums, ${existingGenreCount} genres, ` +
+      `${existingLanguageCount} languages, ${existingForumCategoryCount} forum categories).`,
+    );
+    console.log('   General bootstrap seed skipped to preserve existing records.\n');
   } else {
-    console.log('\n🆕 Empty DB detected — running full seed...\n');
-    await resetSeededData();
+    console.log('\n🆕 Empty DB detected — running general bootstrap seed...\n');
 
     // ── Users ──
     const users = await Promise.all([
@@ -705,92 +291,31 @@ async function main() {
     });
   }
 
-  // ── Songs: Spotify only (runs in both modes) ──
-  // Spotify credentials are OPTIONAL. Without them the song-catalog sync and
-  // lyrics-enrichment enqueue are skipped (with a warning) and the rest of the
-  // seed continues normally. When credentials are present the existing
-  // idempotent behavior is unchanged — on a populated DB it only adds new
-  // Spotify data and never rewrites or deletes existing rows.
-  const hasSpotifyCreds = Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET);
-  if (!hasSpotifyCreds) {
-    console.warn(
-      '\n⚠️  SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET are not set — skipping the Spotify catalog seed.\n' +
-        '   The rest of the seed (languages, users, wallets, store, GT bundles, challenges) continues normally.\n' +
-        '   Set Spotify credentials and re-run to backfill the song catalog.',
-    );
-  } else {
-    await getSpotifyToken();
-    console.log('🎵 Seeding from Spotify (keyword search across African music)...\n');
-
-    const searchResult = await seedFromSpotifySearch(SEARCH_QUERIES, 30, shouldUpdate);
-    console.log(
-      `  Search: ${searchResult.songsCreated} songs processed, ${searchResult.artistsCreated} artists processed`,
-    );
-
-    // ── Enqueue lyrics enrichment for songs missing lyrics ──
-    console.log('\n📝 Checking for songs needing lyrics enrichment...');
-    try {
-      const songsWithoutLyrics = await prisma.song.findMany({
-        where: {
-          spotifyId: { not: null },
-          lyrics: { none: {} },
-        },
-        select: { id: true },
-      });
-
-      if (songsWithoutLyrics.length > 0) {
-        console.log(`  Enqueuing lyrics enrichment for ${songsWithoutLyrics.length} songs...`);
-        let enqueued = 0;
-        for (const song of songsWithoutLyrics) {
-          try {
-            await lyricsEnrichmentQueue.add(
-              `lyrics-enrichment-${song.id}`,
-              { songId: song.id },
-              {
-                jobId: `lyrics-enrichment-${song.id}`,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 5000 },
-                removeOnComplete: 1000,
-                removeOnFail: 500,
-              },
-            );
-            enqueued++;
-          } catch {
-            // Non-fatal: lyrics enrichment is best-effort during seeding.
-          }
-        }
-        console.log(`  ✅ ${enqueued} lyrics enrichment jobs enqueued`);
-      } else {
-        console.log('  All songs already have lyrics — skipping');
-      }
-
-      await prisma.tokenLedger.createMany({
-        data: [
-          {
-            userId: regularUser.id,
-            type: 'EARN',
-            amount: 100,
-            balanceAfter: 100,
-            reason: 'Published translation contribution',
-            sourceType: 'LEGACY',
-            idempotencyKey: 'legacy:seed-demo-1',
-          },
-          {
-            userId: regularUser.id,
-            type: 'EARN',
-            amount: 25,
-            balanceAfter: 125,
-            reason: 'Helpful forum participation',
-            sourceType: 'LEGACY',
-            idempotencyKey: 'legacy:seed-demo-2',
-          },
-        ],
-        skipDuplicates: true,
-      });
-    } catch (err) {
-      console.warn('  Lyrics enrichment enqueue skipped (non-fatal):', (err as Error).message);
-    }
-  }
+  // Song catalog imports run separately through the YouTube Data API seeder.
+  console.log('\n🎵 Song catalog seeding is separate; use the YouTube catalog seed commands.');
+  await prisma.tokenLedger.createMany({
+    data: [
+      {
+        userId: regularUser.id,
+        type: 'EARN',
+        amount: 100,
+        balanceAfter: 100,
+        reason: 'Published translation contribution',
+        sourceType: 'LEGACY',
+        idempotencyKey: 'legacy:seed-demo-1',
+      },
+      {
+        userId: regularUser.id,
+        type: 'EARN',
+        amount: 25,
+        balanceAfter: 125,
+        reason: 'Helpful forum participation',
+        sourceType: 'LEGACY',
+        idempotencyKey: 'legacy:seed-demo-2',
+      },
+    ],
+    skipDuplicates: true,
+  });
 
   // ── Token economy (Phase 1) ──────────────────────────────────
   // Create wallets for every user and seed tier/streak rows. The legacy
@@ -854,7 +379,7 @@ main()
     if (redisUrl) {
       const redis = new Redis(redisUrl);
       try {
-        const patterns = ['catalog:homepage:v*', 'spotify:search:*'];
+        const patterns = ['catalog:homepage:v*'];
         for (const pattern of patterns) {
           const keys = await redis.keys(pattern);
           if (keys.length > 0) {

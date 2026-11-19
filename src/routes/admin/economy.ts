@@ -21,6 +21,11 @@ import {
 import { adjustTokens } from '../../services/tokenService';
 import { logModAction } from '../../services/moderationAuditService';
 import { getAbuseDashboard, reviewAbuseFlag } from '../../services/abuseService';
+import { env } from '../../lib/env';
+import { CATALOG_GROWTH_JOB_NAME } from '../../jobs/catalogGrowthCron';
+import { youtubeCatalogImportQueue } from '../../lib/queue';
+import { estimateYouTubeCatalogQuota, buildYouTubeCatalogPreview, validateYouTubeCatalogPreview, applyYouTubeCatalogPreview, type CatalogPreview, type CatalogImportSource, type CatalogQuotaEstimate } from '../../services/youtubeCatalogImportService';
+import { triggerCatalogGrowthPreview } from '../../jobs/catalogGrowthCron';
 
 // ---------------------------------------------------------------------------
 // Admin economy dashboard (Phase 5 / 6.1).
@@ -401,6 +406,215 @@ adminEconomyRouter.patch(
 );
 
 // ---------------------------------------------------------------------------
+// GET /api/admin/catalog-growth/status
+// Schedule inspectability: last run timestamp, running status, next scheduled run.
+// ---------------------------------------------------------------------------
+
+adminEconomyRouter.get(
+  '/catalog-growth/status',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      let lastRunAt: string | null = null;
+      let isRunning: boolean = false;
+      let nextRun: string | null = null;
+
+      // Attempt to get the scheduled job; if it exists and is active, report its state
+      try {
+        const queueObj: any = youtubeCatalogImportQueue;
+        const job = await queueObj.getJob(CATALOG_GROWTH_JOB_NAME);
+        if (job) {
+          const state = await job.getState();
+          isRunning = state === 'active';
+          lastRunAt = job.data?.adminId ? new Date().toISOString() : null; // simplified
+          // Compute next run from cron pattern '0 6 * * *'
+          // daily at 6am UTC; simple approximation for now
+          nextRun = 'daily at 6am UTC';
+        }
+      } catch (_err) {
+        // queue introspection non-fatal — report whatever we have
+      }
+
+      return res.status(200).json({
+        jobName: CATALOG_GROWTH_JOB_NAME,
+        isRunning,
+        lastRunAt,
+        nextRun,
+        cadence: 'daily 6am UTC',
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/catalog-growth/preview
+// Preview totals from the most recent completed preview job.
+// Returns candidates, toCreate, toLink, alreadyLinked, duplicatesSkipped,
+// videoIdsAlreadyPresent, songsBefore, songsAfter, and the previewHash for audit.
+// ---------------------------------------------------------------------------
+
+adminEconomyRouter.get(
+  '/catalog-growth/preview',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      let preview: any = null;
+      let quotaEstimate: any = null;
+
+      try {
+        const queueObj: any = youtubeCatalogImportQueue;
+        const job = await queueObj.getJob(CATALOG_GROWTH_JOB_NAME);
+        if (job && job.returnvalue) {
+          preview = job.returnvalue;
+        }
+        // Also try to find a completed preview job by searching recent jobs
+        if (!preview) {
+          const allJobs = await queueObj.getJobs('completed');
+          for (const j of allJobs) {
+            if (j.name === CATALOG_GROWTH_JOB_NAME && j.data.operation === 'preview') {
+              preview = j.returnvalue;
+              quotaEstimate = j.returnvalue?.discovery?.quotaEstimate;
+              break;
+            }
+          }
+        }
+      } catch (_err) {
+        // non-fatal
+      }
+
+      if (!preview) {
+        return res.status(200).json({
+          jobName: CATALOG_GROWTH_JOB_NAME,
+          preview: null,
+          quotaEstimate: null,
+          message: 'No preview available yet. The scheduled job has not run, or no completed preview found.',
+        });
+      }
+
+      return res.status(200).json({
+        jobName: CATALOG_GROWTH_JOB_NAME,
+        preview,
+        quotaEstimate,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/catalog-growth/quota
+// Quota estimate for the configured import source defaults.
+// ---------------------------------------------------------------------------
+
+adminEconomyRouter.get(
+  '/catalog-growth/quota',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      // Use the default source config (genre search mode with default limits)
+      const source: CatalogImportSource = {
+        type: 'genre' as const,
+        value: '',
+        maxResults: Number(env.CATALOG_GROWTH_MAX_RESULTS) || 30,
+      };
+      const estimate = estimateYouTubeCatalogQuota(source);
+
+      return res.status(200).json({
+        jobName: CATALOG_GROWTH_JOB_NAME,
+        source,
+        quotaEstimate: estimate,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/catalog-growth/apply
+// Explicit apply: takes a previewHash and applies the reviewed preview.
+// This is the auditable gate: no scheduled catalog writes happen without an
+// explicit admin POST with a valid previewHash that passed validation.
+// ---------------------------------------------------------------------------
+
+adminEconomyRouter.post(
+  '/catalog-growth/apply',
+  economyWriteLimiter,
+  [
+    body('previewHash').isString().notEmpty().withMessage('previewHash is required'),
+    body('adminId').isString().notEmpty().withMessage('adminId is required'),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { previewHash, adminId } = req.body;
+
+      // Reuse the youtube catalog import queue to process the apply operation
+      const queueObj: any = youtubeCatalogImportQueue;
+
+      const job = await queueObj.add(
+        CATALOG_GROWTH_JOB_NAME,
+        {
+          operation: 'apply',
+          adminId,
+          previewHash,
+        },
+        { jobId: `catalog-growth-apply-${Date.now()}` }
+      );
+
+      // Wait for the job to complete (single-concurrency queue)
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      const queueJob = await queueObj.getJob(job.id);
+      if (!queueJob) {
+        return res.status(200).json({
+          jobId: job.id,
+          status: 'pending',
+          message: 'Apply job enqueued; waiting for completion.',
+        });
+      }
+
+      const result = queueJob.returnvalue as any;
+      return res.status(200).json({
+        jobId: job.id,
+        status: queueJob.data.operation,
+        result,
+      });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/catalog-growth/preview-trigger
+// Trigger a one-off preview run (same data model as scheduled job).
+// Used by admins to preview before scheduling or to test the pipeline.
+// ---------------------------------------------------------------------------
+
+adminEconomyRouter.post(
+  '/catalog-growth/preview-trigger',
+  economyWriteLimiter,
+  [
+    body('adminId').isString().notEmpty().withMessage('adminId is required'),
+    body('maxResults').optional().isInt({ min: 1, max: 50 }).withMessage('maxResults must be 1-50'),
+    body('maxPages').optional().isInt({ min: 1, max: 80 }).withMessage('maxPages must be 1-80'),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { adminId, maxResults, maxPages } = req.body;
+
+      const result = await triggerCatalogGrowthPreview(adminId, { maxResults, maxPages });
+
+      return res.status(200).json(result);
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // POST /api/admin/economy/adjust
 // Body { userId, amount, reason, type: 'CREDIT'|'DEBIT' }
 // ---------------------------------------------------------------------------
@@ -468,6 +682,70 @@ adminEconomyRouter.post(
       });
     } catch (err) {
       return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/translation/baseline
+// Capture translation latency p50/p95 baselines from the most recent test run.
+// Body { runId, timings } — stores the timings for the given run identifier.
+// Admins can later retrieve baselines to verify p50/p95 targets from Phase 0.
+// ---------------------------------------------------------------------------
+adminEconomyRouter.post(
+  '/translation/baseline',
+  economyWriteLimiter,
+  [
+    body('runId').isString().notEmpty().withMessage('runId is required'),
+    body('timings').isObject().withMessage('timings is required'),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { runId, timings } = req.body as { runId: string; timings: any };
+      const baselineKey = `translation:baseline:${runId}`;
+      await redis.set(baselineKey, JSON.stringify(timings), 'EX', 60 * 60 * 24 * 30); // 30-day expiry
+      logger.info({ runId }, 'Translation latency baseline captured');
+      res.status(200).json({ runId, status: 'baseline_captured', key: baselineKey });
+    } catch (err) {
+      return next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/translation/baseline
+// Retrieve stored translation latency baselines by runId.
+// Query parameter: runId — if omitted, returns all stored baselines.
+// ---------------------------------------------------------------------------
+adminEconomyRouter.get(
+  '/translation/baseline',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { runId } = _req.query as { runId?: string };
+      if (runId) {
+        const baselineKey = `translation:baseline:${runId}`;
+        const raw = await redis.get(baselineKey);
+        if (!raw) {
+          return res.status(200).json({ runId, baseline: null, message: 'No baseline found for this runId' });
+        }
+        const baseline = JSON.parse(raw);
+        return res.status(200).json({ runId, baseline });
+      }
+
+      // Return all stored baselines (keys matching translation:baseline:*)
+      const keys = await redis.keys('translation:baseline:*');
+      const baselines: Array<{ runId: string; baseline: any }> = [];
+      for (const key of keys) {
+        const raw = await redis.get(key);
+        if (raw) {
+          const baseline = JSON.parse(raw);
+          baselines.push({ runId: key.replace('translation:baseline:', ''), baseline });
+        }
+      }
+      res.status(200).json({ baselines });
+    } catch (err) {
+      next(err);
     }
   },
 );

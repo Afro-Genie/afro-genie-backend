@@ -41,8 +41,8 @@ export async function contributeTax(params: {
   sourceId: string;
 }): Promise<{ balanceAfter: number } | null> {
   const config = await getRewardConfig();
-  const taxAmount = Math.max(1, Math.round(params.rewardAmount * config.MOD_POOL_TAX_PERCENT));
-  if (taxAmount <= 0) return null;
+  const taxAmount = Math.round(params.rewardAmount * config.MOD_POOL_TAX_PERCENT);
+  if (taxAmount < 0) return null;
 
   const { ledger, created } = await applyTaxWithResult({
     userId: params.userId,

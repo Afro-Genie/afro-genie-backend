@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { getRewardConfig } from '../config/rewards';
+import { getRewardConfig, isRewardActive } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { evaluateStreakBadge } from './badgeService';
 import { isRewardPaused } from './abuseService';
@@ -57,6 +57,14 @@ export async function recordLogin(userId: string) {
     // Auto-pause: keep the streak current but skip earning while flagged.
     if (await isRewardPaused(userId)) {
       logger.warn({ userId }, 'Login rewards paused by abuse flag');
+      await evaluateStreakBadge(userId);
+      return updated;
+    }
+
+    // Check if daily login reward is currently active.
+    const loginActive = await isRewardActive('DAILY_LOGIN');
+    if (!loginActive) {
+      logger.info({ userId }, 'Daily login reward is currently inactive');
       await evaluateStreakBadge(userId);
       return updated;
     }

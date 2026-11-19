@@ -7,6 +7,7 @@ import { catalogService } from './services/catalogService';
 import { bulkIndex } from './services/searchService';
 import { shutdownBandwidthMonitor } from './lib/bandwidthMonitor';
 import { scheduleSyncJobs } from './jobs/syncCron';
+import { scheduleCatalogGrowthJob } from './jobs/catalogGrowthCron';
 import { startSelfHeal } from './jobs/selfHeal';
 
 export let dbPopulationStatus: 'healthy' | 'degraded' | 'empty' = 'healthy';
@@ -127,6 +128,12 @@ const server = app.listen(env.PORT, async () => {
       await scheduleSyncJobs();
     } catch (err) {
       logger.error({ err }, 'Failed to schedule sync jobs');
+    }
+
+    try {
+      await scheduleCatalogGrowthJob();
+    } catch (err) {
+      logger.error({ err }, 'Failed to schedule catalog growth job');
     }
 
     // Periodic verification that every repeat registration is still present in

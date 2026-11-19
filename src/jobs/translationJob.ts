@@ -10,12 +10,20 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   const { songId, userId, sourceLang, targetLang, promptVersion } = job.data;
   const startTime = Date.now();
 
+  const timings: Record<string, number> = {
+    fetchingSongMs: 0,
+    providerCallMs: 0,
+    persistenceMs: 0,
+  };
+
   logger.info({ jobId: job.id, songId, sourceLang, targetLang, attempt: job.attemptsMade }, 'Translation job started');
 
   // Report progress: fetching song data
+  timings.fetchingSongMs = Date.now() - startTime;
   await job.updateProgress({ stage: 'fetching_song', percent: 10 });
 
   // Fetch song, artist name, and most recent lyrics in one query
+  const songFetchEnd = Date.now();
   const song = await prisma.song.findUnique({
     where: { id: songId },
     include: {
@@ -28,6 +36,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     throw new Error(`Song not found: ${songId}`);
   }
 
+  timings.fetchingSongMs = songFetchEnd - startTime;
   const lyric = song.lyrics[0];
   if (!lyric || !lyric.content?.trim()) {
     const fallbackMessage = 'Lyrics are not available for this song yet.';
@@ -80,6 +89,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
 
   let result;
   try {
+    const translateStart = Date.now();
     result = await translateWithFallback({
       artist: song.artist.name,
       title: song.title,
@@ -88,17 +98,17 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
       targetLang,
       promptVersion,
     });
+    timings.providerCallMs = Date.now() - translateStart;
   } catch (translateError) {
-    const elapsed = Date.now() - startTime;
+    timings.providerCallMs = Date.now() - startTime;
     logger.error(
-      { jobId: job.id, songId, targetLang, elapsed, err: translateError },
+      { jobId: job.id, songId, targetLang, err: translateError },
       'Translation provider call failed',
     );
     throw translateError;
   }
 
   const elapsed = Date.now() - startTime;
-  const estimatedCostUsd = estimateCostUsd(result.tokensInput, result.tokensOutput);
 
   // Report progress: saving translation
   await job.updateProgress({ stage: 'saving', percent: 80 });
@@ -113,31 +123,33 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
       songId,
       userId,
       originalLyrics: lyric.content!,
-      translatedLyrics: result.translatedLyrics,
-      culturalContext: result.culturalContext,
+      translatedLyrics: result.result.translatedLyrics,
+      culturalContext: result.result.culturalContext,
       sourceLang,
       targetLang,
-      aiModel: result.model,
-      promptVersion: result.promptVersion,
+      aiModel: result.result.model,
+      promptVersion: result.result.promptVersion,
       status: 'APPROVED',
     },
     update: {
-      translatedLyrics: result.translatedLyrics,
-      culturalContext: result.culturalContext,
-      aiModel: result.model,
-      promptVersion: result.promptVersion,
+      translatedLyrics: result.result.translatedLyrics,
+      culturalContext: result.result.culturalContext,
+      aiModel: result.result.model,
+      promptVersion: result.result.promptVersion,
       status: 'APPROVED',
       updatedAt: new Date(),
     },
   });
 
+  timings.persistenceMs = Date.now() - startTime;
+
   await logAICall({
-    provider: result.providerName,
-    model: result.model,
-    promptVersion: result.promptVersion,
-    tokensInput: result.tokensInput,
-    tokensOutput: result.tokensOutput,
-    estimatedCostUsd,
+    provider: result.result.providerName,
+    model: result.result.model,
+    promptVersion: result.result.promptVersion,
+    tokensInput: result.result.tokensInput,
+    tokensOutput: result.result.tokensOutput,
+    estimatedCostUsd: (await estimateCostUsd(result.result.tokensInput, result.result.tokensOutput)),
     songId,
     userId,
   });
@@ -154,14 +166,15 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
       jobId: job.id,
       songId,
       targetLang,
-      provider: result.providerName,
-      model: result.model,
-      tokensInput: result.tokensInput,
-      tokensOutput: result.tokensOutput,
-      tokensUsed: result.tokensUsed,
-      costUsd: estimatedCostUsd.toFixed(6),
+      provider: result.result.providerName,
+      model: result.result.model,
+      tokensInput: result.result.tokensInput,
+      tokensOutput: result.result.tokensOutput,
+      tokensUsed: result.result.tokensUsed,
+      costUsd: (await estimateCostUsd(result.result.tokensInput, result.result.tokensOutput)).toFixed(6),
       lyricsLength,
       elapsedMs: elapsed,
+      ...timings,
     },
     'Translation job completed',
   );

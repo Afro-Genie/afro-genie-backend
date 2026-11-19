@@ -6,10 +6,12 @@ import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
 import { createRedisRateLimitStore } from '../../lib/rateLimitStore';
+import { redis } from '../../lib/redis';
 import { invalidatePlaybackSourceCache } from '../../lib/playbackCache';
 import { ApiError } from '../../middleware/errorHandler';
 import { youtubeService } from '../../services/youtubeService';
 import { enqueueLibraryEnrichment } from '../../jobs/libraryEnrichmentJob';
+import { youtubeCatalogImportQueue } from '../../lib/queue';
 
 export const adminYoutubeRouter = Router();
 
@@ -90,6 +92,48 @@ adminYoutubeRouter.get('/youtube/status', async (_req: Request, res: Response, n
       prisma.song.count({ where: { softDeleted: false, youtubeVideoId: { not: null } } }),
     ]);
     return res.status(200).json({ total, matched, unmatched: total - matched });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/admin/youtube/playback/status
+// YouTube playback rollout status: queue depth, running job count, kill switch
+// state, and last job timestamp. Mirrors the catalog-growth/status pattern.
+// ---------------------------------------------------------------------------
+adminYoutubeRouter.get('/youtube/playback/status', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const flagPlaybackYoutube = await redis.get('FLAG_PLAYBACK_YOUTUBE');
+    const isYoutubeEnabled = flagPlaybackYoutube ? flagPlaybackYoutube === 'true' : false;
+
+    let queueDepth = 0;
+    let isRunning = false;
+    let lastJobAt: string | null = null;
+
+    try {
+      const queueObj: any = youtubeCatalogImportQueue;
+      const jobs = await queueObj.getJobs(['waiting', 'active', 'delayed'], 0, 50, false);
+      queueDepth = jobs.length;
+
+      // Look for any active YouTube import job
+      for (const job of jobs) {
+        if (await job.getState() === 'active') {
+          isRunning = true;
+          lastJobAt = job.timestamp ? new Date(job.timestamp).toISOString() : null;
+          break;
+        }
+      }
+    } catch (_err) {
+      // queue introspection non-fatal
+    }
+
+    return res.status(200).json({
+      flagPlaybackYoutube: isYoutubeEnabled,
+      queueDepth,
+      isRunning,
+      lastJobAt,
+    });
   } catch (err) {
     return next(err);
   }
