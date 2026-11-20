@@ -29,7 +29,7 @@ describe('YouTube catalog import inputs', () => {
     );
   });
 
-  test('search sources require configured artists and approved African genres', () => {
+  test('search sources accept known or new artists and approved African genres', () => {
     assert.deepEqual(resolveYouTubeCatalogImportSource('artist', '  aSaKe  '), {
       type: 'artist',
       value: 'Asake',
@@ -40,10 +40,11 @@ describe('YouTube catalog import inputs', () => {
       value: 'Afrobeats',
       maxResults: 50,
     });
-    assert.throws(
-      () => resolveYouTubeCatalogImportSource('artist', 'unknown artist'),
-      /not in the configured African artist channel manifest/,
-    );
+    assert.deepEqual(resolveYouTubeCatalogImportSource('artist', 'unknown artist'), {
+      type: 'artist',
+      value: 'unknown artist',
+      maxResults: 50,
+    });
     assert.throws(
       () => resolveYouTubeCatalogImportSource('genre', 'western pop'),
       /not an approved African music genre/,

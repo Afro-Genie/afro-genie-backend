@@ -33,6 +33,7 @@ export interface CatalogArtist {
   channelId: string;
   artistName: string;
   genres: string[];
+  approved?: boolean;
 }
 
 export interface CatalogCandidate {
@@ -49,6 +50,7 @@ export interface CatalogPreviewItem {
   normalizedTitle: string;
   action: CatalogCandidateAction;
   reason: string | null;
+  selected: boolean;
 }
 
 export interface CatalogPreview {
@@ -216,39 +218,24 @@ function searchChannels(mode: CatalogSearchMode, value: string): {
 } {
   const allChannels = playlistChannelMap();
   if (mode === 'artist') {
-    const identity = normalizeArtistIdentity(value);
-    const matches = [...allChannels.values()].filter(
-      (channel) => normalizeArtistIdentity(channel.artistName) === identity,
-    );
-    if (!matches.length) {
-      throw new Error('Artist is not in the configured African artist channel manifest.');
-    }
-    const artistNames = new Set(matches.map((channel) => channel.artistName));
-    if (artistNames.size !== 1) {
-      throw new Error('Artist name is ambiguous in the reviewed allowlist; use an exact unambiguous artist name.');
-    }
     return {
-      query: matches[0].artistName,
-      channels: new Map(matches.map((channel) => [channel.channelId, channel])),
+      query: value.trim(),
+      channels: new Map(),
       genres: null,
     };
   }
 
   if (mode === 'genre') {
-    const [genre] = classifyAfricanGenres([value]);
-    if (!genre) throw new Error('Genre is not an approved African music genre.');
-    const matches = [...allChannels.values()].filter((channel) => channel.genres.includes(genre));
-    if (!matches.length) {
-      throw new Error('No configured African artist channels are available for this genre.');
-    }
+    const canonicalGenres = classifyAfricanGenres([value]);
+    const genre = canonicalGenres[0] || value.trim();
     return {
       query: AFRICAN_GENRE_SEARCH_QUERIES.find((entry) => entry.genre === genre)?.query || genre,
-      channels: new Map(matches.map((channel) => [channel.channelId, channel])),
+      channels: new Map(),
       genres: [genre],
     };
   }
 
-  return { query: value, channels: allChannels, genres: null };
+  return { query: value.trim(), channels: new Map(), genres: null };
 }
 
 export function resolveYouTubeCatalogImportSource(
@@ -575,30 +562,71 @@ export async function discoverYouTubeSearch(
   });
   const items = response.items || [];
   const allChannels = playlistChannelMap();
+  let approvedChannels: Array<{ channelId: string; artistName: string; genres: string[] }> = [];
+  try {
+    approvedChannels = await prisma.africanMusicChannel.findMany({
+      where: { approved: true },
+      select: { channelId: true, artistName: true, genres: true },
+    });
+  } catch (error) {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      !('code' in error) ||
+      !['P2021', 'P2022', 'P1001'].includes(String(error.code))
+    ) {
+      throw error;
+    }
+  }
+  for (const channel of approvedChannels) {
+    allChannels.set(channel.channelId, {
+      channelId: channel.channelId,
+      artistName: channel.artistName,
+      genres: channel.genres,
+    });
+  }
   const unreviewedChannels = new Map<string, CatalogPreview['discovery']['unreviewedChannels'][number]>();
   const eligibleItems: SearchItem[] = [];
   let rejectedChannel = 0;
 
   for (const item of items) {
     const channelId = item.snippet?.channelId;
-    if (!channelId || !search.channels.has(channelId)) {
+    if (!channelId) {
       rejectedChannel++;
-      if (channelId && !allChannels.has(channelId)) {
+      continue;
+    }
+    const configuredChannel = allChannels.get(channelId);
+    if (mode === 'artist' && configuredChannel) {
+      const expected = normalizeArtistIdentity(sourceInput.value);
+      const actual = normalizeArtistIdentity(configuredChannel.artistName);
+      if (expected !== actual) {
+        rejectedChannel++;
+        continue;
+      }
+    }
+    if (!configuredChannel) {
+      const channelTitle = item.snippet?.channelTitle?.trim();
+      if (channelTitle) {
         const summary = unreviewedChannels.get(channelId) || {
           channelId,
-          channelTitle: item.snippet?.channelTitle || 'Unknown',
+          channelTitle,
           videos: 0,
           sampleTitles: [],
         };
         summary.videos++;
-        if (summary.sampleTitles.length < 3 && item.snippet?.title) {
-          summary.sampleTitles.push(item.snippet.title);
-        }
+        if (summary.sampleTitles.length < 3 && item.snippet?.title) summary.sampleTitles.push(item.snippet.title);
         unreviewedChannels.set(channelId, summary);
       }
+      rejectedChannel++;
       continue;
     }
-    eligibleItems.push(item);
+    if (search.channels.size) {
+      if (!search.channels.has(channelId)) {
+        rejectedChannel++;
+        continue;
+      }
+    }
+    if (configuredChannel) eligibleItems.push(item);
   }
 
   const videoIds = [...new Set(eligibleItems.map((item) => item.id?.videoId).filter((id): id is string => !!id))];
@@ -608,7 +636,8 @@ export async function discoverYouTubeSearch(
   const candidates: CatalogCandidate[] = [];
   for (const item of eligibleItems) {
     const channelId = item.snippet?.channelId;
-    const channel = channelId ? search.channels.get(channelId) : undefined;
+    const configuredChannel = channelId ? allChannels.get(channelId) : undefined;
+    const channel = configuredChannel;
     const videoId = item.id?.videoId;
     if (!channel || !videoId) {
       rejectedVideo++;
@@ -697,30 +726,30 @@ export async function buildYouTubeCatalogPreview(
     if (existingVideoIds.has(candidate.video.videoId)) {
       videoIdsAlreadyPresent++;
       alreadyLinked++;
-      return { candidate, normalizedTitle, action: 'skip', reason: 'YouTube video ID is already in the catalog.' };
+      return { candidate, normalizedTitle, action: 'skip', reason: 'YouTube video ID is already in the catalog.', selected: false };
     }
 
     const key = `${candidate.channel.artistName.toLocaleLowerCase()}\u0000${normalizedTitle.toLocaleLowerCase()}`;
     if (seenTitleArtist.has(key)) {
       duplicatesSkipped++;
-      return { candidate, normalizedTitle, action: 'skip', reason: 'Another candidate has the same normalized title and artist.' };
+      return { candidate, normalizedTitle, action: 'skip', reason: 'Another candidate has the same normalized title and artist.', selected: false };
     }
     seenTitleArtist.add(key);
     const existingSong = existingByTitleArtist.get(key);
     if (existingSong?.youtubeVideoId) {
       alreadyLinked++;
-      return { candidate, normalizedTitle, action: 'skip', reason: 'Matching song already has a YouTube video ID.' };
+      return { candidate, normalizedTitle, action: 'skip', reason: 'Matching song already has a YouTube video ID.', selected: false };
     }
     if (existingSong) {
       toLink++;
-      return { candidate, normalizedTitle, action: 'link', reason: 'Link YouTube ID to the existing title and artist.' };
+      return { candidate, normalizedTitle, action: 'link', reason: 'Link YouTube ID to the existing title and artist.', selected: true };
     }
     if (!artistByName.has(candidate.channel.artistName)) {
       toCreate++;
-      return { candidate, normalizedTitle, action: 'create', reason: 'Create a song for a configured African artist channel.' };
+      return { candidate, normalizedTitle, action: 'create', reason: 'Create a song for a reviewed African artist channel.', selected: true };
     }
     toCreate++;
-    return { candidate, normalizedTitle, action: 'create', reason: 'Create a new song for a configured African artist.' };
+    return { candidate, normalizedTitle, action: 'create', reason: 'Create a new song for a reviewed African artist.', selected: true };
   });
 
   const policy = policyFingerprint();
@@ -921,6 +950,7 @@ export async function applyYouTubeCatalogPreview(
     total: number;
     failures: CatalogApplyFailure[];
   }) => Promise<void> | void,
+  selectedVideoIds?: string[],
 ): Promise<{
   created: number;
   linked: number;
@@ -931,7 +961,12 @@ export async function applyYouTubeCatalogPreview(
   failures: CatalogApplyFailure[];
 }> {
   validateYouTubeCatalogPreview(preview, expectedHash);
-  const applicable = preview.items.filter((item) => item.action !== 'skip');
+  const selected = selectedVideoIds
+    ? new Set(selectedVideoIds)
+    : new Set(preview.items.filter((item) => item.selected !== false).map((item) => item.candidate.video.videoId));
+  const applicable = preview.items.filter((item) =>
+    item.action !== 'skip' && selected.has(item.candidate.video.videoId),
+  );
   const results = {
     created: 0,
     linked: 0,

@@ -10,6 +10,7 @@ import { createRedisRateLimitStore } from '../../lib/rateLimitStore';
 import { youtubeCatalogImportQueue } from '../../lib/queue';
 import { logger } from '../../lib/logger';
 import { env } from '../../lib/env';
+import { prisma } from '../../lib/prisma';
 import type { YouTubeCatalogImportJobData } from '../../jobs/youtubeCatalogImportJob';
 import { getAvailableYouTubeCatalogSources } from '../../services/youtubeCatalogPolicy';
 import {
@@ -250,6 +251,7 @@ async function enqueueApply(
   previewJobId: string,
   previewHash: string,
   retryOf?: string,
+  selectedVideoIds?: string[],
 ) {
   requireQueueSupport();
   const previewSuffix = previewJobId.replace(/^catalog_preview_/, '');
@@ -262,7 +264,8 @@ async function enqueueApply(
       existing.data.adminId !== adminId ||
       existing.data.operation !== 'apply' ||
       existing.data.previewJobId !== previewJobId ||
-      existing.data.expectedPreviewHash !== previewHash
+      existing.data.expectedPreviewHash !== previewHash ||
+      JSON.stringify(existing.data.selectedVideoIds || []) !== JSON.stringify(selectedVideoIds || [])
     ) {
       throw new ApiError('This preview already has an apply job with different settings', 'IDEMPOTENCY_CONFLICT', 409);
     }
@@ -273,6 +276,7 @@ async function enqueueApply(
     adminId,
     previewJobId,
     expectedPreviewHash: previewHash,
+    ...(selectedVideoIds ? { selectedVideoIds } : {}),
     ...(retryOf && { retryOf }),
   };
   const job = await youtubeCatalogImportQueue.add('apply', data, {
@@ -369,13 +373,31 @@ adminYouTubeCatalogImportsRouter.post(
     param('previewJobId').isString().notEmpty(),
     body('confirm').custom((value) => value === true).withMessage('confirm must be true to apply catalog changes'),
     body('previewHash').isString().matches(/^[a-f0-9]{64}$/i),
+    body('selectedVideoIds').optional().isArray({ min: 1, max: 100 }),
+    body('selectedVideoIds.*').optional().isString().matches(/^[A-Za-z0-9_-]{11}$/),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const adminId = adminIdFromRequest(req);
-      await getCompletedPreview(req.params.previewJobId, adminId, req.body.previewHash);
-      const result = await enqueueApply(adminId, req.params.previewJobId, req.body.previewHash);
+      const preview = await getCompletedPreview(req.params.previewJobId, adminId, req.body.previewHash);
+      if (Array.isArray(req.body.selectedVideoIds)) {
+        const available = new Set(
+          preview.items
+            .filter((item) => item.action !== 'skip')
+            .map((item) => item.candidate.video.videoId),
+        );
+        if (req.body.selectedVideoIds.some((videoId: string) => !available.has(videoId))) {
+          throw new ApiError('A selected candidate is not available in this preview', 'BAD_REQUEST', 400);
+        }
+      }
+      const result = await enqueueApply(
+        adminId,
+        req.params.previewJobId,
+        req.body.previewHash,
+        undefined,
+        Array.isArray(req.body.selectedVideoIds) ? req.body.selectedVideoIds : undefined,
+      );
       res.status(202).json(result);
     } catch (error) {
       next(error);
@@ -390,6 +412,8 @@ adminYouTubeCatalogImportsRouter.post(
     param('jobId').isString().notEmpty(),
     body('confirm').optional().isBoolean(),
     body('previewHash').optional().isString().matches(/^[a-f0-9]{64}$/i),
+    body('selectedVideoIds').optional().isArray({ min: 1, max: 100 }),
+    body('selectedVideoIds.*').optional().isString().matches(/^[A-Za-z0-9_-]{11}$/),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
@@ -464,7 +488,15 @@ adminYouTubeCatalogImportsRouter.post(
       const previewJobId = originalData.previewJobId;
       if (!previewJobId) throw new ApiError('The failed apply job has no associated preview', 'JOB_NOT_RETRYABLE', 409);
       await getCompletedPreview(previewJobId, adminId, req.body.previewHash);
-      const result = await enqueueApply(adminId, previewJobId, req.body.previewHash, req.params.jobId);
+      const result = await enqueueApply(
+        adminId,
+        previewJobId,
+        req.body.previewHash,
+        req.params.jobId,
+        Array.isArray(req.body.selectedVideoIds)
+          ? req.body.selectedVideoIds
+          : originalData.selectedVideoIds,
+      );
       return res.status(202).json(result);
     } catch (error) {
       next(error);
@@ -500,8 +532,74 @@ adminYouTubeCatalogImportsRouter.post(
 adminYouTubeCatalogImportsRouter.get(
   '/youtube-catalog/imports/sources',
   statusLimiter,
-  (_req: Request, res: Response) => {
-    res.status(200).json(getAvailableYouTubeCatalogSources());
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const configured = getAvailableYouTubeCatalogSources();
+      const approved = await prisma.africanMusicChannel.findMany({
+        where: { approved: true },
+        orderBy: { artistName: 'asc' },
+        select: { channelId: true, artistName: true, countryCode: true, genres: true },
+      });
+      const artists = new Map(configured.artists.map((artist) => [artist.name.toLowerCase(), artist]));
+      for (const channel of approved) {
+        const key = channel.artistName.toLowerCase();
+        const existing = artists.get(key);
+        artists.set(key, {
+          name: existing?.name || channel.artistName,
+          genres: [...new Set([...(existing?.genres || []), ...channel.genres])].sort(),
+        });
+      }
+      res.status(200).json({
+        artists: [...artists.values()],
+        genres: [...new Set([...configured.genres, ...approved.flatMap((channel) => channel.genres)])].sort(),
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminYouTubeCatalogImportsRouter.post(
+  '/youtube-catalog/imports/channels/approve',
+  enqueueLimiter,
+  [
+    body('channelId').isString().matches(/^UC[A-Za-z0-9_-]{22}$/),
+    body('artistName').isString().trim().isLength({ min: 2, max: 120 }),
+    body('countryCode').isString().trim().isLength({ min: 2, max: 2 }).isUppercase(),
+    body('genres').isArray({ min: 1, max: 10 }),
+    body('genres.*').isString().trim().isLength({ min: 2, max: 60 }),
+    body('evidenceUrl').optional().isURL({ protocols: ['https'], require_protocol: true }),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const channel = await prisma.africanMusicChannel.upsert({
+        where: { channelId: req.body.channelId },
+        update: {
+          artistName: req.body.artistName,
+          countryCode: req.body.countryCode,
+          genres: [...new Set(req.body.genres as string[])],
+          evidenceUrl: req.body.evidenceUrl || null,
+          approved: true,
+          reviewedAt: new Date(),
+        },
+        create: {
+          channelId: req.body.channelId,
+          artistName: req.body.artistName,
+          countryCode: req.body.countryCode,
+          genres: [...new Set(req.body.genres as string[])],
+          evidenceUrl: req.body.evidenceUrl || null,
+          approved: true,
+        },
+      });
+      logger.info(
+        { adminId: adminIdFromRequest(req), channelId: channel.channelId, artistName: channel.artistName },
+        'Approved African music YouTube channel',
+      );
+      res.status(200).json(channel);
+    } catch (error) {
+      next(error);
+    }
   },
 );
 
@@ -627,6 +725,7 @@ adminYouTubeCatalogImportsRouter.get(
               publishedAt: item.candidate.video.publishedAt,
               action: item.action,
               reason: item.reason,
+              selected: item.selected,
             })),
           },
         });

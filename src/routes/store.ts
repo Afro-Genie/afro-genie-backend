@@ -72,17 +72,22 @@ storeRouter.post(
       .optional({ nullable: true })
       .isString()
       .withMessage('shippingAddress must be a string when provided'),
+    body('purchaseToken')
+      .optional({ nullable: true })
+      .isString()
+      .isLength({ min: 8, max: 128 })
+      .withMessage('purchaseToken must be a string of 8 to 128 characters'),
     validateRequest,
   ],
-  validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { itemId, shippingName, shippingAddress } = req.body as {
+      const { itemId, shippingName, shippingAddress, purchaseToken } = req.body as {
         itemId: string;
         shippingName?: string;
         shippingAddress?: string;
+        purchaseToken?: string;
       };
-      const result = await purchaseItem({ userId: req.user!.id, itemId, shippingName, shippingAddress });
+      const result = await purchaseItem({ userId: req.user!.id, itemId, shippingName, shippingAddress, purchaseToken });
       if (!result.success) {
         throw new ApiError(result.message, 'PURCHASE_FAILED', 400);
       }

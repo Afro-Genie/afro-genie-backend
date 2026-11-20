@@ -152,20 +152,6 @@ export function validateManualAfricanSongGenres(
   if (!requestedGenres.length || requestedGenres.length !== new Set(songGenres.map(normalizeGenre)).size) {
     throw new Error('Manual songs must use approved African music genres.');
   }
-
-  const identity = normalizeArtistIdentity(artistName);
-  const artistMatches = [...YOUTUBE_AFRICAN_CHANNELS, ...YOUTUBE_AFRICAN_PLAYLIST_ARTISTS]
-    .filter((artist) => normalizeArtistIdentity(artist.artistName) === identity);
-  const matchedNames = new Set(artistMatches.map((artist) => artist.artistName));
-  if (!artistMatches.length || matchedNames.size !== 1) {
-    throw new Error('Manual songs require an unambiguous artist in the configured African artist manifest.');
-  }
-
-  const approvedArtistGenres = new Set(classifyAfricanGenres(artistMatches.flatMap((artist) => artist.genres)));
-  if (requestedGenres.some((genre) => !approvedArtistGenres.has(genre))) {
-    throw new Error("Manual song genres must match the selected artist's approved African genres.");
-  }
-
   return requestedGenres;
 }
 

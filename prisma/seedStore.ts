@@ -110,7 +110,7 @@ export const STORE_ITEMS: StoreItemSeed[] = [
     description: 'A physical signed poster from a featured Afrobeats artist. Ships to you!',
     tokenCost: 500,
     category: 'merch',
-    metadata: { digital: false },
+    metadata: { digital: false, entitlementType: 'merch:signed-artist-poster' },
     sortOrder: 8,
     stock: 5,
   },

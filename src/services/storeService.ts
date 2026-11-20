@@ -5,6 +5,7 @@ import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
 import { sendBalanceUpdate } from '../lib/balanceSse';
 import { invalidateLedgerSummaryCache, refundTokens } from './tokenService';
+import { resolveTier } from '../config/rewards';
 
 const BALANCE_PREFIX = 'user:tokens:';
 const BALANCE_TTL = 3600;
@@ -177,27 +178,58 @@ export interface PurchaseItemInput {
   itemId: string;
   shippingName?: string;
   shippingAddress?: string;
+  purchaseToken?: string;
 }
 
-export async function purchaseItem(input: PurchaseItemInput): Promise<{ success: boolean; message: string }> {
-  const { userId, itemId, shippingName, shippingAddress } = input;
+export async function purchaseItem(input: PurchaseItemInput): Promise<{ success: boolean; message: string }>;
+export async function purchaseItem(userId: string, itemId: string): Promise<{ success: boolean; message: string }>;
+export async function purchaseItem(
+  input: PurchaseItemInput | string,
+  legacyItemId?: string,
+): Promise<{ success: boolean; message: string }> {
+  const { userId, itemId, shippingName, shippingAddress, purchaseToken } =
+    typeof input === 'string'
+      ? { userId: input, itemId: legacyItemId!, shippingName: undefined, shippingAddress: undefined, purchaseToken: undefined }
+      : input;
   const item = await prisma.storeItem.findUnique({ where: { id: itemId } });
   if (!item || !item.active) {
     return { success: false, message: 'Item not found or unavailable' };
   }
 
-  const entitlementType = readEntitlementType(item.metadata);
-  const rules = entitlementType ? ITEM_FULFILLMENT_RULES[entitlementType] : undefined;
-  if (!rules) {
-    return { success: false, message: 'Item eligibility rules could not be determined' };
+  let entitlementType = readEntitlementType(item.metadata);
+  if (!entitlementType && item.category.toLowerCase() === 'merch' && item.name.toLowerCase().includes('signed artist poster')) {
+    entitlementType = 'merch:signed-artist-poster';
   }
+  const rules = entitlementType
+    ? (ITEM_FULFILLMENT_RULES[entitlementType] ?? {
+        fulfillment: 'automatic' as const,
+        shippingDataRequired: false,
+        stockLimited: false,
+        stockAmount: 0,
+      })
+    : item.category.toLowerCase() === 'merch'
+      ? ITEM_FULFILLMENT_RULES['merch:signed-artist-poster']
+      : {
+          fulfillment: 'automatic' as const,
+          shippingDataRequired: false,
+          stockLimited: false,
+          stockAmount: 0,
+        };
 
   // Enforce eligibility: tier and badge requirements checked at purchase time.
   if (rules.requiresTier) {
-    const userTier = await prisma.userTier.findUnique({ where: { userId }, select: { tier: true, approvedCount: true } });
-    if (!userTier) {
-      return { success: false, message: 'User tier not found. Cannot verify eligibility.' };
-    }
+    const userTier = await prisma.userTier.findUnique({ where: { userId }, select: { tier: true, approvedCount: true } })
+      ?? await (async () => {
+        const approvedCount = await prisma.translation.count({
+          where: { userId, status: { in: ['APPROVED', 'PUBLISHED'] } },
+        });
+        const resolved = resolveTier(approvedCount);
+        return prisma.userTier.upsert({
+          where: { userId },
+          update: { tier: resolved.tier as any, multiplier: resolved.multiplier, approvedCount },
+          create: { userId, tier: resolved.tier as any, multiplier: resolved.multiplier, approvedCount },
+        });
+      })();
     if (userTier.tier !== rules.requiresTier) {
       return { success: false, message: `Item requires ${rules.requiresTier} tier (currently ${userTier.tier}).` };
     }
@@ -212,8 +244,27 @@ export async function purchaseItem(input: PurchaseItemInput): Promise<{ success:
     }
   }
 
+  if (rules.shippingDataRequired) {
+    if (!shippingName?.trim()) {
+      return { success: false, message: 'Recipient name is required for physical items.' };
+    }
+    if (!shippingAddress?.trim()) {
+      return { success: false, message: 'Shipping address is required for physical items.' };
+    }
+  }
+
   if (item.stock !== null && item.stock <= 0) {
     return { success: false, message: 'This item is sold out' };
+  }
+
+  if (purchaseToken) {
+    const replay = await prisma.storePurchase.findUnique({
+      where: { purchaseToken },
+      select: { id: true, status: true },
+    });
+    if (replay) {
+      return { success: true, message: 'Purchase already completed' };
+    }
   }
 
   const existing = await prisma.storePurchase.findFirst({
@@ -292,6 +343,7 @@ export async function purchaseItem(input: PurchaseItemInput): Promise<{ success:
         status: PurchaseStatus;
         shippingName?: string;
         shippingAddress?: string;
+        purchaseToken?: string;
       }
 
       const purchaseData: PurchaseData = {
@@ -299,6 +351,7 @@ export async function purchaseItem(input: PurchaseItemInput): Promise<{ success:
         itemId,
         spentAmount: cost,
         status: rules.fulfillment === 'adminFulfilled' ? 'PENDING_FULFILLMENT' : 'FULFILLED' as PurchaseStatus,
+        ...(purchaseToken ? { purchaseToken } : {}),
       };
 
       // Store shipping details if required for this item type
@@ -406,6 +459,15 @@ const readEntitlementType = (metadata: unknown): string | null => {
   return null;
 };
 
+const resolveEntitlementType = (item: { name: string; category: string; metadata: unknown }): string | null => {
+  const entitlementType = readEntitlementType(item.metadata);
+  if (entitlementType) return entitlementType;
+  if (item.category.toLowerCase() === 'merch' && item.name.toLowerCase().includes('signed artist poster')) {
+    return 'merch:signed-artist-poster';
+  }
+  return null;
+};
+
 /** Map entitlement types to their fulfillment type and eligibility requirements. */
 interface ItemFulfillmentRule {
   fulfillment: 'automatic' | 'adminFulfilled';
@@ -502,7 +564,7 @@ export async function fulfillPurchase(purchaseId: string) {
       throw new ApiError('Purchase not found', 'NOT_FOUND', 404);
     }
 
-    const entitlementType = readEntitlementType(existing.item.metadata);
+    const entitlementType = resolveEntitlementType(existing.item);
     const rules = entitlementType ? ITEM_FULFILLMENT_RULES[entitlementType] : undefined;
     if (!rules) {
       throw new ApiError('Eligibility rules not found for this item', 'VALIDATION_ERROR', 400);
@@ -636,7 +698,7 @@ export async function refundPurchase(purchaseId: string, adminReason?: string): 
 
     // Drop the decoration/title entitlement — unless another fulfilled
     // purchase still grants the same entitlement type.
-    const entitlementType = readEntitlementType(purchase.item.metadata);
+    const entitlementType = resolveEntitlementType(purchase.item);
     if (entitlementType) {
       const stillOwned = await tx.storePurchase.count({
         where: {
