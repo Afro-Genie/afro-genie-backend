@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -396,7 +397,7 @@ model Song {
   favoritedBy         Favorite[]
   viewedBy            UserHistory[]
 
-  @@unique([title, artistId])
+  @@unique([title, artistId], where: raw("\"softDeleted\" = false"))
   @@index([artistId])
   @@index([releaseId])
   @@index([title])

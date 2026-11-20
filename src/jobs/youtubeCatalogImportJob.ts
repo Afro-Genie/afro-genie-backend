@@ -181,7 +181,7 @@ export async function processYouTubeCatalogImportJob(
           source.value,
           source.maxResults,
           async (progress) => {
-            await job.updateProgress({ stage: 'discovering', ...progress });
+            await job.updateProgress({ stage: 'discovering', ...progress, maxResults: source.maxResults });
           },
         );
         candidates = result.candidates;

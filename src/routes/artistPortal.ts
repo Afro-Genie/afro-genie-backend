@@ -361,9 +361,9 @@ artistPortalRouter.post(
       const { title, lyrics, albumName, releaseYear, imageUrl, audioUrl, audioMimeType, audioSize, audioDurationMs, genres, languages } = req.body;
       const normalizedTitle = title.trim();
 
-      // Friendly guard for the [title, artistId] unique constraint
-      const existingSong = await prisma.song.findUnique({
-        where: { title_artistId: { title: normalizedTitle, artistId: artist.id } },
+      // Only active songs reserve a title for this artist.
+      const existingSong = await prisma.song.findFirst({
+        where: { title: normalizedTitle, artistId: artist.id, softDeleted: false },
         select: { id: true },
       });
       if (existingSong) {

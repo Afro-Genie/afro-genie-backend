@@ -842,8 +842,8 @@ export async function persistYouTubeCatalogCandidate(
         update: {},
         select: { id: true },
       });
-      const existingSong = await transaction.song.findUnique({
-        where: { title_artistId: { title, artistId: artist.id } },
+      const existingSong = await transaction.song.findFirst({
+        where: { title, artistId: artist.id, softDeleted: false },
         select: { id: true, youtubeVideoId: true, durationMs: true },
       });
       let songId: string;

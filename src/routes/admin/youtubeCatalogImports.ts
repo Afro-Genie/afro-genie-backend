@@ -226,7 +226,13 @@ async function getCompletedPreview(previewJobId: string, adminId: string, expect
     throw new ApiError('A completed preview is required before applying catalog changes', 'PREVIEW_NOT_READY', 409);
   }
   const preview = previewJob.returnvalue as CatalogPreview | null;
-  if (!preview) throw new ApiError('Preview result is unavailable', 'PREVIEW_NOT_FOUND', 404);
+  if (!preview) {
+    throw new ApiError(
+      'The preview completed, but its result was not saved. Retry discovery to rebuild it before applying.',
+      'PREVIEW_RESULT_MISSING',
+      409,
+    );
+  }
   try {
     validateYouTubeCatalogPreview(preview, expectedHash);
   } catch (error) {
@@ -392,12 +398,15 @@ adminYouTubeCatalogImportsRouter.post(
       const failedJob = await ownedJob(req.params.jobId, adminId);
       const state = await failedJob.getState();
       const originalData = failedJob.data as YouTubeCatalogImportJobData;
+      const completedJobMissingResult = state === 'completed'
+        && ['preview', 'resume', 'apply'].includes(originalData.operation)
+        && failedJob.returnvalue == null;
       const completedApplyHasFailures = originalData.operation === 'apply'
         && state === 'completed'
         && Number((failedJob.returnvalue as { failed?: number } | null)?.failed) > 0;
-      if (state !== 'failed' && !completedApplyHasFailures) {
+      if (state !== 'failed' && !completedApplyHasFailures && !completedJobMissingResult) {
         throw new ApiError(
-          'Only failed jobs or completed apply jobs with candidate failures can be retried',
+          'Only failed jobs, completed jobs missing their result, or completed apply jobs with candidate failures can be retried',
           'JOB_NOT_RETRYABLE',
           409,
         );
@@ -552,15 +561,24 @@ adminYouTubeCatalogImportsRouter.get(
       const adminId = adminIdFromRequest(req);
       const job = await ownedJob(req.params.jobId, adminId);
       const state = await job.getState();
+      const missingResult = state === 'completed'
+        && ['preview', 'resume', 'apply'].includes(job.data.operation)
+        && job.returnvalue == null;
+      const recoveryMessage = job.data.operation === 'apply'
+        ? 'The apply finished, but its result was not saved. Retry the confirmed apply safely to recover the result.'
+        : 'The preview finished, but its result was not saved. Retry discovery to rebuild the preview.';
       const result = {
         jobId: String(job.id),
         operation: job.data.operation,
-        status: state,
-        progress: job.progress,
+        status: missingResult ? 'failed' : state,
+        progress: missingResult
+          ? { stage: job.data.operation === 'apply' ? 'apply-result-missing' : 'preview-result-missing' }
+          : job.progress,
         attemptsMade: job.attemptsMade,
         createdAt: new Date(job.timestamp).toISOString(),
         finishedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
-        failedReason: state === 'failed' ? job.failedReason : null,
+        failedReason: missingResult ? recoveryMessage : state === 'failed' ? job.failedReason : null,
+        ...(missingResult ? { recovery: 'missing-result' as const } : {}),
       };
 
       if (state !== 'completed') {
@@ -570,7 +588,16 @@ adminYouTubeCatalogImportsRouter.get(
 
       if (job.data.operation === 'preview' || job.data.operation === 'resume') {
         const preview = job.returnvalue as CatalogPreview | null;
-        if (!preview) throw new ApiError('Preview result is unavailable', 'PREVIEW_NOT_FOUND', 404);
+        if (!preview) {
+          res.status(200).json({
+            ...result,
+            status: 'failed',
+            progress: { stage: 'preview-result-missing' },
+            failedReason: recoveryMessage,
+            recovery: 'missing-result',
+          });
+          return;
+        }
         const page = Number(req.query.page || 1);
         const pageSize = Number(req.query.pageSize || 50);
         const offset = (page - 1) * pageSize;
@@ -602,6 +629,15 @@ adminYouTubeCatalogImportsRouter.get(
               reason: item.reason,
             })),
           },
+        });
+        return;
+      }
+
+      if (missingResult) {
+        res.status(200).json({
+          ...result,
+          progress: { stage: 'apply-result-missing' },
+          recovery: 'missing-result',
         });
         return;
       }

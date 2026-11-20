@@ -180,7 +180,7 @@ async function startWorkers(): Promise<void> {
   const youtubeCatalogImportWorker = new Worker<YouTubeCatalogImportJobData>(
     'youtubeCatalogImportQueue',
     async (job) => {
-      await processYouTubeCatalogImportJob(job);
+      return processYouTubeCatalogImportJob(job);
     },
     { connection, concurrency: 1 }
   );
