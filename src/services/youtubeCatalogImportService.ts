@@ -11,6 +11,7 @@ import {
 } from './youtubeCatalogPolicy';
 import { env } from '../lib/env';
 import { prisma } from '../lib/prisma';
+import { indexSong } from '../services/searchService';
 
 const YOUTUBE_API = 'https://www.googleapis.com/youtube/v3';
 const POLICY_VERSION = 'youtube-african-catalog-v4';
@@ -216,7 +217,6 @@ function searchChannels(mode: CatalogSearchMode, value: string): {
   channels: Map<string, CatalogArtist>;
   genres: string[] | null;
 } {
-  const allChannels = playlistChannelMap();
   if (mode === 'artist') {
     return {
       query: value.trim(),
@@ -477,11 +477,7 @@ export async function discoverYouTubePlaylist(
         unreviewedChannels.set(channelId, summary);
       }
 
-      if (!channelId || !channelById.has(channelId)) {
-        rejectedChannel++;
-      } else {
-        allowedItems.push(playlistItemAsSearchItem(item));
-      }
+      allowedItems.push(playlistItemAsSearchItem(item));
     }
 
     const ids = [...new Set(allowedItems.map((item) => item.id?.videoId).filter((id): id is string => !!id))];
@@ -489,10 +485,15 @@ export async function discoverYouTubePlaylist(
       videosListCalls += Math.ceil(ids.length / 50);
       const details = await fetchVideoDetails(ids);
       for (const item of allowedItems) {
-        const channelId = item.snippet?.channelId;
         const videoId = item.id?.videoId;
-        const channel = channelId ? channelById.get(channelId) : undefined;
-        if (!channel || !videoId) continue;
+        const channelId = item.snippet?.channelId;
+        const channelArtistName = item.snippet?.channelTitle || '';
+        if (!videoId) continue;
+        const channel: CatalogArtist = {
+          channelId: channelId || '',
+          artistName: channelArtistName,
+          genres: [],
+        };
         const candidate = candidateFrom(item, details.get(videoId), channel);
         if (candidate) candidates.push(candidate);
         else rejectedVideo++;
@@ -561,32 +562,7 @@ export async function discoverYouTubeSearch(
     safeSearch: 'none',
   });
   const items = response.items || [];
-  const allChannels = playlistChannelMap();
-  let approvedChannels: Array<{ channelId: string; artistName: string; genres: string[] }> = [];
-  try {
-    approvedChannels = await prisma.africanMusicChannel.findMany({
-      where: { approved: true },
-      select: { channelId: true, artistName: true, genres: true },
-    });
-  } catch (error) {
-    if (
-      typeof error !== 'object' ||
-      error === null ||
-      !('code' in error) ||
-      !['P2021', 'P2022', 'P1001'].includes(String(error.code))
-    ) {
-      throw error;
-    }
-  }
-  for (const channel of approvedChannels) {
-    allChannels.set(channel.channelId, {
-      channelId: channel.channelId,
-      artistName: channel.artistName,
-      genres: channel.genres,
-    });
-  }
   const unreviewedChannels = new Map<string, CatalogPreview['discovery']['unreviewedChannels'][number]>();
-  const eligibleItems: SearchItem[] = [];
   let rejectedChannel = 0;
 
   for (const item of items) {
@@ -595,38 +571,19 @@ export async function discoverYouTubeSearch(
       rejectedChannel++;
       continue;
     }
-    const configuredChannel = allChannels.get(channelId);
-    if (mode === 'artist' && configuredChannel) {
-      const expected = normalizeArtistIdentity(sourceInput.value);
-      const actual = normalizeArtistIdentity(configuredChannel.artistName);
-      if (expected !== actual) {
-        rejectedChannel++;
-        continue;
-      }
+    const channelTitle = item.snippet?.channelTitle?.trim();
+    if (channelTitle) {
+      const summary = unreviewedChannels.get(channelId) || {
+        channelId,
+        channelTitle,
+        videos: 0,
+        sampleTitles: [],
+      };
+      summary.videos++;
+      if (summary.sampleTitles.length < 3 && item.snippet?.title) summary.sampleTitles.push(item.snippet.title);
+      unreviewedChannels.set(channelId, summary);
     }
-    if (!configuredChannel) {
-      const channelTitle = item.snippet?.channelTitle?.trim();
-      if (channelTitle) {
-        const summary = unreviewedChannels.get(channelId) || {
-          channelId,
-          channelTitle,
-          videos: 0,
-          sampleTitles: [],
-        };
-        summary.videos++;
-        if (summary.sampleTitles.length < 3 && item.snippet?.title) summary.sampleTitles.push(item.snippet.title);
-        unreviewedChannels.set(channelId, summary);
-      }
-      rejectedChannel++;
-      continue;
-    }
-    if (search.channels.size) {
-      if (!search.channels.has(channelId)) {
-        rejectedChannel++;
-        continue;
-      }
-    }
-    if (configuredChannel) eligibleItems.push(item);
+    eligibleItems.push(item);
   }
 
   const videoIds = [...new Set(eligibleItems.map((item) => item.id?.videoId).filter((id): id is string => !!id))];
@@ -636,14 +593,15 @@ export async function discoverYouTubeSearch(
   const candidates: CatalogCandidate[] = [];
   for (const item of eligibleItems) {
     const channelId = item.snippet?.channelId;
-    const configuredChannel = channelId ? allChannels.get(channelId) : undefined;
-    const channel = configuredChannel;
     const videoId = item.id?.videoId;
-    if (!channel || !videoId) {
-      rejectedVideo++;
-      continue;
-    }
-    const candidate = candidateFrom(item, details.get(videoId), channel, search.genres || channel.genres);
+    const channelArtistName = item.snippet?.channelTitle || '';
+    if (!videoId) continue;
+    const channel: CatalogArtist = {
+      channelId: channelId || '',
+      artistName: channelArtistName,
+      genres: [],
+    };
+    const candidate = candidateFrom(item, details.get(videoId), channel);
     if (candidate) candidates.push(candidate);
     else rejectedVideo++;
   }
@@ -908,6 +866,10 @@ export async function persistYouTubeCatalogCandidate(
           select: { id: true },
         });
         songId = song.id;
+        
+        // Also index synchronously so the song appears in search immediately
+        await indexSong(songId);
+
         result = 'created';
       }
 
