@@ -564,6 +564,7 @@ export async function discoverYouTubeSearch(
   const items = response.items || [];
   const unreviewedChannels = new Map<string, CatalogPreview['discovery']['unreviewedChannels'][number]>();
   let rejectedChannel = 0;
+  const eligibleItems: SearchItem[] = [];
 
   for (const item of items) {
     const channelId = item.snippet?.channelId;
