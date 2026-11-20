@@ -1,5 +1,6 @@
 import { Prisma, TranslationStatus } from '@prisma/client';
 import { enqueueIndexSong } from '../jobs/searchIndexJob';
+import { indexSong } from '../services/searchService';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
 import { lyricsEnrichmentQueue } from '../lib/queue';
 import { redis } from '../lib/redis';
@@ -645,6 +646,9 @@ export const createSong = async (payload: SongMutationInput) => {
   );
 
   await enqueueIndexSong(created.id);
+
+  // Also index synchronously so the song appears in search immediately
+  await indexSong(created.id);
 
   const latestLyrics = await getLatestLyricsContent(created.id);
   if (latestLyrics) {
