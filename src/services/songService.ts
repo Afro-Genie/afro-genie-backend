@@ -7,13 +7,14 @@ import { prisma } from '../lib/prisma';
 import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
 import { ApiError } from '../middleware/errorHandler';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
+import { validateManualAfricanSongGenres } from './youtubeCatalogPolicy';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
 
 const VIEW_COUNT_TTL_SECONDS = 6 * 60 * 60;
 
-type SortBy = 'views' | 'popularity' | 'createdAt';
+type SortBy = 'views' | 'popularity' | 'createdAt' | 'title' | 'artist' | 'releaseYear';
 type SortOrder = 'asc' | 'desc';
 
 interface SongFilters {
@@ -21,6 +22,7 @@ interface SongFilters {
   lang?: string;
   genre?: string;
   artistId?: string;
+  artistName?: string;
   search?: string;
 }
 
@@ -60,7 +62,14 @@ const normalizeLimit = (limit?: number): number => {
 };
 
 const normalizeSortBy = (sortBy?: string): SortBy => {
-  if (sortBy === 'views' || sortBy === 'popularity' || sortBy === 'createdAt') {
+  if (
+    sortBy === 'views' ||
+    sortBy === 'popularity' ||
+    sortBy === 'createdAt' ||
+    sortBy === 'title' ||
+    sortBy === 'artist' ||
+    sortBy === 'releaseYear'
+  ) {
     return sortBy;
   }
 
@@ -71,16 +80,28 @@ const normalizeSortOrder = (sortOrder?: string): SortOrder => {
   return sortOrder === 'asc' ? 'asc' : 'desc';
 };
 
-const buildOrderBy = (sortBy: SortBy, sortOrder: SortOrder): Prisma.SongOrderByWithRelationInput => {
+const buildOrderBy = (sortBy: SortBy, sortOrder: SortOrder): Prisma.SongOrderByWithRelationInput[] => {
   if (sortBy === 'popularity') {
-    return { requestCount: sortOrder };
+    return [{ requestCount: sortOrder }, { id: sortOrder }];
   }
 
   if (sortBy === 'views') {
-    return { views: sortOrder };
+    return [{ views: sortOrder }, { id: sortOrder }];
   }
 
-  return { createdAt: sortOrder };
+  if (sortBy === 'title') {
+    return [{ title: sortOrder }, { id: sortOrder }];
+  }
+
+  if (sortBy === 'artist') {
+    return [{ artist: { name: sortOrder } }, { id: sortOrder }];
+  }
+
+  if (sortBy === 'releaseYear') {
+    return [{ releaseYear: { sort: sortOrder, nulls: 'last' } }, { id: sortOrder }];
+  }
+
+  return [{ createdAt: sortOrder }, { id: sortOrder }];
 };
 
 // Postgres sorts NULLs first on DESC, so ordering by youtubeVideoId in SQL
@@ -100,6 +121,21 @@ const rankPlayableFirst = <T extends { youtubeVideoId?: string | null }>(
 
 const buildSecondaryComparator = (sortBy: SortBy, sortOrder: SortOrder) => {
   const direction = sortOrder === 'asc' ? 1 : -1;
+
+  if (sortBy === 'title') {
+    return (a: { title?: string }, b: { title?: string }) =>
+      (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' }) * direction;
+  }
+
+  if (sortBy === 'artist') {
+    return (a: { artist?: { name?: string } }, b: { artist?: { name?: string } }) =>
+      (a.artist?.name ?? '').localeCompare(b.artist?.name ?? '', undefined, { sensitivity: 'base' }) * direction;
+  }
+
+  if (sortBy === 'releaseYear') {
+    return (a: { releaseYear?: number | null }, b: { releaseYear?: number | null }) =>
+      ((a.releaseYear ?? 0) - (b.releaseYear ?? 0)) * direction;
+  }
 
   if (sortBy === 'views') {
     return (a: { views?: number }, b: { views?: number }) => ((a.views ?? 0) - (b.views ?? 0)) * direction;
@@ -128,12 +164,30 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
       },
     ],
     ...(filters.artistId ? { artistId: filters.artistId } : {}),
+    ...(filters.artistName?.trim()
+      ? {
+          artist: {
+            name: {
+              contains: filters.artistName.trim(),
+              mode: Prisma.QueryMode.insensitive,
+            },
+            suspended: false,
+          },
+        }
+      : {}),
     ...(filters.search
       ? {
-          title: {
-            contains: filters.search.trim(),
-            mode: Prisma.QueryMode.insensitive,
-          },
+          OR: [
+            { title: { contains: filters.search.trim(), mode: Prisma.QueryMode.insensitive } },
+            { artist: { name: { contains: filters.search.trim(), mode: Prisma.QueryMode.insensitive } } },
+            {
+              genres: {
+                some: {
+                  genre: { name: { contains: filters.search.trim(), mode: Prisma.QueryMode.insensitive } },
+                },
+              },
+            },
+          ],
         }
       : {}),
     ...(filters.genre
@@ -306,38 +360,69 @@ export const listSongs = async (params: SongListParams) => {
   const where = buildSongWhere(params);
   const orderBy = buildOrderBy(sortBy, sortOrder);
 
-  let total = 0;
+  let total: number;
+  let visibleWhere: Prisma.SongWhereInput = { ...where, softDeleted: false };
   try {
-    total = await prisma.song.count({ where: { ...where, softDeleted: false } });
+    total = await prisma.song.count({ where: visibleWhere });
   } catch (error) {
     if (!isMissingSoftDeleteColumnError(error)) {
       throw error;
     }
 
+    visibleWhere = where;
     total = await prisma.song.count({ where });
   }
 
-  // Lightweight pass to establish playable-first ordering, then hydrate only
-  // the requested slice (SQL can't express "youtubeVideoId IS NOT NULL" as an
-  // ORDER BY group).
-  const keys = await prisma.song.findMany({
-    where,
-    select: { id: true, youtubeVideoId: true, views: true, requestCount: true, createdAt: true },
-    orderBy,
-  });
-  const ordered = rankPlayableFirst(keys, buildSecondaryComparator(sortBy, sortOrder));
-
-  let pageKeys: typeof ordered;
+  let pageKeys: Array<{ id: string }>;
   let nextCursor: string | null = null;
 
   if (cursor) {
+    const rows = await prisma.song.findMany({
+      where: visibleWhere,
+      select: {
+        id: true,
+        youtubeVideoId: true,
+        views: true,
+        requestCount: true,
+        createdAt: true,
+        title: true,
+        releaseYear: true,
+        artist: { select: { name: true } },
+      },
+      orderBy,
+    });
+    const ordered = rankPlayableFirst(rows, buildSecondaryComparator(sortBy, sortOrder));
     const cursorIndex = ordered.findIndex((row) => row.id === cursor);
-    pageKeys = cursorIndex >= 0 ? ordered.slice(cursorIndex + 1, cursorIndex + 1 + limit + 1) : [];
-    const hasNext = pageKeys.length > limit;
-    pageKeys = hasNext ? pageKeys.slice(0, limit) : pageKeys;
+    const slice = cursorIndex >= 0 ? ordered.slice(cursorIndex + 1, cursorIndex + 1 + limit + 1) : [];
+    const hasNext = slice.length > limit;
+    pageKeys = (hasNext ? slice.slice(0, limit) : slice).map(({ id }) => ({ id }));
     nextCursor = hasNext ? pageKeys[pageKeys.length - 1]?.id ?? null : null;
   } else {
-    pageKeys = ordered.slice((page - 1) * limit, (page - 1) * limit + limit);
+    const offset = (page - 1) * limit;
+    const playableWhere = { ...visibleWhere, youtubeVideoId: { not: null } };
+    const unplayableWhere = { ...visibleWhere, youtubeVideoId: null };
+    const playableCount = await prisma.song.count({ where: playableWhere });
+    const requestedPlayable = Math.max(0, Math.min(limit, playableCount - offset));
+    const playableRows = requestedPlayable
+      ? await prisma.song.findMany({
+          where: playableWhere,
+          select: { id: true },
+          orderBy,
+          skip: Math.min(offset, playableCount),
+          take: requestedPlayable,
+        })
+      : [];
+    const remaining = limit - playableRows.length;
+    const unplayableRows = remaining
+      ? await prisma.song.findMany({
+          where: unplayableWhere,
+          select: { id: true },
+          orderBy,
+          skip: Math.max(0, offset - playableCount),
+          take: remaining,
+        })
+      : [];
+    pageKeys = [...playableRows, ...unplayableRows];
   }
 
   const rows = await prisma.song.findMany({
@@ -349,15 +434,11 @@ export const listSongs = async (params: SongListParams) => {
     .map((key) => rowsById.get(key.id))
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
-  let songs: typeof hydrated = hydrated;
-  const activeSongIds = await getActiveSongIdSet(songs.map((song) => song.id));
-  songs = songs.filter((song) => activeSongIds.has(song.id));
-
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return {
-    songs,
-    data: songs,
+    songs: hydrated,
+    data: hydrated,
     total,
     page,
     totalPages,
@@ -477,35 +558,6 @@ const syncGenres = async (songId: string, genres: string[] | undefined) => {
   }
 };
 
-/**
- * When a song is created without explicit genres, auto-link it to genres
- * based on the artist's genre tags (Artist.genres String[]).
- */
-const autoLinkSongToArtistGenres = async (songId: string, artistId: string): Promise<void> => {
-  const existingLinks = await prisma.songGenre.findMany({
-    where: { songId },
-    select: { genreId: true },
-  });
-  if (existingLinks.length > 0) return;
-
-  const artist = await prisma.artist.findUnique({
-    where: { id: artistId },
-    select: { genres: true },
-  });
-  if (!artist || !artist.genres || artist.genres.length === 0) return;
-
-  for (const tag of artist.genres) {
-    const genre = await prisma.genre.findFirst({
-      where: { name: { equals: tag, mode: 'insensitive' } },
-    });
-    if (genre) {
-      await prisma.songGenre.create({
-        data: { songId, genreId: genre.id },
-      });
-    }
-  }
-};
-
 const syncLanguages = async (songId: string, languages: string[] | undefined, primaryLanguage?: string | null) => {
   if (!languages && !primaryLanguage) {
     return;
@@ -549,6 +601,19 @@ const syncLanguages = async (songId: string, languages: string[] | undefined, pr
 
 export const createSong = async (payload: SongMutationInput) => {
   await ensureArtistExists(payload.artistId);
+  const artist = await prisma.artist.findUnique({
+    where: { id: payload.artistId },
+    select: { name: true, suspended: true },
+  });
+  if (!artist || artist.suspended) {
+    throw new ApiError('Artist not found', 'NOT_FOUND', 404);
+  }
+  let approvedGenres: string[];
+  try {
+    approvedGenres = validateManualAfricanSongGenres(artist.name, payload.genres ?? []);
+  } catch (error) {
+    throw new ApiError(error instanceof Error ? error.message : 'Manual song failed African-music policy validation.', 'AFRICAN_MUSIC_POLICY', 400);
+  }
 
   const created = await prisma.song.create({
     data: {
@@ -561,14 +626,10 @@ export const createSong = async (payload: SongMutationInput) => {
   });
 
   await Promise.all([
-    syncGenres(created.id, payload.genres),
+    syncGenres(created.id, approvedGenres),
     syncLanguages(created.id, payload.languages, payload.primaryLanguage),
     payload.lyrics ? upsertLyrics(created.id, payload.lyrics) : Promise.resolve(),
   ]);
-
-  if (!payload.genres || payload.genres.length === 0) {
-    await autoLinkSongToArtistGenres(created.id, payload.artistId);
-  }
 
   await lyricsEnrichmentQueue.add(
     'enrichLyrics',

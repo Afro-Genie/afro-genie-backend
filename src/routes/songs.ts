@@ -27,8 +27,9 @@ songsRouter.get(
     query('lang').optional().isString(),
     query('genre').optional().isString(),
     query('artistId').optional().isString(),
+    query('artistName').optional().isString(),
     query('search').optional().isString(),
-    query('sortBy').optional().isIn(['views', 'popularity', 'createdAt']),
+    query('sortBy').optional().isIn(['views', 'popularity', 'createdAt', 'title', 'artist', 'releaseYear']),
     query('sortOrder').optional().isIn(['asc', 'desc']),
   ],
   validateRequest,
@@ -43,8 +44,11 @@ songsRouter.get(
         lang: typeof req.query.lang === 'string' ? req.query.lang : undefined,
         genre: typeof req.query.genre === 'string' ? req.query.genre : undefined,
         artistId: typeof req.query.artistId === 'string' ? req.query.artistId : undefined,
+        artistName: typeof req.query.artistName === 'string' ? req.query.artistName : undefined,
         search: typeof req.query.search === 'string' ? req.query.search : undefined,
-        sortBy: typeof req.query.sortBy === 'string' ? (req.query.sortBy as 'views' | 'popularity' | 'createdAt') : undefined,
+        sortBy: typeof req.query.sortBy === 'string'
+          ? (req.query.sortBy as 'views' | 'popularity' | 'createdAt' | 'title' | 'artist' | 'releaseYear')
+          : undefined,
         sortOrder: typeof req.query.sortOrder === 'string' ? (req.query.sortOrder as 'asc' | 'desc') : undefined,
       });
 
@@ -127,7 +131,8 @@ songsRouter.post(
     body('imageUrl').optional({ nullable: true }).isString(),
     body('primaryLanguage').optional({ nullable: true }).isString(),
     body('languages').optional().isArray(),
-    body('genres').optional().isArray(),
+    body('genres').isArray({ min: 1 }),
+    body('genres.*').isString().trim().notEmpty(),
     body('lyrics.rawText').optional().isString(),
     body('lyrics.lineBreaks').optional().isArray(),
   ],

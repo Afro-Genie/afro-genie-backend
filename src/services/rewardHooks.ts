@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { getRewardConfig } from '../config/rewards';
+import { getRewardConfig, isRewardActive } from '../config/rewards';
 import { awardTokensWithResult } from './tokenService';
 import { getMultiplier, recomputeTier } from './tierService';
 import { createNotification } from './notificationService';
@@ -68,14 +68,17 @@ const countToday = async (userId: string, sourceType: string): Promise<number> =
 export async function onTranslationApproved(event: TranslationApprovedEvent): Promise<void> {
   try {
     const config = await getRewardConfig();
-    await recomputeTier(event.userId);
 
     const [reviewerPaused, contributorPaused] = await Promise.all([
       isRewardPaused(event.reviewerId),
       isRewardPaused(event.userId),
     ]);
 
-    if (!reviewerPaused) {
+    // Check if translator approval reward is currently active.
+    const reviewerActive = await isRewardActive('TRANSLATOR_REWARD');
+    const contributorActive = await isRewardActive('TRANSLATOR_REWARD');
+
+    if (!reviewerPaused && reviewerActive) {
       const { created: reviewerRewardCreated } = await awardTokensWithResult({
         userId: event.reviewerId,
         type: 'EARN',
@@ -102,6 +105,8 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
         rewardAmount: config.TRANSLATION_APPROVED_AMOUNT,
         sourceId: event.translationId,
       });
+    } else if (!reviewerActive) {
+      logger.info({ event }, 'Translator approval reward is currently inactive');
     } else {
       logger.warn({ event }, 'reward hook onTranslationApproved skipped reviewer reward — reviewer paused');
     }
@@ -114,7 +119,7 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
     });
 
     // Contributor (translator) GT for approved work (Phase 1, 2.2.3).
-    if (!contributorPaused) {
+    if (!contributorPaused && contributorActive) {
       const { created: contributorRewardCreated } = await awardTokensWithResult({
         userId: event.userId,
         type: 'EARN',
@@ -133,6 +138,8 @@ export async function onTranslationApproved(event: TranslationApprovedEvent): Pr
           type: 'REWARD',
         });
       }
+    } else if (!contributorActive) {
+      logger.info({ event }, 'Translator contribution reward is currently inactive');
     } else {
       logger.warn({ event }, 'reward hook onTranslationApproved skipped contributor reward — contributor paused');
     }
@@ -163,6 +170,13 @@ export async function onCorrectionApproved(event: CorrectionApprovedEvent): Prom
   try {
     if (await isRewardPaused(event.userId)) {
       logger.warn({ event }, 'reward hook onCorrectionApproved skipped — user paused');
+      return;
+    }
+
+    // Check if correction approval reward is currently active.
+    const correctionActive = await isRewardActive('CORRECTION');
+    if (!correctionActive) {
+      logger.info({ event }, 'Correction approval reward is currently inactive');
       return;
     }
 
@@ -219,32 +233,13 @@ export async function onAiTranslationCompleted(event: AiTranslationCompletedEven
       return;
     }
 
-    const config = await getRewardConfig();
-    if (await countToday(event.userId, 'AI_TRANSLATION') >= config.AI_TRANSLATION_DAILY_CAP) {
-      return;
-    }
-
-    const multiplier = await getMultiplier(event.userId);
-    const amount = Math.round(config.AI_TRANSLATION_AMOUNT * multiplier);
-
-    const { created } = await awardTokensWithResult({
-      userId: event.userId,
-      type: 'EARN',
-      amount,
-      reason: 'AI translation generated',
-      sourceType: 'AI_TRANSLATION',
-      sourceId: event.jobId,
-      idempotencyKey: `ai-trigger:${event.jobId}`,
-    });
-
-    if (created) {
-      await createNotification({
-        userId: event.userId,
-        title: 'Tokens earned',
-        message: `You earned +${amount} tokens for generating an AI translation.`,
-        type: 'REWARD',
-      });
-    }
+    // Phase 2: AI translation charges 5 GT upfront in requestTranslation.
+    // No additional GT is awarded on generation completion — the +2 GT earning
+    // reward was removed to eliminate the inconsistency of rewarding consumption
+    // while charging via credits. The job may still award credits (translation
+    // credit packs) if the user has them, but the direct GT charge is single.
+    // Simply log completion and return without awarding additional GT.
+    logger.info({ event }, 'AI translation generation completed; no additional GT awarded (charge applied at request)');
   } catch (err) {
     logger.error({ err, event }, 'reward hook onAiTranslationCompleted failed');
   }
@@ -255,6 +250,13 @@ export async function onTopicShare(event: TopicShareEvent): Promise<void> {
   try {
     if (await isRewardPaused(event.userId)) {
       logger.warn({ event }, 'reward hook onTopicShare skipped — user paused');
+      return;
+    }
+
+    // Check if topic share reward is currently active.
+    const shareActive = await isRewardActive('TOPIC_SHARE');
+    if (!shareActive) {
+      logger.info({ event }, 'Topic share reward is currently inactive');
       return;
     }
 

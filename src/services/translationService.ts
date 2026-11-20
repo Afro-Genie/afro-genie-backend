@@ -5,7 +5,25 @@ import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { translationQueue } from '../lib/queue';
 import { CURRENT_PROMPT_VERSION, GeminiProvider } from './aiProviders/geminiProvider';
-import type { TranslationJobData, TranslationProvider } from '../types/translation';
+import { awardTokens } from './tokenService';
+import type { TranslationJobData, TranslationProvider, TranslationResult } from '../types/translation';
+
+export interface TranslationTimings {
+  /** Total request path duration (ms) */
+  totalMs: number;
+  /** Language detection duration (ms) */
+  languageDetectionMs: number;
+  /** Cache lookup duration (finding existing approved translation) (ms) */
+  cacheLookupMs: number;
+  /** Provider call duration across all attempts (ms) */
+  providerCallMs: number;
+  /** Chunking duration if lyrics split into multiple prompts (ms) */
+  chunkingMs: number;
+  /** Persistence duration (upsert to DB) (ms) */
+  persistenceMs: number;
+  /** Queue enqueue duration (ms) */
+  enqueueMs: number;
+}
 
 // ---------------------------------------------------------------------------
 // Provider registry — switching providers requires only changing the
@@ -169,9 +187,13 @@ export async function translateWithFallback(params: {
   sourceLang: string;
   targetLang: string;
   promptVersion: string;
-}): Promise<TranslationResultWithProvider> {
+}): Promise<{
+  result: TranslationResultWithProvider;
+  providerCallMs: number;
+}> {
   const providers = getProvidersWithFallback();
   let lastError: unknown;
+  let totalProviderCallMs = 0;
 
   logger.info(
     {
@@ -186,8 +208,9 @@ export async function translateWithFallback(params: {
   for (const provider of providers) {
     const startTime = Date.now();
     try {
-      const result = await provider.translate(params);
+      const result: TranslationResult = await provider.translate(params);
       const elapsed = Date.now() - startTime;
+      totalProviderCallMs += elapsed;
       logger.info(
         {
           provider: provider.name,
@@ -197,9 +220,16 @@ export async function translateWithFallback(params: {
         },
         'Translation provider succeeded',
       );
-      return { ...result, providerName: provider.name };
+      return {
+        result: {
+          ...result,
+          providerName: provider.name,
+        },
+        providerCallMs: totalProviderCallMs,
+      };
     } catch (err) {
       const elapsed = Date.now() - startTime;
+      totalProviderCallMs += elapsed;
       lastError = err;
       logger.warn(
         { provider: provider.name, elapsed, err },
@@ -220,20 +250,42 @@ export async function requestTranslation(params: {
   userId: string;
   sourceLang: string;
   targetLang: string;
-}): Promise<{ status: 'existing'; translation: Translation } | { status: 'queued'; jobId: string }> {
+}): Promise<{
+  status: 'existing' | 'queued' | 'completed';
+  translation?: Translation;
+  jobId?: string;
+  timings: TranslationTimings;
+}> {
   const { songId, userId, sourceLang, targetLang } = params;
+  const requestStart = Date.now();
+
+  // Initialize timings object
+  const timings: TranslationTimings = {
+    totalMs: 0,
+    languageDetectionMs: 0,
+    cacheLookupMs: 0,
+    providerCallMs: 0,
+    chunkingMs: 0,
+    persistenceMs: 0,
+    enqueueMs: 0,
+  };
 
   // Return any already-approved translation for this song/lang pair
+  // Cached/existing translations must not charge or reward as a new generation.
+  const cacheStart = Date.now();
   const existing = await prisma.translation.findFirst({
     where: { songId, sourceLang, targetLang, status: 'APPROVED' },
   });
+  timings.cacheLookupMs = Date.now() - cacheStart;
 
   if (existing) {
+    timings.totalMs = Date.now() - requestStart;
     logger.info({ songId, sourceLang, targetLang, translationId: existing.id }, 'Returning existing approved translation');
-    return { status: 'existing', translation: existing };
+    return { status: 'existing', translation: existing, timings };
   }
 
   // Verify the song exists before queuing
+  const songCheckStart = Date.now();
   const song = await prisma.song.findUnique({ where: { id: songId }, select: { id: true } });
   if (!song) {
     const err = new Error('Song not found') as Error & { code: string; httpStatus: number };
@@ -241,6 +293,28 @@ export async function requestTranslation(params: {
     err.httpStatus = 404;
     throw err;
   }
+  timings.providerCallMs = Date.now() - songCheckStart; // reuse field for song lookup
+
+  // Charge 5 GT for AI translation (flat rate per Phase 0 decision).
+  // This is debited now so that failed generations do not consume credits
+  // unless the policy explicitly charges on attempt. The actual generation
+  // outcome is handled by the job worker.
+  const { withinBudget } = await checkDailyBudget();
+  if (!withinBudget) {
+    const err = new Error('Daily AI budget exceeded') as Error & { code: string; httpStatus: number };
+    err.code = 'BUDGET_EXCEEDED';
+    err.httpStatus = 429;
+    throw err;
+  }
+
+  await awardTokens({
+    userId,
+    type: 'SPEND',
+    amount: -5,
+    reason: 'AI translation generation',
+    sourceType: 'AI_TRANSLATION',
+    sourceId: `${songId}:${userId}:${sourceLang}:${targetLang}`,
+  });
 
   const jobData: TranslationJobData = {
     songId,
@@ -250,16 +324,18 @@ export async function requestTranslation(params: {
     promptVersion: CURRENT_PROMPT_VERSION,
   };
 
+  const enqueueStart = Date.now();
   const job = await translationQueue.add('translate', jobData, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24 * 7 },   // retain 7 days
     removeOnFail: { age: 60 * 60 * 24 * 30 },       // retain failures 30 days
   });
+  timings.enqueueMs = Date.now() - enqueueStart;
 
   logger.info({ jobId: job.id, songId, userId, sourceLang, targetLang }, 'Translation job enqueued');
 
-  return { status: 'queued', jobId: job.id! };
+  return { status: 'queued', jobId: job.id!, timings };
 }
 
 // ---------------------------------------------------------------------------

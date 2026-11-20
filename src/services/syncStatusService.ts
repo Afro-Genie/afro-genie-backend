@@ -13,6 +13,7 @@ import { env } from '../lib/env';
 import { logger } from '../lib/logger';
 import { fetchLastFmArtist } from './lastfmService';
 import { lyricsEnrichmentQueue } from '../lib/queue';
+import { getSongsNeedingLyrics } from './lyricsBackfillService';
 
 const LAST_SYNC_KEY_PREFIX = 'sync:lastSync:';
 const SYNC_DURATION_KEY_PREFIX = 'sync:duration:';
@@ -145,63 +146,45 @@ export const enrichArtistLastFm = async (artistId: string): Promise<{ updated: b
 };
 
 // ---------------------------------------------------------------------------
+// Redis key for the lyrics backfill pause flag.
+// ---------------------------------------------------------------------------
+export const LYRICS_BACKFILL_PAUSED_KEY = 'LYRICS_BACKFILL_PAUSED';
+
+// ---------------------------------------------------------------------------
 // Backfill lyrics — enqueue enrichment jobs for songs missing lyrics
+// Pauses enqueuing if the LYRICS_BACKFILL_PAUSED Redis key is set,
+// allowing an admin to stop the cron via the admin dashboard.
 // ---------------------------------------------------------------------------
 export const backfillMissingLyrics = async (
   onProgress?: (completed: number, total: number) => void
-): Promise<{ enqueued: number }> => {
-  // Find songs with NO lyric record at all
-  const songsWithNoLyricRow = await prisma.song.findMany({
-    where: {
-      softDeleted: false,
-      spotifyId: { not: null },
-      lyrics: { none: {} },
-    },
-    select: { id: true, title: true },
-    orderBy: { createdAt: 'asc' },
-  });
+): Promise<{ enqueued: number; paused: boolean }> => {
+  const paused = await redis.get(LYRICS_BACKFILL_PAUSED_KEY);
+  if (paused && paused === 'true') {
+    logger.info('[backfillMissingLyrics] Paused by admin flag; skipping enqueue');
+    return { enqueued: 0, paused: true };
+  }
 
-  // Find songs with a lyric record but NULL content (from failed enrichment attempts)
-  const songsWithEmptyLyrics = await prisma.song.findMany({
-    where: {
-      softDeleted: false,
-      spotifyId: { not: null },
-      lyrics: {
-        some: {
-          content: null,
-        },
-      },
-    },
-    select: { id: true, title: true },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  // Merge and deduplicate
-  const songMap = new Map<string, { id: string; title: string }>();
-  for (const s of songsWithNoLyricRow) songMap.set(s.id, s);
-  for (const s of songsWithEmptyLyrics) songMap.set(s.id, s);
-  const songs = [...songMap.values()];
+  const songs = await getSongsNeedingLyrics();
 
   if (songs.length === 0) {
     logger.info('[backfillMissingLyrics] No songs missing lyrics');
-    return { enqueued: 0 };
+    return { enqueued: 0, paused: false };
   }
 
   logger.info(
     {
-      noLyricRow: songsWithNoLyricRow.length,
-      emptyLyricRow: songsWithEmptyLyrics.length,
       totalUnique: songs.length,
     },
     '[backfillMissingLyrics] Enqueuing lyrics enrichment jobs'
   );
 
+  const runDate = new Date().toISOString().slice(0, 10);
   for (let i = 0; i < songs.length; i++) {
     await lyricsEnrichmentQueue.add(
       'enrichLyrics',
       { songId: songs[i].id },
       {
-        jobId: `lyrics-enrichment-backfill-${songs[i].id}`,
+        jobId: `lyrics-enrichment-backfill-${runDate}-${songs[i].id}`,
         attempts: 3,
         backoff: { type: 'exponential', delay: 5000 },
         removeOnComplete: 1000,
@@ -213,7 +196,7 @@ export const backfillMissingLyrics = async (
 
   await setLastSyncTimestamp('backfillLyrics');
   logger.info({ enqueued: songs.length }, '[backfillMissingLyrics] Completed');
-  return { enqueued: songs.length };
+  return { enqueued: songs.length, paused: false };
 };
 
 // ---------------------------------------------------------------------------

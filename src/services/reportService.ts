@@ -2,7 +2,7 @@ import { Prisma, ReportStatus, ReportTargetType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { getRewardConfig } from '../config/rewards';
+import { getRewardConfig, isRewardActive } from '../config/rewards';
 import { awardTokens } from './tokenService';
 import { contributeTax } from './modPoolService';
 import { evaluateGuardianBadge } from './badgeService';
@@ -139,6 +139,12 @@ export async function resolveReport(id: string, moderatorId: string) {
     try {
       if (await isRewardPaused(moderatorId)) {
         logger.warn({ reportId: id, moderatorId }, 'Report resolve reward skipped — moderator paused');
+        return { id: result.id, status: result.status };
+      }
+
+      const active = await isRewardActive('REPORT_RESOLVED');
+      if (!active) {
+        logger.info({ moderatorId }, 'Report resolved reward is currently inactive');
         return { id: result.id, status: result.status };
       }
 

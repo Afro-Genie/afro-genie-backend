@@ -5,6 +5,7 @@ import { logger } from '../lib/logger';
 import { creditTokens, dedupeCreditTokens } from '../services/rewardService';
 import { checkAndAwardBadges } from '../services/badgeService';
 import { isRewardPaused } from '../services/abuseService';
+import { isRewardActive } from '../config/rewards';
 import { hasMutualReferral } from '../services/referralService';
 import { createNotification } from '../services/notificationService';
 
@@ -29,6 +30,32 @@ export async function processRewardJob(job: Job<RewardJobData>): Promise<void> {
     if (await isRewardPaused(userId)) {
       logger.warn({ jobId: job.id, userId, reason }, 'Reward skipped — earning paused by abuse flag');
       return;
+    }
+
+    // Check if the reward type is currently active per admin configuration.
+    // Determine the reward type from the reason string.
+    const reasonLower = reason.toLowerCase();
+    let rewardType: string;
+    if (reasonLower.includes('report resolved') || reasonLower.includes('report:') || reasonLower.includes('report resolved')) {
+      rewardType = 'REPORT_RESOLVED';
+    } else if (reasonLower.includes('community moderation') || reasonLower.includes('moderation')) {
+      rewardType = 'COMMUNITY_MODERATION';
+    } else if (reasonLower.includes('translation approved') || reasonLower.includes('translator approval')) {
+      rewardType = 'TRANSLATOR_REWARD';
+    } else if (reasonLower.includes('correction approved')) {
+      rewardType = 'CORRECTION';
+    } else if (reasonLower.includes('ai translation')) {
+      rewardType = 'AI_TRANSLATION';
+    } else {
+      rewardType = 'UNKNOWN';
+    }
+
+    if (rewardType !== 'UNKNOWN') {
+      const active = await isRewardActive(rewardType);
+      if (!active) {
+        logger.info({ jobId: job.id, userId, reason, rewardType }, 'Reward skipped — reward type is currently inactive');
+        return;
+      }
     }
 
     // 1.5× artist bonus for verified artists on translation rewards

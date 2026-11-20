@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import type { Prisma, PurchaseStatus } from '@prisma/client';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
@@ -171,10 +172,44 @@ export async function clearDiscount(itemId: string): Promise<StoreItemResponse> 
   });
 }
 
-export async function purchaseItem(userId: string, itemId: string): Promise<{ success: boolean; message: string }> {
+export interface PurchaseItemInput {
+  userId: string;
+  itemId: string;
+  shippingName?: string;
+  shippingAddress?: string;
+}
+
+export async function purchaseItem(input: PurchaseItemInput): Promise<{ success: boolean; message: string }> {
+  const { userId, itemId, shippingName, shippingAddress } = input;
   const item = await prisma.storeItem.findUnique({ where: { id: itemId } });
   if (!item || !item.active) {
     return { success: false, message: 'Item not found or unavailable' };
+  }
+
+  const entitlementType = readEntitlementType(item.metadata);
+  const rules = entitlementType ? ITEM_FULFILLMENT_RULES[entitlementType] : undefined;
+  if (!rules) {
+    return { success: false, message: 'Item eligibility rules could not be determined' };
+  }
+
+  // Enforce eligibility: tier and badge requirements checked at purchase time.
+  if (rules.requiresTier) {
+    const userTier = await prisma.userTier.findUnique({ where: { userId }, select: { tier: true, approvedCount: true } });
+    if (!userTier) {
+      return { success: false, message: 'User tier not found. Cannot verify eligibility.' };
+    }
+    if (userTier.tier !== rules.requiresTier) {
+      return { success: false, message: `Item requires ${rules.requiresTier} tier (currently ${userTier.tier}).` };
+    }
+    if (rules.requiredApprovedCount !== undefined && userTier.approvedCount < rules.requiredApprovedCount) {
+      return { success: false, message: `Item requires ${rules.requiredApprovedCount} approved translations. You have ${userTier.approvedCount}.` };
+    }
+  }
+  if (rules.requiresBadge) {
+    const userBadge = await prisma.userBadge.findFirst({ where: { userId, badgeType: rules.requiresBadge as any } });
+    if (!userBadge) {
+      return { success: false, message: `Item requires the ${rules.requiresBadge} badge.` };
+    }
   }
 
   if (item.stock !== null && item.stock <= 0) {
@@ -222,7 +257,7 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
       committedBalanceAfter = balanceAfter;
 
       // Reserve stock first (conditional decrement guards against over-selling).
-      if (item.stock !== null) {
+      if (item.stock !== null && rules.stockLimited) {
         const reserved = await tx.storeItem.updateMany({
           where: { id: itemId, stock: { gt: 0 } },
           data: { stock: { decrement: 1 } },
@@ -248,9 +283,52 @@ export async function purchaseItem(userId: string, itemId: string): Promise<{ su
         data: { balance: balanceAfter, version: { increment: 1 } },
       });
 
-      await tx.storePurchase.create({
-        data: { userId, itemId, spentAmount: cost },
-      });
+      // For admin-fulfilled items, create a pending fulfillment record with shipping data.
+      // For automatic digital items, grant entitlement immediately.
+      interface PurchaseData {
+        userId: string;
+        itemId: string;
+        spentAmount: number;
+        status: PurchaseStatus;
+        shippingName?: string;
+        shippingAddress?: string;
+      }
+
+      const purchaseData: PurchaseData = {
+        userId,
+        itemId,
+        spentAmount: cost,
+        status: rules.fulfillment === 'adminFulfilled' ? 'PENDING_FULFILLMENT' : 'FULFILLED' as PurchaseStatus,
+      };
+
+      // Store shipping details if required for this item type
+      if (rules.shippingDataRequired && shippingName && shippingAddress) {
+        purchaseData.shippingName = shippingName;
+        purchaseData.shippingAddress = shippingAddress;
+      }
+
+      if (rules.fulfillment === 'adminFulfilled') {
+        await tx.storePurchase.create({
+          data: purchaseData,
+        });
+      } else {
+        // Automatic digital: grant entitlement immediately.
+        const entitlementType = readEntitlementType(item.metadata);
+        if (entitlementType) {
+          await tx.userEntitlement.upsert({
+            where: { userId_type: { userId, type: entitlementType } },
+            update: {},
+            create: {
+              userId,
+              type: entitlementType,
+              metadata: { itemName: item.name, itemCategory: item.category },
+            },
+          });
+        }
+        await tx.storePurchase.create({
+          data: purchaseData,
+        });
+      }
     });
   } catch (err) {
     logger.warn({ err, userId, itemId }, 'Store purchase failed');
@@ -328,48 +406,153 @@ const readEntitlementType = (metadata: unknown): string | null => {
   return null;
 };
 
+/** Map entitlement types to their fulfillment type and eligibility requirements. */
+interface ItemFulfillmentRule {
+  fulfillment: 'automatic' | 'adminFulfilled';
+  requiresTier?: string;
+  requiredApprovedCount?: number;
+  requiresBadge?: string;
+  shippingDataRequired: boolean;
+  stockLimited: boolean;
+  stockAmount: number;
+}
+
+const ITEM_FULFILLMENT_RULES: Record<string, ItemFulfillmentRule> = {
+  'avatar:border:amber': {
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'avatar:border:sapphire': {
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'avatar:borderemerald': {
+    // This key has a typo in seed (emerald vs emerald) — handle both
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'avatar:border:emerald': {
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'avatar:border:gold': {
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'title:early-adopter': {
+    fulfillment: 'automatic',
+    requiresTier: 'LISTENER',
+    requiredApprovedCount: 0,
+    requiresBadge: 'EARLY_ADOPTER',
+    shippingDataRequired: false,
+    stockLimited: false,
+    stockAmount: 0,
+  },
+  'title:master-translator': {
+    fulfillment: 'automatic',
+    requiresTier: 'MASTER_TRANSLATOR',
+    requiredApprovedCount: 50,
+    shippingDataRequired: false,
+    stockLimited: false,
+    stockAmount: 0,
+  },
+  'digital:candle': {
+    fulfillment: 'automatic',
+    stockLimited: false,
+    stockAmount: 0,
+    shippingDataRequired: false,
+  },
+  'merch:signed-artist-poster': {
+    fulfillment: 'adminFulfilled',
+    shippingDataRequired: true,
+    stockLimited: true,
+    stockAmount: 5,
+  },
+};
+
 /**
  * Marks a purchase FULFILLED, grants the item's entitlement (if it has one)
  * and notifies the buyer - all in one transaction so the reward, the status
  * and the notification can never drift apart.
+ *
+ * Fulfilment behaviour depends on the item's rules:
+ * - Automatic digital: status set to FULFILLED immediately, entitlement granted.
+ * - Admin-fulfilled: status flipped to FULFILLED, fulfillment record created,
+ *   and shipping data reviewed by authorized staff.
  */
 export async function fulfillPurchase(purchaseId: string) {
   const purchase = await prisma.$transaction(async (tx) => {
     const existing = await tx.storePurchase.findUnique({
       where: { id: purchaseId },
-      select: { status: true },
+      include: {
+        item: { select: { id: true, name: true, category: true, metadata: true } },
+      },
     });
     if (!existing) {
       throw new ApiError('Purchase not found', 'NOT_FOUND', 404);
     }
+
+    const entitlementType = readEntitlementType(existing.item.metadata);
+    const rules = entitlementType ? ITEM_FULFILLMENT_RULES[entitlementType] : undefined;
+    if (!rules) {
+      throw new ApiError('Eligibility rules not found for this item', 'VALIDATION_ERROR', 400);
+    }
+
     // Re-fulfilling is allowed (it repairs rows that were fulfilled before
     // entitlements existed) but must not re-notify the buyer.
     const alreadyFulfilled = existing.status === 'FULFILLED';
 
-    const updated = await tx.storePurchase.update({
-      where: { id: purchaseId },
-      data: { status: 'FULFILLED', fulfilledAt: alreadyFulfilled ? undefined : new Date() },
-      include: {
-        item: { select: { id: true, name: true, category: true, metadata: true } },
-        user: { select: { id: true } },
-      },
-    });
-
-    const entitlementType = readEntitlementType(updated.item.metadata);
-    if (entitlementType) {
-      // Idempotent: re-fulfilling an already-granted purchase is a no-op.
-      await tx.userEntitlement.upsert({
-        where: { userId_type: { userId: updated.user.id, type: entitlementType } },
-        update: {},
-        create: {
-          userId: updated.user.id,
-          type: entitlementType,
-          metadata: { itemName: updated.item.name, itemCategory: updated.item.category },
+    let updated;
+    if (rules.fulfillment === 'adminFulfilled') {
+      // Admin-fulfilled items: flip status to FULFILLED and record fulfilledAt.
+      // The admin will review shipping data and mark separately.
+      updated = await tx.storePurchase.update({
+        where: { id: purchaseId },
+        data: { status: 'FULFILLED', fulfilledAt: alreadyFulfilled ? undefined : new Date() },
+        include: {
+          item: { select: { id: true, name: true, category: true, metadata: true } },
+          user: { select: { id: true } },
         },
       });
+    } else {
+      // Automatic digital: ensure status is FULFILLED and grant entitlement.
+      updated = await tx.storePurchase.update({
+        where: { id: purchaseId },
+        data: { status: 'FULFILLED', fulfilledAt: alreadyFulfilled ? undefined : new Date() },
+        include: {
+          item: { select: { id: true, name: true, category: true, metadata: true } },
+          user: { select: { id: true } },
+        },
+      });
+
+      const entitlementType = readEntitlementType(updated.item.metadata);
+      if (entitlementType) {
+        // Idempotent: re-fulfilling an already-granted purchase is a no-op.
+        await tx.userEntitlement.upsert({
+          where: { userId_type: { userId: updated.user.id, type: entitlementType } },
+          update: {},
+          create: {
+            userId: updated.user.id,
+            type: entitlementType,
+            metadata: { itemName: updated.item.name, itemCategory: updated.item.category },
+          },
+        });
+      }
     }
 
-    if (!alreadyFulfilled) {
+    // Notify buyer only for automatic digital items; admin-fulfilled items
+    // are notified when the admin marks the fulfillment with shipping details.
+    if (rules.fulfillment !== 'adminFulfilled' && !alreadyFulfilled) {
       await tx.notification.create({
         data: {
           userId: updated.user.id,

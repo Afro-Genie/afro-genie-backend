@@ -2,7 +2,7 @@ import type { ModerationAction, Prisma, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { getRewardConfig } from '../config/rewards';
+import { getRewardConfig, isRewardActive } from '../config/rewards';
 import { awardTokensWithResult } from './tokenService';
 import { contributeTax } from './modPoolService';
 import { createNotification } from './notificationService';
@@ -476,6 +476,20 @@ class CommunityService {
       .catch(() => undefined);
   }
 
+  private async getRewardAmounts(): Promise<Record<ModerationAction, number>> {
+    const config = await getRewardConfig();
+    return {
+      TOPIC_PINNED: config.TOPIC_PINNED_REWARD,
+      TOPIC_LOCKED: config.TOPIC_LOCKED_REWARD,
+      TOPIC_DELETED: config.TOPIC_DELETED_REWARD,
+      COMMENT_DELETED: config.COMMENT_DELETED_REWARD,
+    } as Record<ModerationAction, number>;
+  }
+
+  private async isRewardTypeActive(rewardType: string): Promise<boolean> {
+    return await isRewardActive(rewardType);
+  }
+
   /**
    * Pays the community moderation reward with the configured pool tax.
    * Pin/lock rewards are one-time per topic/action; other moderation rewards
@@ -498,11 +512,17 @@ class CommunityService {
     ) {
       return null;
     }
-    if (await isRewardPaused(moderatorId)) {
-      logger.warn({ moderatorId, action }, 'Community moderation reward skipped — moderator paused');
+    const amounts = await this.getRewardAmounts();
+    const amount = amounts[action];
+    if (!amount) {
+      logger.error({ action }, 'Unknown moderation action for reward');
       return null;
     }
-    const amount = (await getRewardConfig()).COMMUNITY_MODERATION_REWARD;
+    const active = await this.isRewardTypeActive(`COMMUNITY_MODERATION`);
+    if (!active) {
+      logger.info({ action, moderatorId }, 'Community moderation rewards are currently inactive');
+      return null;
+    }
     try {
       const { ledger: award, created } = await awardTokensWithResult({
         userId: moderatorId,

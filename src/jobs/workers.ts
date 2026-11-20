@@ -41,6 +41,7 @@ import {
   processPassRevocationJob,
   schedulePassRevocation,
 } from './passRevocationJob';
+import { processYouTubeCatalogImportJob, type YouTubeCatalogImportJobData } from './youtubeCatalogImportJob';
 import type { TranslationJobData } from '../types/translation';
 import type { RewardJobData } from './rewardJob';
 import type { SyncJobData } from './syncWorker';
@@ -154,7 +155,7 @@ async function startWorkers(): Promise<void> {
     'lyricsEnrichmentQueue',
     async (job) => {
       logger.info({ jobId: job.id, songId: job.data.songId }, 'Processing lyrics enrichment job');
-      await processLyricsEnrichmentJob(job);
+      return processLyricsEnrichmentJob(job);
     },
     { connection, concurrency: 2 }
   );
@@ -175,6 +176,23 @@ async function startWorkers(): Promise<void> {
     },
     { connection, concurrency: 1 }
   );
+
+  const youtubeCatalogImportWorker = new Worker<YouTubeCatalogImportJobData>(
+    'youtubeCatalogImportQueue',
+    async (job) => {
+      return processYouTubeCatalogImportJob(job);
+    },
+    { connection, concurrency: 1 }
+  );
+  youtubeCatalogImportWorker.on('failed', (job, err) => {
+    logger.error(
+      { jobId: job?.id, adminId: job?.data.adminId, operation: job?.data.operation, err },
+      'YouTube catalog import job failed',
+    );
+  });
+  youtubeCatalogImportWorker.on('error', (err) => {
+    logger.error({ err }, 'YouTube catalog import worker error');
+  });
 
   const analyticsRollupWorker = new Worker(
     'analyticsRollupQueue',
@@ -300,7 +318,7 @@ async function startWorkers(): Promise<void> {
     logger.error({ jobId: job?.id, err }, 'Premium pass revocation job failed');
   });
 
-  logger.info('All 15 workers started successfully');
+  logger.info('All workers started successfully');
 
   await scheduleViewCountFlush();
   await scheduleAnalyticsRollup();
