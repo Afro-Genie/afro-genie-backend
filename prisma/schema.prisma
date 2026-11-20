@@ -332,6 +332,22 @@ model Artist {
   @@index([userId])
 }
 
+model AfricanMusicChannel {
+  id          String   @id @default(cuid())
+  channelId   String   @unique
+  artistName  String
+  countryCode String
+  genres      String[]
+  evidenceUrl String?
+  approved    Boolean  @default(true)
+  reviewedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([artistName])
+  @@index([approved])
+}
+
 model Album {
   id          String   @id @default(cuid())
   name        String

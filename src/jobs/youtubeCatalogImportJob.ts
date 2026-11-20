@@ -27,6 +27,7 @@ export interface YouTubeCatalogImportJobData {
   previewJobId?: string;
   sourcePreviewJobId?: string;
   expectedPreviewHash?: string;
+  selectedVideoIds?: string[];
   resumeCheckpoint?: CatalogPlaylistCheckpoint;
   retryOf?: string;
 }
@@ -243,6 +244,7 @@ export async function processYouTubeCatalogImportJob(
       async (progress) => {
         await job.updateProgress({ stage: 'applying', ...progress });
       },
+      job.data.selectedVideoIds,
     );
     logger.info(
       { adminId, jobId: job.id, previewJobId: job.data.previewJobId, ...result },
