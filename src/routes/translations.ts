@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 import { TranslationStatus, VoteType } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { recordTranslationViewEvent } from '../services/artistBadgeService';
 import { authenticate, requireRole } from '../middleware/auth';
 import { ApiError } from '../middleware/errorHandler';
 import { translationQueue } from '../lib/queue';
@@ -21,7 +22,7 @@ import {
 } from '../services/translationService';
 
 // ---------------------------------------------------------------------------
-// Canonical language code → human-readable name mapping
+// Canonical language code Ã¢â€ â€™ human-readable name mapping
 // ---------------------------------------------------------------------------
 const LANGUAGE_NAME_MAP: Record<string, string> = {
   en: 'English',
@@ -46,7 +47,7 @@ function resolveLanguageName(code: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Heuristic language detection — offline fallback when AI provider is unreachable
+// Heuristic language detection Ã¢â‚¬â€ offline fallback when AI provider is unreachable
 // ---------------------------------------------------------------------------
 const HEURISTIC_PATTERNS: Array<{ code: string; patterns: RegExp[]; weight: number }> = [
   {
@@ -88,7 +89,7 @@ const HEURISTIC_PATTERNS: Array<{ code: string; patterns: RegExp[]; weight: numb
     weight: 2,
     patterns: [
       /\b(le|la|les|de|du|des|un|une|et|est|je|tu|nous|vous|ils|elles)\b/i,
-      /\b(c'est|qu'est|mon|ton|son|mais|pour|avec|dans|sur|pas|très)\b/i,
+      /\b(c'est|qu'est|mon|ton|son|mais|pour|avec|dans|sur|pas|trÃƒÂ¨s)\b/i,
     ],
   },
   {
@@ -183,7 +184,7 @@ translationsRouter.post(
       const userId = req.user!.id;
 
       // Translation credits bypass the per-user daily rate limit (soft spending
-      // model — not a hard paywall, and the global daily budget still applies).
+      // model Ã¢â‚¬â€ not a hard paywall, and the global daily budget still applies).
       const creditUser = await prisma.user.findUnique({
         where: { id: userId },
         select: { translationCredits: true },
@@ -216,7 +217,7 @@ translationsRouter.post(
         );
       }
 
-      // Check for any existing translation (not just APPROVED — also reuse PENDING)
+      // Check for any existing translation (not just APPROVED Ã¢â‚¬â€ also reuse PENDING)
       const existingApproved = await prisma.translation.findFirst({
         where: { songId, sourceLang, targetLang, status: 'APPROVED' },
       });
@@ -230,7 +231,7 @@ translationsRouter.post(
         orderBy: { updatedAt: 'desc' },
       });
       if (recentPending) {
-        // If it has translatedLyrics, it's done — just needs approval
+        // If it has translatedLyrics, it's done Ã¢â‚¬â€ just needs approval
         if (recentPending.translatedLyrics) {
           const approved = await prisma.translation.update({
             where: { id: recentPending.id },
@@ -680,7 +681,7 @@ translationsRouter.post(
               data: { voteType },
             });
             userVote = voteType;
-            // Changed from DOWNVOTE to UPVOTE — counts as new upvote for author
+            // Changed from DOWNVOTE to UPVOTE Ã¢â‚¬â€ counts as new upvote for author
             if (voteType === VoteType.UPVOTE) {
               isNewUpvote = true;
             }
@@ -1016,7 +1017,7 @@ translationsRouter.post(
           confidence,
         });
       } catch (aiError: any) {
-        // AI failed — fall back to heuristic detection
+        // AI failed Ã¢â‚¬â€ fall back to heuristic detection
         const heuristic = heuristicDetectLanguage(lyrics);
         return res.status(200).json({
           languageCode: heuristic.languageCode,
@@ -1111,5 +1112,28 @@ translationsRouter.post(
     } catch (err) {
       return next(err);
     }
+  },
+);
+
+// POST /api/translations/:id/view
+translationsRouter.post(
+  '/translations/:id/view',
+  [param('id').isString().notEmpty(), body('sessionId').optional().isString(), body('country').optional().isString()],
+  validate,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+      const translation = await prisma.translation.findUnique({ where: { id }, select: { id: true, songId: true, targetLang: true } });
+      if (!translation) return res.status(404).json({ error: 'Translation not found' });
+      await recordTranslationViewEvent({
+        songId: translation.songId,
+        translationId: translation.id,
+        targetLang: translation.targetLang,
+        country: typeof req.body?.country === 'string' ? req.body.country : (req.headers['x-country'] as string | undefined),
+        userId: req.user?.id,
+        sessionId: typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined,
+      });
+      res.status(202).json({ ok: true });
+    } catch (error) { next(error); }
   },
 );

@@ -1,4 +1,4 @@
-import type { NextFunction, Request, Response } from 'express';
+﻿import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { param, query } from 'express-validator';
 import type { Prisma } from '@prisma/client';
@@ -24,7 +24,7 @@ export const buildAdminArtistWhere = (params: {
   suspended?: string;
   isFeatured?: string;
 }): Prisma.ArtistWhereInput => {
-  const where: Prisma.ArtistWhereInput = {};
+  const where: Prisma.ArtistWhereInput = { softDeleted: false };
   const search = params.search?.trim();
 
   if (search) {
@@ -235,5 +235,25 @@ adminArtistsRouter.patch(
     } catch (error) {
       next(error);
     }
+  },
+);
+
+
+// DELETE /api/admin/artists/:id
+adminArtistsRouter.delete(
+  '/artists/:id',
+  [param('id').isString().notEmpty()],
+  validateRequest,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const artist = await prisma.artist.findUnique({ where: { id: req.params.id }, select: { id: true, softDeleted: true } });
+      if (!artist || artist.softDeleted) throw new ApiError('Artist not found', 'NOT_FOUND', 404);
+      await prisma.$transaction([
+        prisma.artist.update({ where: { id: artist.id }, data: { softDeleted: true, suspended: true, isFeatured: false } }),
+        prisma.song.updateMany({ where: { artistId: artist.id, softDeleted: false }, data: { softDeleted: true } }),
+      ]);
+      await deleteArtist(artist.id).catch(() => {});
+      res.status(200).json({ success: true, artistId: artist.id });
+    } catch (error) { next(error); }
   },
 );
