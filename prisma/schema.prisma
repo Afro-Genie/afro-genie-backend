@@ -390,15 +390,16 @@ model Song {
   // on failure, reset to 0 on success, compared against MAX_MATCH_ATTEMPTS to
   // dead-letter a song YouTube will never return. Without it the job re-queued
   // the same unmatchable songs daily, each retry spending real quota.
-  youtubeMatchAttempts Int                 @default(0)
-  durationMs          Int?
-  trackNumber         Int?
-  views               Int                  @default(0)
-  requestCount        Int                  @default(0)
-  softDeleted         Boolean              @default(false)
-  schemaVersion       Int                  @default(1)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
+    youtubeMatchAttempts Int                 @default(0)
+    lyricsBackfillMissedAt DateTime?
+    durationMs          Int?
+    trackNumber         Int?
+    views               Int                  @default(0)
+    requestCount        Int                  @default(0)
+    softDeleted         Boolean              @default(false)
+    schemaVersion       Int                  @default(1)
+    createdAt           DateTime             @default(now())
+    updatedAt           DateTime             @updatedAt
   artist              Artist               @relation(fields: [artistId], references: [id], onDelete: Restrict)
   album               Album?               @relation(fields: [albumId], references: [id], onDelete: SetNull)
   release             Release?             @relation(fields: [releaseId], references: [id], onDelete: SetNull)

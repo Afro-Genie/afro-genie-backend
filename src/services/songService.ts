@@ -1,5 +1,5 @@
 import { Prisma, TranslationStatus } from '@prisma/client';
-import { enqueueIndexSong } from '../jobs/searchIndexJob';
+import { enqueueIndexArtist, enqueueIndexSong, enqueueRefreshGenre } from '../jobs/searchIndexJob';
 import { indexSong } from '../services/searchService';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
 import { lyricsEnrichmentQueue } from '../lib/queue';
@@ -7,6 +7,7 @@ import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
 import { ApiError } from '../middleware/errorHandler';
+import { catalogService } from './catalogService';
 import { getLatestLyricsContent, takedownLyrics, upsertLyrics, type LyricsInput } from './lyricsService';
 import { validateManualAfricanSongGenres } from './youtubeCatalogPolicy';
 
@@ -34,11 +35,13 @@ interface SongListParams extends SongFilters {
   page?: number;
   sortBy?: SortBy;
   sortOrder?: SortOrder;
+  includeUnreleased?: boolean;
 }
 
 export interface SongMutationInput {
   title: string;
   artistId: string;
+  artistName?: string;
   albumName?: string | null;
   releaseYear?: number | null;
   coverImageUrl?: string | null;
@@ -151,19 +154,23 @@ const buildSecondaryComparator = (sortBy: SortBy, sortOrder: SortOrder) => {
     (new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime()) * direction;
 };
 
-const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
+export const buildSongWhere = (filters: SongFilters, includeUnreleased = false): Prisma.SongWhereInput => {
   const languageCode = (filters.language ?? filters.lang)?.trim().toLowerCase();
 
   return {
     artist: { suspended: false },
-    AND: [
-      {
-        OR: [
-          { audioUrl: null },
-          { released: true },
-        ],
-      },
-    ],
+    ...(includeUnreleased
+      ? {}
+      : {
+          AND: [
+            {
+              OR: [
+                { audioUrl: null },
+                { released: true },
+              ],
+            },
+          ],
+        }),
     ...(filters.artistId ? { artistId: filters.artistId } : {}),
     ...(filters.artistName?.trim()
       ? {
@@ -218,17 +225,23 @@ const buildSongWhere = (filters: SongFilters): Prisma.SongWhereInput => {
   };
 };
 
-const isSongActive = async (songId: string): Promise<boolean> => {
-  try {
-    const song = await prisma.song.findFirst({
-      where: {
-        id: songId,
-        softDeleted: false,
+export const buildSongDetailWhere = (songId: string, includeUnreleased = false): Prisma.SongWhereInput => ({
+  id: songId,
+  softDeleted: false,
+  ...(includeUnreleased
+    ? {}
+    : {
         OR: [
           { audioUrl: null },
           { released: true },
         ],
-      },
+      }),
+});
+
+const isSongActive = async (songId: string, includeUnreleased = false): Promise<boolean> => {
+  try {
+    const song = await prisma.song.findFirst({
+      where: buildSongDetailWhere(songId, includeUnreleased),
       select: { id: true },
     });
     return !!song;
@@ -358,7 +371,7 @@ export const listSongs = async (params: SongListParams) => {
   const page = params.page && params.page > 0 ? params.page : 1;
   const sortBy = normalizeSortBy(params.sortBy);
   const sortOrder = normalizeSortOrder(params.sortOrder);
-  const where = buildSongWhere(params);
+  const where = buildSongWhere(params, params.includeUnreleased);
   const orderBy = buildOrderBy(sortBy, sortOrder);
 
   let total: number;
@@ -447,8 +460,13 @@ export const listSongs = async (params: SongListParams) => {
   };
 };
 
-export const getSongById = async (songId: string, options?: { incrementViewCount?: boolean }) => {
-  const active = await isSongActive(songId);
+interface GetSongByIdOptions {
+  incrementViewCount?: boolean;
+  includeUnreleased?: boolean;
+}
+
+export const getSongById = async (songId: string, options: GetSongByIdOptions = {}) => {
+  const active = await isSongActive(songId, options.includeUnreleased);
   if (!active) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
   }
@@ -515,8 +533,11 @@ export const getSongsByLanguage = async (languageCode: string, limit?: number) =
   return songs.filter((song) => activeSongIds.has(song.id));
 };
 
-export const getSongTranslations = async (songId: string) => {
-  const active = await isSongActive(songId);
+export const getSongTranslations = async (
+  songId: string,
+  options: { includeUnreleased?: boolean } = {},
+) => {
+  const active = await isSongActive(songId, options.includeUnreleased);
   if (!active) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
   }
@@ -536,19 +557,28 @@ const ensureArtistExists = async (artistId: string) => {
 
 const syncGenres = async (songId: string, genres: string[] | undefined) => {
   if (!genres) {
-    return;
+    return { previousGenreIds: [] as string[], nextGenreIds: [] as string[] };
   }
+
+  const previous = await prisma.songGenre.findMany({
+    where: { songId },
+    select: { genreId: true },
+  });
+  const previousGenreIds = previous.map((row) => row.genreId);
 
   await prisma.songGenre.deleteMany({ where: { songId } });
 
   const normalizedGenres = [...new Set(genres.map((item) => item.trim()).filter(Boolean))];
+  const nextGenreIds: string[] = [];
 
   for (const genreName of normalizedGenres) {
     const genre = await prisma.genre.upsert({
       where: { name: genreName },
       create: { name: genreName },
       update: {},
+      select: { id: true },
     });
+    nextGenreIds.push(genre.id);
 
     await prisma.songGenre.create({
       data: {
@@ -556,6 +586,26 @@ const syncGenres = async (songId: string, genres: string[] | undefined) => {
         genreId: genre.id,
       },
     });
+  }
+
+  return { previousGenreIds, nextGenreIds };
+};
+
+const refreshGenresAfterSongMutation = async (genreIds: string[]) => {
+  const unique = [...new Set(genreIds.filter(Boolean))];
+  if (unique.length === 0) return;
+  await Promise.all(unique.map((genreId) => enqueueRefreshGenre(genreId).catch(() => undefined)));
+};
+
+const indexSongImmediately = async (songId: string) => {
+  if (process.env.TYPESENSE_ENABLED === 'false') {
+    await enqueueIndexSong(songId).catch(() => undefined);
+    return;
+  }
+  try {
+    await indexSong(songId);
+  } catch {
+    await enqueueIndexSong(songId).catch(() => undefined);
   }
 };
 
@@ -626,8 +676,8 @@ export const createSong = async (payload: SongMutationInput) => {
     },
   });
 
+  const genreSync = await syncGenres(created.id, approvedGenres);
   await Promise.all([
-    syncGenres(created.id, approvedGenres),
     syncLanguages(created.id, payload.languages, payload.primaryLanguage),
     payload.lyrics ? upsertLyrics(created.id, payload.lyrics) : Promise.resolve(),
   ]);
@@ -645,44 +695,130 @@ export const createSong = async (payload: SongMutationInput) => {
     },
   );
 
-  await enqueueIndexSong(created.id);
-
-  // Also index synchronously so the song appears in search immediately
-  await indexSong(created.id);
+  await indexSongImmediately(created.id);
+  await refreshGenresAfterSongMutation([...genreSync.previousGenreIds, ...genreSync.nextGenreIds]);
+  await catalogService.invalidateHomepageCache().catch(() => undefined);
 
   const latestLyrics = await getLatestLyricsContent(created.id);
   if (latestLyrics) {
     await enqueueLanguageCategorization(created.id, latestLyrics);
   }
 
-  return getSongById(created.id, { incrementViewCount: false });
+  return getSongById(created.id, { incrementViewCount: false, includeUnreleased: true });
 };
 
+export const shouldCheckSongDuplicateForUpdate = (payload: Partial<SongMutationInput>): boolean =>
+  payload.title !== undefined || payload.artistId !== undefined || Boolean(payload.artistName?.trim());
+
 export const updateSong = async (songId: string, payload: Partial<SongMutationInput>) => {
-  const existing = await isSongActive(songId);
+  const existing = await prisma.song.findFirst({
+    where: { id: songId, softDeleted: false },
+    include: {
+      artist: { select: { id: true, name: true, suspended: true } },
+      genres: { include: { genre: { select: { id: true, name: true } } } },
+    },
+  });
   if (!existing) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
   }
 
-  if (payload.artistId) {
+  let targetArtistId = payload.artistId ?? existing.artistId;
+  let targetArtist = existing.artist;
+  if (payload.artistId && payload.artistId !== existing.artistId) {
     await ensureArtistExists(payload.artistId);
+    const artist = await prisma.artist.findUnique({
+      where: { id: payload.artistId },
+      select: { id: true, name: true, suspended: true },
+    });
+    if (!artist || artist.suspended) {
+      throw new ApiError('Artist not found', 'NOT_FOUND', 404);
+    }
+    targetArtist = artist;
+    targetArtistId = artist.id;
+  } else if (!payload.artistId && payload.artistName?.trim()) {
+    const requestedName = payload.artistName.trim();
+    const artist = await prisma.artist.findFirst({
+      where: {
+        name: { equals: requestedName, mode: Prisma.QueryMode.insensitive },
+        softDeleted: false,
+      },
+      select: { id: true, name: true, suspended: true },
+    });
+    if (artist) {
+      if (artist.suspended) {
+        throw new ApiError('Artist is suspended', 'ARTIST_SUSPENDED', 400);
+      }
+      targetArtist = artist;
+      targetArtistId = artist.id;
+    } else {
+      const createdArtist = await prisma.artist.create({
+        data: { name: requestedName, genres: [] },
+        select: { id: true, name: true },
+      });
+      targetArtist = { ...createdArtist, suspended: false };
+      targetArtistId = createdArtist.id;
+      await enqueueIndexArtist(createdArtist.id).catch(() => undefined);
+    }
   }
 
-  await prisma.song.update({
-    where: { id: songId },
-    data: {
-      ...(payload.title !== undefined ? { title: payload.title.trim() } : {}),
-      ...(payload.artistId !== undefined ? { artistId: payload.artistId } : {}),
-      ...(payload.albumName !== undefined ? { albumName: payload.albumName } : {}),
-      ...(payload.releaseYear !== undefined ? { releaseYear: payload.releaseYear } : {}),
-      ...(payload.coverImageUrl !== undefined || payload.imageUrl !== undefined
-        ? { imageUrl: payload.coverImageUrl ?? payload.imageUrl ?? null }
-        : {}),
-    },
-  });
+  const nextTitle = payload.title !== undefined ? payload.title.trim() : existing.title;
+  const nextReleaseYear = payload.releaseYear !== undefined ? payload.releaseYear : existing.releaseYear;
+  const nextImageUrl =
+    payload.coverImageUrl !== undefined || payload.imageUrl !== undefined
+      ? payload.coverImageUrl ?? payload.imageUrl ?? null
+      : existing.imageUrl;
+  const nextAlbumName = payload.albumName !== undefined ? payload.albumName : existing.albumName;
+  const legacyImportedAudioImage = existing.audioUrl && existing.imageUrl && existing.audioUrl === existing.imageUrl;
 
+  let approvedGenres: string[] | undefined;
+  if (payload.genres !== undefined) {
+    try {
+      approvedGenres = validateManualAfricanSongGenres(targetArtist.name, payload.genres ?? []);
+    } catch (error) {
+      throw new ApiError(
+        error instanceof Error ? error.message : 'Manual song failed African-music policy validation.',
+        'AFRICAN_MUSIC_POLICY',
+        400,
+      );
+    }
+  }
+
+  if (shouldCheckSongDuplicateForUpdate(payload)) {
+    const duplicate = await prisma.song.findFirst({
+      where: {
+        id: { not: songId },
+        title: nextTitle,
+        artistId: targetArtistId,
+        softDeleted: false,
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new ApiError('Song with this title already exists for this artist', 'DUPLICATE_SONG', 409);
+    }
+  }
+
+  try {
+    await prisma.song.update({
+      where: { id: songId },
+      data: {
+        title: nextTitle,
+        artistId: targetArtistId,
+        albumName: nextAlbumName,
+        releaseYear: nextReleaseYear,
+        imageUrl: nextImageUrl,
+        ...(legacyImportedAudioImage ? { audioUrl: null } : {}),
+      },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      throw new ApiError('Song with this title already exists for this artist', 'DUPLICATE_SONG', 409);
+    }
+    throw error;
+  }
+
+  const genreSync = await syncGenres(songId, approvedGenres);
   await Promise.all([
-    syncGenres(songId, payload.genres),
     syncLanguages(songId, payload.languages, payload.primaryLanguage),
     payload.lyrics ? upsertLyrics(songId, payload.lyrics) : Promise.resolve(),
   ]);
@@ -694,20 +830,27 @@ export const updateSong = async (songId: string, payload: Partial<SongMutationIn
     }
   }
 
-  await enqueueIndexSong(songId);
-
-  // 2.18 — the cached playback payload embeds the song's title/artist/cover, so
-  // an edit leaves stale metadata in `playback:source:<id>` for up to an hour.
+  await indexSongImmediately(songId);
+  await refreshGenresAfterSongMutation([...genreSync.previousGenreIds, ...genreSync.nextGenreIds]);
   await invalidatePlaybackSourceCache(songId);
+  await catalogService.invalidateHomepageCache().catch(() => undefined);
 
-  return getSongById(songId, { incrementViewCount: false });
+  return getSongById(songId, { incrementViewCount: false, includeUnreleased: true });
 };
 
 export const softDeleteSong = async (songId: string) => {
-  const existing = await isSongActive(songId);
+  const existing = await prisma.song.findFirst({
+    where: { id: songId, softDeleted: false },
+    select: { id: true },
+  });
   if (!existing) {
     throw new ApiError('Song not found', 'NOT_FOUND', 404);
   }
+
+  const genreRows = await prisma.songGenre.findMany({
+    where: { songId },
+    select: { genreId: true },
+  });
 
   await prisma.song.update({
     where: { id: songId },
@@ -716,12 +859,10 @@ export const softDeleteSong = async (songId: string) => {
 
   await takedownLyrics(songId);
 
-  await enqueueIndexSong(songId);
-
-  // 2.18/2.17 — must evict, not just rely on the `softDeleted: false` guard in
-  // `getPlaybackSource()`: a live cache entry would keep serving a song that is
-  // supposed to be hidden.
+  await indexSongImmediately(songId);
+  await refreshGenresAfterSongMutation(genreRows.map((row) => row.genreId));
   await invalidatePlaybackSourceCache(songId);
+  await catalogService.invalidateHomepageCache().catch(() => undefined);
 
   return { success: true, songId };
 };

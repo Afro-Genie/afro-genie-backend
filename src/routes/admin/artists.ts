@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { param, query } from 'express-validator';
+import type { Prisma } from '@prisma/client';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { validateRequest } from '../../middleware/validateRequest';
 import { prisma } from '../../lib/prisma';
@@ -13,6 +14,60 @@ export const adminArtistsRouter = Router();
 
 adminArtistsRouter.use(authenticate, requireRole('ADMIN'));
 
+export const ADMIN_ARTIST_SORT_FIELDS = ['name', 'popularity', 'followers', 'createdAt', 'songs'] as const;
+export type AdminArtistSortBy = (typeof ADMIN_ARTIST_SORT_FIELDS)[number];
+
+export const buildAdminArtistWhere = (params: {
+  search?: string;
+  genre?: string;
+  verified?: string;
+  suspended?: string;
+  isFeatured?: string;
+}): Prisma.ArtistWhereInput => {
+  const where: Prisma.ArtistWhereInput = {};
+  const search = params.search?.trim();
+
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: 'insensitive' } },
+      { user: { email: { contains: search, mode: 'insensitive' } } },
+    ];
+  }
+  if (params.genre) {
+    where.genres = { has: params.genre };
+  }
+  if (params.verified !== undefined) {
+    where.verified = params.verified === 'true';
+  }
+  if (params.suspended !== undefined) {
+    where.suspended = params.suspended === 'true';
+  }
+  if (params.isFeatured !== undefined) {
+    where.isFeatured = params.isFeatured === 'true';
+  }
+
+  return where;
+};
+
+export const buildAdminArtistOrderBy = (
+  sortBy?: string,
+  sortOrder?: string,
+): Prisma.ArtistOrderByWithRelationInput => {
+  const order = sortOrder === 'asc' ? 'asc' : 'desc';
+  switch (sortBy) {
+    case 'songs':
+      return { songs: { _count: order } };
+    case 'name':
+      return { name: order };
+    case 'popularity':
+      return { popularity: order };
+    case 'followers':
+      return { followers: order };
+    default:
+      return { createdAt: order };
+  }
+};
+
 // GET /api/admin/artists
 adminArtistsRouter.get(
   '/artists',
@@ -20,41 +75,40 @@ adminArtistsRouter.get(
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('search').optional().isString(),
+    query('genre').optional().isString(),
     query('verified').optional().isBoolean(),
     query('suspended').optional().isBoolean(),
     query('isFeatured').optional().isBoolean(),
+    query('sortBy').optional().isIn([...ADMIN_ARTIST_SORT_FIELDS]),
+    query('sortOrder').optional().isIn(['asc', 'desc']),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const page = typeof req.query.page === 'string' ? Number(req.query.page) : 1;
       const limit = Math.min(typeof req.query.limit === 'string' ? Number(req.query.limit) : 20, 100);
-      const search = typeof req.query.search === 'string' ? req.query.search.trim() : undefined;
+      const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+      const genre = typeof req.query.genre === 'string' ? req.query.genre : undefined;
+      const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy : undefined;
+      const sortOrder = typeof req.query.sortOrder === 'string' ? req.query.sortOrder : undefined;
 
-      const where: Record<string, unknown> = {};
+      const where = buildAdminArtistWhere({
+        search,
+        genre,
+        verified: req.query.verified as string | undefined,
+        suspended: req.query.suspended as string | undefined,
+        isFeatured: req.query.isFeatured as string | undefined,
+      });
 
-      if (search) {
-        where.OR = [
-          { name: { contains: search, mode: 'insensitive' } },
-          { user: { email: { contains: search, mode: 'insensitive' } } },
-        ];
-      }
-      if (req.query.verified !== undefined) {
-        where.verified = req.query.verified === 'true';
-      }
-      if (req.query.suspended !== undefined) {
-        where.suspended = req.query.suspended === 'true';
-      }
-      if (req.query.isFeatured !== undefined) {
-        where.isFeatured = req.query.isFeatured === 'true';
-      }
-
-      const [artists, total] = await Promise.all([
+      const [artists, total, verifiedCount, suspendedCount, featuredCount] = await Promise.all([
         prisma.artist.findMany({
           where,
           select: {
             id: true,
             name: true,
+            bio: true,
+            imageUrl: true,
+            genres: true,
             verified: true,
             suspended: true,
             isFeatured: true,
@@ -64,11 +118,14 @@ adminArtistsRouter.get(
             user: { select: { email: true, role: true } },
             _count: { select: { songs: true, releases: true } },
           },
-          orderBy: { createdAt: 'desc' as const },
+          orderBy: buildAdminArtistOrderBy(sortBy, sortOrder),
           skip: (page - 1) * limit,
           take: limit,
         }),
         prisma.artist.count({ where }),
+        prisma.artist.count({ where: { verified: true } }),
+        prisma.artist.count({ where: { suspended: true } }),
+        prisma.artist.count({ where: { isFeatured: true } }),
       ]);
 
       res.status(200).json({
@@ -76,6 +133,9 @@ adminArtistsRouter.get(
         total,
         page,
         totalPages: Math.max(1, Math.ceil(total / limit)),
+        verifiedCount,
+        suspendedCount,
+        featuredCount,
       });
     } catch (error) {
       next(error);

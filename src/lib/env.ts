@@ -48,6 +48,9 @@ const envSchema = z.object({
   // YouTube Data API v3 (Phase 3 playback fallback). Optional so the app boots
   // without it; YouTube matching/playback degrades to preview source.
   YOUTUBE_API_KEY: z.string().optional(),
+  YOUTUBE_DAILY_QUOTA_UNITS: z.coerce.number().int().positive().default(10000),
+  YOUTUBE_IMPORT_STALL_MS: z.coerce.number().int().positive().default(15 * 60 * 1000),
+  YOUTUBE_IMPORT_HEARTBEAT_MS: z.coerce.number().int().positive().default(15 * 1000),
   // Phase 4 playback rollout flag. OFF by default (legacy Spotify player + no
   // library enrichment) until the YouTube tier is validated per environment.
   FLAG_PLAYBACK_YOUTUBE: z

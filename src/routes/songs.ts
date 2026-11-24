@@ -16,6 +16,18 @@ import {
 
 export const songsRouter = Router();
 
+const authenticateWhenTokenPresent = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.headers.authorization) {
+    return next();
+  }
+  return authenticate(req, res, next);
+};
+
+const noStore = (_req: Request, res: Response, next: NextFunction) => {
+  res.set('Cache-Control', 'no-store');
+  return next();
+};
+
 songsRouter.get(
   '/songs',
   [
@@ -82,11 +94,15 @@ songsRouter.get(
 
 songsRouter.get(
   '/songs/:id',
+  noStore,
+  authenticateWhenTokenPresent,
   [param('id').isString().notEmpty().withMessage('id is required')],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const song = await getSongById(req.params.id);
+      const song = await getSongById(req.params.id, {
+        includeUnreleased: req.user?.role === 'ADMIN',
+      });
 
       // Record a SongPlay event (non-blocking, non-fatal)
       const songId = (song as any).id ?? req.params.id;
@@ -106,11 +122,15 @@ songsRouter.get(
 
 songsRouter.get(
   '/songs/:id/translations',
+  noStore,
+  authenticateWhenTokenPresent,
   [param('id').isString().notEmpty().withMessage('id is required')],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const translations = await getSongTranslations(req.params.id);
+      const translations = await getSongTranslations(req.params.id, {
+        includeUnreleased: req.user?.role === 'ADMIN',
+      });
       res.status(200).json({ songId: req.params.id, translations });
     } catch (error) {
       next(error);
@@ -155,6 +175,7 @@ songsRouter.patch(
     param('id').isString().notEmpty(),
     body('title').optional().isString().trim().notEmpty(),
     body('artistId').optional().isString().notEmpty(),
+    body('artistName').optional().isString().trim().notEmpty(),
     body('albumName').optional({ nullable: true }).isString(),
     body('releaseYear').optional({ nullable: true }).isInt({ min: 1800, max: 2200 }),
     body('coverImageUrl').optional({ nullable: true }).isString(),

@@ -401,6 +401,69 @@
           }
         }
       },
+      "UpdateSongRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "artistId": {
+            "type": "string"
+          },
+          "artistName": {
+            "type": "string",
+            "description": "Exact artist name. An existing artist is reused or a new one is created when omitted artistId."
+          },
+          "albumName": {
+            "type": "string",
+            "nullable": true
+          },
+          "releaseYear": {
+            "type": "integer",
+            "minimum": 1800,
+            "maximum": 2200,
+            "nullable": true
+          },
+          "coverImageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "imageUrl": {
+            "type": "string",
+            "nullable": true
+          },
+          "primaryLanguage": {
+            "type": "string",
+            "nullable": true
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "genres": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lyrics": {
+            "type": "object",
+            "properties": {
+              "rawText": {
+                "type": "string"
+              },
+              "lineBreaks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
       "CreateArtistRequest": {
         "type": "object",
         "required": [
@@ -2527,7 +2590,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateSongRequest"
+                "$ref": "#/components/schemas/UpdateSongRequest"
               }
             }
           }
@@ -3444,6 +3507,137 @@
       }
     },
     "/admin/songs": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List songs including unreleased imports (Admin)",
+        "description": "Returns all catalog songs, including imported songs that are not released yet. Use this view to verify import results immediately after an apply job completes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "genre",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artistId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artistName",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sortBy",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "views",
+                "popularity",
+                "createdAt",
+                "title",
+                "artist",
+                "releaseYear"
+              ]
+            }
+          },
+          {
+            "name": "sortOrder",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Songs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "Admin"
@@ -3524,7 +3718,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateSongRequest"
+                "$ref": "#/components/schemas/UpdateSongRequest"
               }
             }
           }
@@ -12946,7 +13140,7 @@
       }
     }
   },
-  "x-generatedAt": "2026-10-16T11:37:54.977Z",
+  "x-generatedAt": "2026-11-23T09:44:55.678Z",
   "x-changelog": {
     "updatedAt": "2026-10-16",
     "summary": "Regenerated against the live Express route table (src/routes/**). Adds the GT economy, Paystack payments, playback, challenges, notifications, seasons and the new admin surface; removes the Spotify tag and the deleted Spotify seeder/ping routes.",

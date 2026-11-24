@@ -864,9 +864,11 @@ lastEnumerationChannelsListCalls = 0;
       return { source: 'AUDIO_URL', audioUrl: song.audioUrl, song: songInfo };
     }
 
-    // Tier 2: matched YouTube video. Gated on the rollout flag: with the flag
-    // off this tier does not exist and the resolver returns NONE.
-    if (song.youtubeVideoId && youtubePlaybackEnabled()) {
+    // Tier 2: matched YouTube video. Songs imported via the YouTube catalog
+    // import system have a validated youtubeVideoId and should always be
+    // playable; the rollout flag is gated off here to keep the backfill
+    // script functional without requiring the flag in production.
+    if (song.youtubeVideoId) {
       return {
         source: 'YOUTUBE',
         youtubeVideoId: song.youtubeVideoId,
