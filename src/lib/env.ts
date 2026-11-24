@@ -29,7 +29,7 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   AI_PROVIDER: z.string().optional(),
   AI_TRANSLATION_PROVIDER: z.string().default('gemini'),
-  TRANSLATION_RATE_LIMIT_PER_DAY: z.coerce.number().int().positive().default(20),
+  TRANSLATION_RATE_LIMIT_PER_DAY: z.coerce.number().int().positive().default(5),
   TRANSLATION_DAILY_BUDGET_USD: z.coerce.number().positive().default(5.0),
   SYNC_STALE_THRESHOLD_HOURS: z.coerce.number().int().positive().default(168),
   SYNC_MAX_BATCH: z.coerce.number().int().positive().default(50),
