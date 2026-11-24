@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { body, query } from 'express-validator';
 import { authenticate } from '../middleware/auth';
+import { optionalAuthenticate } from '../middleware/optionalAuthenticate';
 import { validateRequest } from '../middleware/validateRequest';
 import {
   getStoreItems,
@@ -17,6 +18,7 @@ export const storeRouter = Router();
 
 storeRouter.get(
   '/store/items',
+  optionalAuthenticate,
   [
     query('featured').optional().isIn(['true', 'false']).withMessage('featured must be true or false'),
     query('limited').optional().isIn(['true', 'false']).withMessage('limited must be true or false'),
@@ -24,10 +26,7 @@ storeRouter.get(
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const items = await getStoreItems({
-        featured: req.query.featured === 'true',
-        limited: req.query.limited === 'true',
-      });
+      const items = await getStoreItems({ featured: req.query.featured === 'true', limited: req.query.limited === 'true' }, req.user?.id);
       res.json(items);
     } catch (error) {
       next(error);

@@ -35,58 +35,22 @@ export const processAnalyticsRollupJob = async (): Promise<void> => {
 
   let processed = 0;
 
-  for (const artist of artists) {
-    // Count TranslationRequest rows created yesterday for this artist's songs
-    const translationRequestCount = await prisma.translationRequest.count({
-      where: {
-        createdAt: { gte: dayStart, lt: dayEnd },
-        song: { artistId: artist.id },
-      },
-    });
-
-    const existingRow = await prisma.artistAnalyticsDaily.findUnique({
-      where: { artistId_date: { artistId: artist.id, date: dayStart } },
-    });
-
-    if (existingRow) {
-      continue;
-    }
-
-    // Real play count for yesterday from SongPlay events
-    const playCount = await prisma.songPlay.count({
-      where: {
-        song: { artistId: artist.id },
-        playedAt: { gte: dayStart, lt: dayEnd },
-      },
-    });
-
-    // Real unique listeners (distinct userId values, excluding null)
-    const uniqueListenerRows = await prisma.songPlay.groupBy({
-      by: ['userId'],
-      where: {
-        song: { artistId: artist.id },
-        playedAt: { gte: dayStart, lt: dayEnd },
-        userId: { not: null },
-      },
-    });
+    for (const artist of artists) {
+    const translationRequestCount = await prisma.translationRequest.count({ where: { createdAt: { gte: dayStart, lt: dayEnd }, song: { artistId: artist.id } } });
+    const translationRequestsFulfilled = await prisma.translationRequest.count({ where: { createdAt: { gte: dayStart, lt: dayEnd }, status: 'FULFILLED' as any, song: { artistId: artist.id } } });
+    const translationViewEvents = await prisma.translationViewEvent.findMany({ where: { artistId: artist.id, viewedAt: { gte: dayStart, lt: dayEnd } }, select: { userId: true, sessionId: true } });
+    const readerKeys = new Set(translationViewEvents.map((e) => e.userId ? `u:${e.userId}` : e.sessionId ? `s:${e.sessionId}` : '').filter(Boolean));
+    const prior = await prisma.translationViewEvent.findMany({ where: { artistId: artist.id, viewedAt: { lt: dayStart } }, select: { userId: true, sessionId: true } });
+    const priorSet = new Set(prior.map((e) => e.userId ? `u:${e.userId}` : e.sessionId ? `s:${e.sessionId}` : '').filter(Boolean));
+    const returningReaders = Array.from(readerKeys).filter((k) => priorSet.has(k)).length;
+    const playCount = await prisma.songPlay.count({ where: { song: { artistId: artist.id }, playedAt: { gte: dayStart, lt: dayEnd } } });
+    const uniqueListenerRows = await prisma.songPlay.groupBy({ by: ['userId'], where: { song: { artistId: artist.id }, playedAt: { gte: dayStart, lt: dayEnd }, userId: { not: null } } });
     const uniqueListeners = uniqueListenerRows.length;
-
     await prisma.artistAnalyticsDaily.upsert({
       where: { artistId_date: { artistId: artist.id, date: dayStart } },
-      create: {
-        artistId: artist.id,
-        date: dayStart,
-        plays: playCount,
-        translationViews: translationRequestCount,
-        uniqueListeners,
-      },
-      update: {
-        plays: playCount,
-        translationViews: translationRequestCount,
-        uniqueListeners,
-      },
+      create: { artistId: artist.id, date: dayStart, plays: playCount, translationViews: translationViewEvents.length, uniqueListeners, translationReaders: readerKeys.size, returningReaders, translationRequests: translationRequestCount, translationRequestsFulfilled, lyricsViews: 0 },
+      update: { plays: playCount, translationViews: translationViewEvents.length, uniqueListeners, translationReaders: readerKeys.size, returningReaders, translationRequests: translationRequestCount, translationRequestsFulfilled, lyricsViews: 0 },
     });
-
     processed++;
   }
 

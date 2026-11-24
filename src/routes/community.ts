@@ -13,8 +13,24 @@ export const communityRouter = Router();
 communityRouter.get(
   '/community/categories',
   optionalAuth,
+  [
+    query('search').optional().isString(),
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    validateRequest,
+  ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const { search, page, limit } = req.query;
+      if (search !== undefined || page !== undefined || limit !== undefined) {
+        const result = await communityService.listCategoriesPaged({
+          search: typeof search === 'string' ? search : undefined,
+          page: typeof page === 'string' ? Number(page) : undefined,
+          limit: typeof limit === 'string' ? Number(limit) : undefined,
+        });
+        res.json(result);
+        return;
+      }
       const userId = (req.user as AuthUser | undefined)?.id;
       const categories = await communityService.listCategories(userId);
       res.json(categories);
@@ -46,6 +62,8 @@ communityRouter.get(
   [
     query('categoryId').optional().isString(),
     query('sort').optional().isIn(['hot', 'new', 'top']),
+    query('sortBy').optional().isIn(['createdAt', 'likes', 'commentCount', 'title']),
+    query('sortOrder').optional().isIn(['asc', 'desc']),
     query('page').optional().isInt({ min: 1 }).toInt(),
     query('limit').optional().isInt({ min: 1, max: 50 }).toInt(),
     query('search').optional().isString(),

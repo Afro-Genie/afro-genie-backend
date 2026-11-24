@@ -78,7 +78,12 @@ export async function enrichSongLyrics(songId: string): Promise<LyricsEnrichment
 
   if (!song) return 'not-found';
   const existingLyrics = song.lyrics[0];
-  if (existingLyrics?.content?.trim()) return 'already-populated';
+  if (existingLyrics?.content?.trim()) {
+    if (song.lyricsBackfillMissedAt) {
+      await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } });
+    }
+    return 'already-populated';
+  }
   if (existingLyrics?.licenseStatus === 'TAKEDOWN') return 'takedown';
 
   const start = Date.now();
@@ -115,7 +120,10 @@ export async function enrichSongLyrics(songId: string): Promise<LyricsEnrichment
         });
         if (updated.count === 0) {
           const current = await prisma.lyric.findUnique({ where: { songId }, select: { content: true } });
-          if (current?.content?.trim()) return 'already-populated';
+          if (current?.content?.trim()) {
+            await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } });
+            return 'already-populated';
+          }
           return 'takedown';
         }
       } else {
@@ -133,7 +141,10 @@ export async function enrichSongLyrics(songId: string): Promise<LyricsEnrichment
             throw error;
           }
           const current = await prisma.lyric.findUnique({ where: { songId }, select: { content: true, licenseStatus: true } });
-          if (current?.content?.trim()) return 'already-populated';
+          if (current?.content?.trim()) {
+            await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } });
+            return 'already-populated';
+          }
           if (current?.licenseStatus === 'TAKEDOWN') return 'takedown';
           const updated = await prisma.lyric.updateMany({
             where: {
@@ -143,7 +154,10 @@ export async function enrichSongLyrics(songId: string): Promise<LyricsEnrichment
             },
             data: lyricData,
           });
-          if (updated.count === 0) return 'already-populated';
+          if (updated.count === 0) {
+            await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } });
+            return 'already-populated';
+          }
         }
       }
 
@@ -171,11 +185,13 @@ export async function enrichSongLyrics(songId: string): Promise<LyricsEnrichment
           logger.error({ err: error, songId }, message);
         }
       }
+      await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } });
       return 'populated';
     }
   }
 
   logger.info({ songId, elapsedMs: Date.now() - start }, 'All lyrics providers exhausted');
+  await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: new Date() } });
   return 'miss';
 }
 

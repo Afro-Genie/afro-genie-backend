@@ -24,7 +24,8 @@ export class LrcLibProvider implements LyricsProvider {
 
   private async callApi<T>(path: string, params: Record<string, string>): Promise<T> {
     const search = new URLSearchParams(params);
-    const url = `${BASE}${path}?${search.toString()}`;
+    const qs = search.toString();
+    const url = qs ? `${BASE}${path}?${qs}` : `${BASE}${path}`;
     const startedAt = Date.now();
 
     let response: Response;
@@ -103,9 +104,7 @@ export class LrcLibProvider implements LyricsProvider {
   }
 
   async fetchLyrics(trackId: string): Promise<string | null> {
-    const data = await this.callApi<LrcLibTrack | null>('/get', {
-      id: trackId,
-    });
+    const data = await this.callApi<LrcLibTrack | null>(`/get/${encodeURIComponent(trackId)}`, {});
 
     if (!data) {
       return null;
@@ -121,9 +120,7 @@ export class LrcLibProvider implements LyricsProvider {
    * Used by the enrichment job to store timestamp-based line arrays.
    */
   async fetchLyricsWithSync(trackId: string): Promise<{ plain: string | null; synced: string | null }> {
-    const data = await this.callApi<LrcLibTrack | null>('/get', {
-      id: trackId,
-    });
+    const data = await this.callApi<LrcLibTrack | null>(`/get/${encodeURIComponent(trackId)}`, {});
 
     if (!data) {
       return { plain: null, synced: null };

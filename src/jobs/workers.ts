@@ -3,6 +3,8 @@ import { Worker } from 'bullmq';
 import { logger } from '../lib/logger';
 import { env } from '../lib/env';
 import { sharedConnection } from '../lib/queue';
+import { markCatalogImportWorkerAlive } from '../lib/catalogImportDiagnostics';
+import { recoverStalledCatalogImportJobs } from './catalogImportRecovery';
 import { processLanguageCategorizationJob } from './languageCategorizationJob';
 import { processLyricsEnrichmentJob } from './lyricsEnrichmentJob';
 import { processNotificationJob } from './notificationJob';
@@ -182,8 +184,26 @@ async function startWorkers(): Promise<void> {
     async (job) => {
       return processYouTubeCatalogImportJob(job);
     },
-    { connection, concurrency: 1 }
+    { connection, concurrency: 3 }
   );
+  void markCatalogImportWorkerAlive()
+    .then(() => logger.info('Catalog import worker heartbeat started'))
+    .catch((err) => logger.error({ err }, 'Could not start catalog import worker heartbeat'));
+  const catalogHeartbeat = setInterval(() => {
+    void markCatalogImportWorkerAlive().catch((err) => {
+      logger.warn({ err }, 'Catalog import worker heartbeat failed');
+    });
+  }, env.YOUTUBE_IMPORT_HEARTBEAT_MS);
+  catalogHeartbeat.unref?.();
+  void recoverStalledCatalogImportJobs().catch((err) => {
+    logger.error({ err }, 'Startup recovery for stalled catalog imports failed');
+  });
+  const catalogRecovery = setInterval(() => {
+    void recoverStalledCatalogImportJobs().catch((err) => {
+      logger.warn({ err }, 'Periodic recovery for stalled catalog imports failed');
+    });
+  }, 60_000);
+  catalogRecovery.unref?.();
   youtubeCatalogImportWorker.on('failed', (job, err) => {
     logger.error(
       { jobId: job?.id, adminId: job?.data.adminId, operation: job?.data.operation, err },

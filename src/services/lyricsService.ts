@@ -1,11 +1,14 @@
-import { LicenseStatus, LyricSourceProvider } from '@prisma/client';
+import { LicenseStatus, LyricSourceProvider, Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
+import { languageCategorizationQueue, searchIndexQueue } from '../lib/queue';
 import { getActiveProvider } from './translationService';
 
 export interface LyricsInput {
   rawText?: string;
   lineBreaks?: string[];
+  syncedLyrics?: string | null;
+  lyricLines?: LyricLine[] | null;
 }
 
 export interface LyricLine {
@@ -76,26 +79,55 @@ const splitIntoChunks = (text: string, maxChars = CHUNK_SIZE): string[] => {
   return chunks;
 };
 
-export const upsertLyrics = async (songId: string, lyrics: LyricsInput): Promise<void> => {
+export const upsertLyrics = async (
+  songId: string,
+  lyrics: LyricsInput,
+  options?: { sourceProvider?: LyricSourceProvider; licenseStatus?: LicenseStatus; markBackfillResolved?: boolean },
+): Promise<void> => {
   const content = normalizeLyricsContent(lyrics);
   if (!content) {
     return;
   }
+
+  const syncedLyrics = lyrics.syncedLyrics?.trim() ? lyrics.syncedLyrics : null;
+  const parsedLines = syncedLyrics ? parseLrcTimestamps(syncedLyrics) : null;
+  const lyricLines = Array.isArray(lyrics.lyricLines) && lyrics.lyricLines.length > 0
+    ? lyrics.lyricLines
+    : parsedLines;
+  const sourceProvider = options?.sourceProvider ?? LyricSourceProvider.MANUAL;
+  const licenseStatus = options?.licenseStatus ?? LicenseStatus.UNKNOWN;
 
   await prisma.lyric.upsert({
     where: { songId },
     create: {
       songId,
       content,
-      sourceProvider: LyricSourceProvider.MANUAL,
-      licenseStatus: LicenseStatus.UNKNOWN,
+      syncedLyrics,
+      lyricLines: lyricLines ? (lyricLines as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+      sourceProvider,
+      licenseStatus,
     },
     update: {
       content,
-      sourceProvider: LyricSourceProvider.MANUAL,
-      licenseStatus: LicenseStatus.UNKNOWN,
+      syncedLyrics,
+      lyricLines: lyricLines ? (lyricLines as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+      sourceProvider,
+      licenseStatus,
     },
   });
+
+  if (options?.markBackfillResolved !== false) {
+    await prisma.song.update({ where: { id: songId }, data: { lyricsBackfillMissedAt: null } }).catch(() => undefined);
+  }
+
+  for (const [queue, name] of [
+    [languageCategorizationQueue, 'categorize'],
+    [searchIndexQueue, 'indexSong'],
+  ] as const) {
+    await queue.add(name, { songId }).catch((error) => {
+      logger.error({ err: error, songId }, `Failed to queue ${name} after lyrics save`);
+    });
+  }
 };
 
 export const takedownLyrics = async (songId: string): Promise<number> => {

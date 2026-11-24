@@ -14,10 +14,49 @@ import { isRewardPaused } from './abuseService';
 interface ListTopicsParams {
   categoryId?: string;
   sort?: 'hot' | 'new' | 'top';
+  sortBy?: string;
+  sortOrder?: string;
   page?: number;
   limit?: number;
   search?: string;
 }
+
+export const TOPIC_SORT_FIELDS = ['createdAt', 'likes', 'commentCount', 'title'] as const;
+export type TopicSortBy = (typeof TOPIC_SORT_FIELDS)[number];
+
+export const buildTopicWhere = (params: ListTopicsParams): Prisma.TopicWhereInput => {
+  const where: Prisma.TopicWhereInput = { softDeleted: false };
+  if (params.categoryId) {
+    where.forumCategoryId = params.categoryId;
+  }
+  const search = params.search?.trim();
+  if (search) {
+    where.OR = [
+      { title: { contains: search, mode: 'insensitive' } },
+      { content: { contains: search, mode: 'insensitive' } },
+      { author: { displayName: { contains: search, mode: 'insensitive' } } },
+    ];
+  }
+  return where;
+};
+
+export const buildTopicOrderBy = (
+  params: ListTopicsParams,
+): Prisma.TopicOrderByWithRelationInput => {
+  const order = params.sortOrder === 'asc' ? 'asc' : 'desc';
+  switch (params.sortBy) {
+    case 'likes':
+      return { likes: order };
+    case 'commentCount':
+      return { commentCount: order };
+    case 'title':
+      return { title: order };
+    case 'createdAt':
+      return { createdAt: order };
+    default:
+      return params.sort === 'new' ? { createdAt: 'desc' } : { likes: 'desc' };
+  }
+};
 
 interface CreateTopicData {
   title: string;
@@ -77,6 +116,50 @@ class CommunityService {
     return result;
   }
 
+  async listCategoriesPaged(params: { search?: string; page?: number; limit?: number }) {
+    const page = Math.max(1, params.page || 1);
+    const limit = Math.min(Math.max(params.limit || 20, 1), 100);
+    const search = params.search?.trim();
+    const where: Prisma.ForumCategoryWhereInput = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { description: { contains: search, mode: 'insensitive' } },
+          ],
+        }
+      : {};
+
+    const [categories, total] = await Promise.all([
+      prisma.forumCategory.findMany({
+        where,
+        orderBy: { order: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          _count: {
+            select: {
+              topics: { where: { softDeleted: false } },
+              memberships: true,
+            },
+          },
+        },
+      }),
+      prisma.forumCategory.count({ where }),
+    ]);
+
+    const data = categories.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+      icon: c.icon,
+      order: c.order,
+      topicCount: c._count.topics,
+      memberCount: c._count.memberships,
+    }));
+
+    return { data, total, page, totalPages: Math.max(1, Math.ceil(total / limit)) };
+  }
+
   async joinCategory(userId: string, categoryId: string) {
     const membership = await prisma.userCommunityMembership.upsert({
       where: { userId_categoryId: { userId, categoryId } },
@@ -90,15 +173,9 @@ class CommunityService {
   async listTopics(params: ListTopicsParams, userId?: string) {
     const page = params.page || 1;
     const limit = Math.min(params.limit || 20, 50);
-    const where: Prisma.TopicWhereInput = {
-      forumCategoryId: params.categoryId || undefined,
-      softDeleted: false,
-      title: params.search
-        ? { contains: params.search, mode: 'insensitive' }
-        : undefined,
-    };
+    const where = buildTopicWhere(params);
 
-    const [topics, total] = await Promise.all([
+    const [topics, total, pinnedCount] = await Promise.all([
       prisma.topic.findMany({
         where,
         include: {
@@ -108,9 +185,10 @@ class CommunityService {
         },
         skip: (page - 1) * limit,
         take: limit,
-        orderBy: params.sort === 'new' ? { createdAt: 'desc' } : { likes: 'desc' },
+        orderBy: buildTopicOrderBy(params),
       }),
       prisma.topic.count({ where }),
+      prisma.topic.count({ where: { isPinned: true, softDeleted: false } }),
     ]);
 
     // Fetch user likes if logged in
@@ -162,7 +240,7 @@ class CommunityService {
       return 0;
     });
 
-    return { topics: result, total, page, limit };
+    return { topics: result, total, page, limit, pinnedCount };
   }
 
   async createTopic(data: CreateTopicData, userId: string) {

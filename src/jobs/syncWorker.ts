@@ -23,6 +23,7 @@ export interface SyncJobData {
   previewHash?: string;
   requestId?: string;
   songIds?: string[];
+  scope?: 'new' | 'missed';
 }
 
 export const processSyncJob = async (job: Job<SyncJobData>): Promise<unknown> => {
@@ -67,6 +68,7 @@ export const processSyncJob = async (job: Job<SyncJobData>): Promise<unknown> =>
         populated: 0,
         skipped: 0,
         remaining: 0,
+        scope: job.data.scope ?? 'new',
         failures: [] as Array<{ songId: string; title: string; message: string }>,
       };
 
@@ -101,7 +103,7 @@ export const processSyncJob = async (job: Job<SyncJobData>): Promise<unknown> =>
         });
       }
 
-      result.remaining = (await getSongsNeedingLyrics()).length;
+      result.remaining = (await getSongsNeedingLyrics(job.data.scope ?? 'new')).length;
       await job.updateProgress({
         stage: 'lyrics-backfill',
         ...result,

@@ -8,6 +8,7 @@ import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../middleware/errorHandler';
 import { logger } from '../../lib/logger';
 import { logModAction } from '../../services/moderationAuditService';
+import { parseLrcTimestamps, upsertLyrics } from '../../services/lyricsService';
 
 export const adminLyricsRouter = Router();
 
@@ -18,12 +19,20 @@ adminLyricsRouter.patch(
   [
     param('songId').isString().notEmpty(),
     body('content').isString().notEmpty().withMessage('Lyrics content is required'),
+    body('syncedLyrics').optional({ nullable: true }).isString(),
+    body('lyricLines').optional({ nullable: true }).isArray(),
+    body('lyricLines.*.time').optional().isNumeric(),
+    body('lyricLines.*.text').optional().isString(),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const songId = req.params.songId;
-      const { content } = req.body as { content: string };
+      const { content, syncedLyrics, lyricLines } = req.body as {
+        content: string;
+        syncedLyrics?: string | null;
+        lyricLines?: Array<{ time: number; text: string }> | null;
+      };
       const moderatorId = req.user!.id;
 
       const song = await prisma.song.findUnique({
@@ -38,16 +47,23 @@ adminLyricsRouter.patch(
         throw new ApiError('Song not found', 'NOT_FOUND', 404);
       }
 
-      await prisma.lyric.upsert({
-        where: { songId },
-        create: {
-          songId,
-          content,
-          sourceProvider: LyricSourceProvider.MANUAL,
-          licenseStatus: LicenseStatus.UNKNOWN,
+      const normalizedLines = Array.isArray(lyricLines)
+        ? lyricLines
+            .filter((line) => line && typeof line.text === 'string' && line.text.trim())
+            .map((line) => ({ time: Number(line.time) || 0, text: line.text.trim() }))
+            .sort((a, b) => a.time - b.time)
+        : null;
+      const parsedFromLrc = syncedLyrics?.trim() ? parseLrcTimestamps(syncedLyrics) : null;
+
+      await upsertLyrics(
+        songId,
+        {
+          rawText: content,
+          syncedLyrics: syncedLyrics ?? null,
+          lyricLines: normalizedLines?.length ? normalizedLines : parsedFromLrc,
         },
-        update: { content },
-      });
+        { sourceProvider: LyricSourceProvider.MANUAL, licenseStatus: LicenseStatus.UNKNOWN, markBackfillResolved: true },
+      );
 
       await logModAction({
         moderatorId,

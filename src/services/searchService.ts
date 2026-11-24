@@ -528,19 +528,66 @@ export const searchCatalog = async (input: SearchParams) => {
       hits: genres.hits?.map(mapHit) ?? []
     };
 
-    // Detect search intent from text match scores
+    // Detect search intent: exact normalized match wins, then text_match scores
+    const qNorm = foldDiacritics(q === EMPTY_Q ? '' : q).trim();
+    const topSongDoc = songs.hits?.[0]?.document as Record<string, unknown> | undefined;
+    const topArtistDoc = artists.hits?.[0]?.document as Record<string, unknown> | undefined;
+    const topGenreDoc = genres.hits?.[0]?.document as Record<string, unknown> | undefined;
+    const songExact = !!topSongDoc && foldDiacritics(String(topSongDoc.title ?? '')) === qNorm;
+    const artistExact = !!topArtistDoc && foldDiacritics(String(topArtistDoc.name ?? '')) === qNorm;
+    const genreExact = !!topGenreDoc && foldDiacritics(String(topGenreDoc.name ?? '')) === qNorm;
     const topSongMatch = songs.hits?.[0]?.text_match ?? 0;
     const topArtistMatch = artists.hits?.[0]?.text_match ?? 0;
     const topGenreMatch = genres.hits?.[0]?.text_match ?? 0;
 
-    if (topGenreMatch > 0 && topGenreMatch >= topSongMatch && topGenreMatch >= topArtistMatch) {
+    if (genreExact && !songExact && !artistExact) {
       response.intent = 'genre';
-    } else if (topArtistMatch > 0 && topArtistMatch > topSongMatch * 1.5) {
+    } else if (artistExact && !songExact) {
       response.intent = 'artist';
-    } else if (topSongMatch > 0 && topSongMatch > topArtistMatch * 1.5) {
+    } else if (songExact && !artistExact) {
       response.intent = 'song';
+    } else if (songExact && artistExact) {
+      response.intent = topArtistMatch > topSongMatch ? 'artist' : 'song';
+    } else if (topGenreMatch > 0 && topGenreMatch >= topSongMatch && topGenreMatch >= topArtistMatch) {
+      response.intent = 'genre';
+    } else if (topArtistMatch > 0 && topArtistMatch > topSongMatch * 1.2) {
+      response.intent = 'artist';
+    } else if (topSongMatch > 0 && topSongMatch >= topArtistMatch) {
+      response.intent = 'song';
+    } else if (topArtistMatch > 0) {
+      response.intent = 'artist';
     } else {
       response.intent = 'mixed';
+    }
+    // For strong artist intent, surface songs by the top matched artist.
+    // For strong artist intent, surface songs by the top matched artist.
+    if ((response.intent === 'artist' || artistExact) && topArtistDoc?.id) {
+      const artistId = String(topArtistDoc.id);
+      const artistFilter = [`artistId:=${artistId}`, 'artistSuspended:=false'];
+      if (lang) artistFilter.push(`language:=${lang}`);
+      if (genre) artistFilter.push(`genre:=${genre}`);
+      const byArtist = await runCollectionSearch(COLLECTIONS.songs, {
+        q: '*',
+        query_by: 'title,titleNormalized,artistName,artistNameNormalized',
+        filter_by: artistFilter.join(' && '),
+        page,
+        per_page: limit,
+        sort_by: 'popularity:desc,views:desc',
+        include_fields: 'id,title,artistName,artistId,album,releaseYear,imageUrl,language,genre,views,popularity,hasLyrics,hasTranslation'
+      });
+      const existing = new Set((response.songs?.hits ?? []).map((h: any) => String(h?.document?.id ?? '')));
+      const mergedHits = [...(response.songs?.hits ?? [])];
+      for (const hit of (byArtist.hits ?? []) as any[]) {
+        const id = String(hit?.document?.id ?? '');
+        if (!id || existing.has(id)) continue;
+        existing.add(id);
+        mergedHits.push(hit);
+      }
+      response.songs = {
+        ...(response.songs ?? { found: 0, page, hits: [] }),
+        hits: mergedHits,
+        found: Math.max(Number(response.songs?.found ?? 0), Number(byArtist.found ?? 0), mergedHits.length)
+      };
     }
   }
 

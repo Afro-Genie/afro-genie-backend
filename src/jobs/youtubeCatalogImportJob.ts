@@ -1,4 +1,10 @@
 import type { Job } from 'bullmq';
+import {
+  assertCatalogImportQuota,
+  CatalogQuotaExceededError,
+  consumeCatalogImportQuota,
+  getCatalogImportQuota,
+} from '../lib/catalogImportQuota';
 import { logger } from '../lib/logger';
 import { youtubeCatalogImportQueue } from '../lib/queue';
 import {
@@ -11,6 +17,7 @@ import {
   type CatalogPlaylistCheckpoint,
   type CatalogImportSource,
   YouTubeQuotaExceededError,
+  YouTubeRequestTimeoutError,
   validateYouTubeCatalogPreview,
   type CatalogPreview,
 } from '../services/youtubeCatalogImportService';
@@ -30,6 +37,11 @@ export interface YouTubeCatalogImportJobData {
   selectedVideoIds?: string[];
   resumeCheckpoint?: CatalogPlaylistCheckpoint;
   retryOf?: string;
+  cancelRequested?: boolean;
+  supersededBy?: string;
+  recoveredFrom?: string;
+  recoveryReason?: string;
+  recoveredAt?: string;
 }
 
 function mergeDiscovery(
@@ -59,11 +71,102 @@ function mergeDiscovery(
   };
 }
 
+class CatalogImportCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CatalogImportCancelledError';
+  }
+}
+
+type ProgressPatch = Record<string, unknown>;
+
+function progressEta(startedAt: number, current: number, total?: number | null): number | null {
+  if (!total || current <= 0) return null;
+  const elapsedSeconds = (Date.now() - startedAt) / 1000;
+  if (elapsedSeconds < 1) return null;
+  const rate = current / elapsedSeconds;
+  return Math.max(0, Math.round((total - current) / rate));
+}
+
+async function patchProgress(job: Job<YouTubeCatalogImportJobData>, patch: ProgressPatch): Promise<void> {
+  const previous = typeof job.progress === 'object' && job.progress !== null
+    ? job.progress as ProgressPatch
+    : {};
+  await job.updateProgress({
+    ...previous,
+    ...patch,
+    lastUpdatedAt: new Date().toISOString(),
+  });
+}
+
+async function patchJobData(
+  job: Job<YouTubeCatalogImportJobData>,
+  patch: Partial<YouTubeCatalogImportJobData>,
+): Promise<void> {
+  let current = job.data;
+  try {
+    const fresh = await youtubeCatalogImportQueue.getJob(String(job.id));
+    if (fresh) current = fresh.data as YouTubeCatalogImportJobData;
+  } catch (error) {
+    logger.warn({ jobId: job.id, err: error }, 'Could not refresh job data before checkpoint — using local data');
+  }
+  const next = { ...current, ...patch };
+  await job.updateData(next);
+  job.data = next;
+}
+
+function createCancellationChecker(job: Job<YouTubeCatalogImportJobData>): () => Promise<boolean> {
+  let lastCheck = 0;
+  let cached = false;
+  return async () => {
+    const now = Date.now();
+    if (now - lastCheck < 2000) return cached;
+    lastCheck = now;
+    if (job.data.cancelRequested || job.data.supersededBy) {
+      cached = true;
+      return true;
+    }
+    try {
+      const fresh = await youtubeCatalogImportQueue.getJob(String(job.id));
+      cached = Boolean(fresh?.data.cancelRequested || fresh?.data.supersededBy);
+    } catch (error) {
+      logger.warn({ jobId: job.id, err: error }, 'Could not read cancellation flag — continuing current step');
+      cached = false;
+    }
+    return cached;
+  };
+}
+
+function cancellationMessage(operation: string): string {
+  return operation === 'apply'
+    ? 'Cancellation requested. Already-imported songs were preserved; the remaining songs were skipped.'
+    : 'Cancellation requested. Discovery stopped before any catalog changes were made.';
+}
+
+async function recordAbort(
+  job: Job<YouTubeCatalogImportJobData>,
+  operation: string,
+  error: Error,
+  stage: string,
+  extra: ProgressPatch = {},
+): Promise<void> {
+  await patchProgress(job, {
+    stage,
+    cancelled: error instanceof CatalogImportCancelledError,
+    cancelRequested: error instanceof CatalogImportCancelledError,
+    abortReason: error.message,
+    message: error.message,
+    ...extra,
+  });
+}
+
 export async function processYouTubeCatalogImportJob(
   job: Job<YouTubeCatalogImportJobData>,
 ): Promise<unknown> {
   const { operation, adminId } = job.data;
   if (!adminId) throw new Error('YouTube catalog import job is missing its admin audit identity');
+  const startedAt = Date.now();
+  const isCancelled = createCancellationChecker(job);
 
   if (operation === 'preview' || operation === 'resume') {
     let sourcePreview: CatalogPreview | null = null;
@@ -121,6 +224,17 @@ export async function processYouTubeCatalogImportJob(
       { adminId, jobId: job.id, sourceType: source.type, sourceValue: source.value, operation },
       'Starting YouTube catalog preview',
     );
+    const initialQuota = await assertCatalogImportQuota(100);
+    await patchProgress(job, {
+      stage: 'starting',
+      current: 0,
+      total: source.type === 'playlist' ? source.maxPages : source.maxResults,
+      percent: 0,
+      message: 'Connecting to YouTube…',
+      quota: initialQuota,
+    });
+    if (await isCancelled()) throw new CatalogImportCancelledError(cancellationMessage(operation));
+
     const previewSource: CatalogPreview['source'] = sourcePreview?.source || {
       type: source.type === 'playlist' ? 'playlist' : `${source.type}-search` as CatalogPreview['source']['type'],
       value: source.value,
@@ -146,7 +260,29 @@ export async function processYouTubeCatalogImportJob(
       },
       unreviewedChannels: [],
     };
+
     try {
+      const reportDiscovery = async (
+        progress: { pagesRead?: number; videosExamined?: number; maxPages?: number; maxResults?: number; eligibleCandidates?: number },
+      ) => {
+        if (await isCancelled()) throw new CatalogImportCancelledError(cancellationMessage(operation));
+        const current = progress.pagesRead || progress.videosExamined || 0;
+        const total = progress.maxPages || (source.type !== 'playlist' ? source.maxResults : undefined);
+        const quota = await getCatalogImportQuota();
+        await patchProgress(job, {
+          stage: 'discovering',
+          ...progress,
+          current,
+          total,
+          percent: total ? Math.min(99, Math.round((current / total) * 100)) : undefined,
+          etaSeconds: progressEta(startedAt, current, total),
+          quota,
+          message: progress.pagesRead
+            ? `Read ${progress.pagesRead} of ${progress.maxPages ?? '?'} YouTube result pages.`
+            : `Examined ${progress.videosExamined ?? 0} videos.`,
+        });
+      };
+
       if (source.type === 'playlist' && !complete) {
         const maxPages = source.maxPages;
         if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 80) {
@@ -156,13 +292,10 @@ export async function processYouTubeCatalogImportJob(
         const result = await discoverYouTubePlaylist(
           playlistId,
           maxPages,
-          async (progress) => {
-            await job.updateProgress({ stage: 'discovering', ...progress });
-          },
+          reportDiscovery,
           nextPageToken || undefined,
           async (checkpoint) => {
-            await job.updateData({
-              ...job.data,
+            await patchJobData(job, {
               resumeCheckpoint: {
                 ...checkpoint,
                 candidates: [...priorCandidates, ...checkpoint.candidates],
@@ -181,28 +314,32 @@ export async function processYouTubeCatalogImportJob(
           source.type,
           source.value,
           source.maxResults,
-          async (progress) => {
-            await job.updateProgress({ stage: 'discovering', ...progress, maxResults: source.maxResults });
-          },
+          async (progress) => reportDiscovery({ ...progress, maxResults: source.maxResults }),
         );
         candidates = result.candidates;
         complete = result.complete;
         nextPageToken = null;
         discovered = result.discovery;
       }
+      const usedUnits = discovered.quotaEstimate.estimatedUnits || 100;
+      const quota = await consumeCatalogImportQuota(usedUnits);
+      await patchProgress(job, { quota, message: `Used about ${usedUnits} YouTube quota units for discovery.` });
     } catch (error) {
-      if (error instanceof YouTubeQuotaExceededError) {
-        const previousProgress = typeof job.progress === 'object' && job.progress !== null
-          ? job.progress
-          : {};
-        await job.updateProgress({
-          ...previousProgress,
-          stage: 'quota-paused',
-          quotaMessage: error.message,
-        });
+      if (error instanceof CatalogImportCancelledError) {
+        await recordAbort(job, operation, error, 'cancelled');
+        return { cancelled: true, abortReason: error.message, operation };
+      }
+      if (error instanceof CatalogQuotaExceededError) {
+        await recordAbort(job, operation, error, 'quota-paused', { quota: error.state });
+      } else if (error instanceof YouTubeQuotaExceededError) {
+        const quota = await getCatalogImportQuota();
+        await recordAbort(job, operation, error, 'quota-paused', { quota, quotaMessage: error.message });
+      } else if (error instanceof YouTubeRequestTimeoutError) {
+        await recordAbort(job, operation, error, 'request-timeout');
       }
       throw error;
     }
+
     const totalDiscovery = mergeDiscovery(priorDiscovery, discovered);
     const preview = await buildYouTubeCatalogPreview(
       [...priorCandidates, ...candidates],
@@ -211,10 +348,13 @@ export async function processYouTubeCatalogImportJob(
       complete,
       nextPageToken,
     );
-    await job.updateProgress({
+    await patchProgress(job, {
       stage: 'preview-ready',
       current: preview.summary.candidates,
       total: preview.summary.candidates,
+      percent: 100,
+      etaSeconds: 0,
+      message: `Preview ready: ${preview.summary.candidates} candidates.`,
     });
     logger.info(
       { adminId, jobId: job.id, candidates: preview.summary.candidates, complete: preview.complete, operation },
@@ -238,19 +378,65 @@ export async function processYouTubeCatalogImportJob(
     }
 
     const preview = previewJob.returnvalue as CatalogPreview;
-    const result = await applyYouTubeCatalogPreview(
-      preview,
-      job.data.expectedPreviewHash,
-      async (progress) => {
-        await job.updateProgress({ stage: 'applying', ...progress });
-      },
-      job.data.selectedVideoIds,
-    );
-    logger.info(
-      { adminId, jobId: job.id, previewJobId: job.data.previewJobId, ...result },
-      'YouTube catalog apply completed',
-    );
-    return result;
+    await patchProgress(job, {
+      stage: 'starting',
+      current: 0,
+      total: preview.items?.length ?? 0,
+      percent: 0,
+      message: 'Preparing to apply selected songs…',
+    });
+    try {
+      if (await isCancelled()) throw new CatalogImportCancelledError(cancellationMessage(operation));
+      const result = await applyYouTubeCatalogPreview(
+        preview,
+        job.data.expectedPreviewHash,
+        async (progress) => {
+          const percent = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
+          await patchProgress(job, {
+            stage: progress.cancelled ? 'cancelling' : 'applying',
+            ...progress,
+            current: progress.completed,
+            percent,
+            etaSeconds: progressEta(startedAt, progress.completed, progress.total),
+            message: progress.cancelled
+              ? progress.abortReason || cancellationMessage(operation)
+              : `Applying ${progress.completed} of ${progress.total} selected songs.`,
+          });
+        },
+        job.data.selectedVideoIds,
+        isCancelled,
+      );
+      if (result.cancelled) {
+        await patchProgress(job, {
+          stage: 'cancelled',
+          cancelled: true,
+          cancelRequested: true,
+          percent: result.total ? Math.round((result.completed / result.total) * 100) : 0,
+          message: result.abortReason || cancellationMessage(operation),
+        });
+      } else {
+        await patchProgress(job, {
+          stage: 'completed',
+          percent: 100,
+          etaSeconds: 0,
+          message: `Applied ${result.completed} selected songs. ${result.created} created, ${result.linked} linked.`,
+        });
+      }
+      logger.info(
+        { adminId, jobId: job.id, previewJobId: job.data.previewJobId, ...result },
+        'YouTube catalog apply completed',
+      );
+      return result;
+    } catch (error) {
+      if (error instanceof CatalogImportCancelledError) {
+        await recordAbort(job, operation, error, 'cancelled');
+        return { cancelled: true, abortReason: error.message, operation };
+      }
+      if (error instanceof YouTubeRequestTimeoutError) {
+        await recordAbort(job, operation, error, 'request-timeout');
+      }
+      throw error;
+    }
   }
 
   throw new Error(`Unknown YouTube catalog import operation: ${String(operation)}`);

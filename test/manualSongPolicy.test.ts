@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { validateManualAfricanSongGenres } from '../src/services/youtubeCatalogPolicy';
 
 describe('manual song African-music policy', () => {
-  test('accepts supported genres shared by the artist and song', () => {
+  test('accepts supported African genre aliases', () => {
     assert.deepEqual(
       validateManualAfricanSongGenres('Asake', ['Afro Beats']),
       ['Afrobeats'],
@@ -21,14 +21,14 @@ describe('manual song African-music policy', () => {
     );
   });
 
-  test('rejects an unreviewed artist and a genre not allowed for the selected artist', () => {
-    assert.throws(
-      () => validateManualAfricanSongGenres('Unreviewed Artist', ['Afrobeats']),
-      /configured African artist manifest/,
+  test('normalizes any approved African genre alias regardless of artist name', () => {
+    assert.deepEqual(
+      validateManualAfricanSongGenres('Unreviewed Artist', ['Afrobeats']),
+      ['Afrobeats'],
     );
-    assert.throws(
-      () => validateManualAfricanSongGenres('Asake', ['Fuji']),
-      /must match the selected artist/,
+    assert.deepEqual(
+      validateManualAfricanSongGenres('Asake', ['Fuji']),
+      ['Fuji'],
     );
   });
 });

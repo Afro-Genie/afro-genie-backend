@@ -9,7 +9,7 @@ import { lyricsEnrichmentQueue, syncQueue } from '../../lib/queue';
 import { redis } from '../../lib/redis';
 import { ApiError } from '../../middleware/errorHandler';
 import { logger } from '../../lib/logger';
-import { getLyricsBackfillCoverage, getSongsNeedingLyrics } from '../../services/lyricsBackfillService';
+import { getLyricsBackfillCoverage, getMissedLyricsBackfillSongs, getSongsNeedingLyrics, type LyricsBackfillScope } from '../../services/lyricsBackfillService';
 import { getLastSyncStatus, getSyncDashboard } from '../../services/syncStatusService';
 import { LYRICS_BACKFILL_PAUSED_KEY } from '../../services/syncStatusService';
 
@@ -69,14 +69,39 @@ function requireSyncQueueSupport(): void {
 adminSyncRouter.get(
   '/sync/lyrics-backfill/preview',
   syncStatusLimiter,
-  async (_req: Request, res: Response, next: NextFunction) => {
+  [query('scope').optional().isIn(['new', 'missed']), validateRequest],
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const candidates = await getSongsNeedingLyrics();
-      const coverage = await getLyricsBackfillCoverage(candidates);
+      const scope = (req.query.scope === 'missed' ? 'missed' : 'new') as LyricsBackfillScope;
+      const candidates = await getSongsNeedingLyrics(scope);
+      const coverage = await getLyricsBackfillCoverage(candidates, scope);
       res.status(200).json({
         ...coverage,
         previewHash: hashSongIds(candidates.map((song) => song.id)),
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+adminSyncRouter.get(
+  '/sync/lyrics-backfill/missed',
+  syncStatusLimiter,
+  [
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('page').optional().isInt({ min: 1 }),
+    query('search').optional().isString(),
+    validateRequest,
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await getMissedLyricsBackfillSongs({
+        limit: Math.min(Number(req.query.limit) || 20, 100),
+        page: Math.max(Number(req.query.page) || 1, 1),
+        search: typeof req.query.search === 'string' ? req.query.search : undefined,
+      });
+      res.status(200).json(result);
     } catch (error) {
       next(error);
     }
@@ -90,24 +115,32 @@ adminSyncRouter.post(
     body('confirm').custom((value) => value === true).withMessage('Explicit confirmation is required'),
     body('previewHash').isString().matches(/^[a-f0-9]{64}$/i),
     body('requestId').isUUID(),
+    body('scope').optional().isIn(['new', 'missed']),
     validateRequest,
   ],
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       requireSyncQueueSupport();
       const adminId = getAdminId(req);
-      const candidates = await getSongsNeedingLyrics();
+      const scope = (req.body.scope === 'missed' ? 'missed' : 'new') as LyricsBackfillScope;
+      const candidates = await getSongsNeedingLyrics(scope);
       const candidateIds = candidates.map((song) => song.id);
       const currentHash = hashSongIds(candidateIds);
       if (candidateIds.length === 0) {
-        throw new ApiError('There are no eligible YouTube-linked songs missing lyrics', 'NO_ELIGIBLE_SONGS', 409);
+        throw new ApiError(
+          scope === 'missed'
+            ? 'There are no previously missed songs to retry'
+            : 'There are no new eligible YouTube-linked songs missing lyrics',
+          'NO_ELIGIBLE_SONGS',
+          409,
+        );
       }
       if (currentHash !== String(req.body.previewHash).toLowerCase()) {
         throw new ApiError('The eligible songs changed since preview. Refresh the preview before applying.', 'STALE_PREVIEW', 409);
       }
 
       const idempotencyKey = createHash('sha256')
-        .update(`${adminId}:${currentHash}:${String(req.body.requestId)}`)
+        .update(`${adminId}:${scope}:${currentHash}:${String(req.body.requestId)}`)
         .digest('hex');
       const uniqueJobId = `admin-lyrics-backfill-${idempotencyKey}`;
       const existing = await syncQueue.getJob(uniqueJobId);
@@ -123,6 +156,7 @@ adminSyncRouter.post(
           jobId: String(existing.id),
           status: await existing.getState(),
           eligible: candidateIds.length,
+          scope,
         });
         return;
       }
@@ -147,6 +181,7 @@ adminSyncRouter.post(
           previewHash: currentHash,
           requestId: String(req.body.requestId),
           songIds: candidateIds,
+          scope,
         },
         {
           jobId: uniqueJobId,
@@ -155,8 +190,8 @@ adminSyncRouter.post(
           removeOnFail: 100,
         },
       );
-      logger.info({ adminId, jobId: job.id, eligible: candidateIds.length }, 'Admin queued confirmed lyrics backfill');
-      res.status(202).json({ jobId: job.id, status: 'queued', eligible: candidateIds.length });
+      logger.info({ adminId, jobId: job.id, eligible: candidateIds.length, scope }, 'Admin queued confirmed lyrics backfill');
+      res.status(202).json({ jobId: job.id, status: 'queued', eligible: candidateIds.length, scope });
     } catch (error) {
       next(error);
     }
@@ -194,6 +229,7 @@ adminSyncRouter.get(
             type: job.data.type,
             status,
             queue: 'sync',
+            scope: job.data.scope ?? 'new',
             attribution: job.data.adminId ? 'admin' : 'scheduled',
             adminId: job.data.adminId || null,
             createdAt: new Date(job.timestamp).toISOString(),
@@ -249,6 +285,7 @@ adminSyncRouter.get(
       res.status(200).json({
         jobId: String(job.id),
         status,
+        scope: job.data.scope ?? 'new',
         progress: job.progress,
         result: status === 'completed' ? job.returnvalue : null,
         failedReason: status === 'failed' ? job.failedReason : null,

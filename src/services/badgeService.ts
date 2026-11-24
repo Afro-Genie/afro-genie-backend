@@ -3,7 +3,7 @@ import { logger } from '../lib/logger';
 import { REWARD_CONFIG } from '../config/rewards';
 import type { BadgeType } from '@prisma/client';
 
-const BADGE_DESCRIPTIONS: Record<BadgeType, string> = {
+const BADGE_DESCRIPTIONS: Partial<Record<BadgeType, string>> & Record<string,string> = {
   EARLY_ADOPTER: 'Earned your first approved translation',
   TOP_TRANSLATOR: 'Completed 10 or more approved translations',
   CULTURE_CURATOR: 'Contributed cultural context to 5 or more translations',

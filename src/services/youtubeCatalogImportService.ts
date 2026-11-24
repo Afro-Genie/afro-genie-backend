@@ -10,6 +10,7 @@ import {
   normalizeVideoTitle,
 } from './youtubeCatalogPolicy';
 import { env } from '../lib/env';
+import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { indexSong } from '../services/searchService';
 
@@ -149,6 +150,13 @@ export class YouTubeQuotaExceededError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'YouTubeQuotaExceededError';
+  }
+}
+
+export class YouTubeRequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'YouTubeRequestTimeoutError';
   }
 }
 
@@ -330,7 +338,17 @@ async function youtubeGet<T>(resource: string, params: Record<string, string>): 
     url.searchParams.set(key, value);
   }
 
-  const response = await fetch(url);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new YouTubeRequestTimeoutError(
+        `YouTube ${resource} did not respond within 30 seconds. The job was aborted before any further catalog changes. Check the YouTube API status or retry later.`,
+      );
+    }
+    throw error;
+  }
   if (!response.ok) {
     let reason = '';
     try {
@@ -820,16 +838,20 @@ export async function persistYouTubeCatalogCandidate(
       });
       if (videoAlreadyLinked) return 'duplicate';
 
-      const artist = await transaction.artist.upsert({
+      let artist: { id: string } | null = await transaction.artist.findFirst({
         where: { name: candidate.channel.artistName },
-        create: {
-          name: candidate.channel.artistName,
-          genres: candidate.channel.genres,
-          verified: false,
-        },
-        update: {},
         select: { id: true },
       });
+      if (!artist) {
+        artist = await transaction.artist.create({
+          data: {
+            name: candidate.channel.artistName,
+            genres: candidate.channel.genres,
+            verified: false,
+          },
+          select: { id: true },
+        });
+      }
       const existingSong = await transaction.song.findFirst({
         where: { title, artistId: artist.id, softDeleted: false },
         select: { id: true, youtubeVideoId: true, durationMs: true },
@@ -858,6 +880,7 @@ export async function persistYouTubeCatalogCandidate(
             title,
             artistId: artist.id,
             imageUrl: candidate.imageUrl,
+            audioUrl: null,
             youtubeVideoId: candidate.video.videoId,
             youtubeMatchedAt: new Date(),
             youtubeMatchAttempts: 0,
@@ -901,20 +924,7 @@ export async function persistYouTubeCatalogCandidate(
   }
 }
 
-export async function applyYouTubeCatalogPreview(
-  preview: CatalogPreview,
-  expectedHash: string,
-  onProgress?: (progress: {
-    created: number;
-    linked: number;
-    skipped: number;
-    failed: number;
-    completed: number;
-    total: number;
-    failures: CatalogApplyFailure[];
-  }) => Promise<void> | void,
-  selectedVideoIds?: string[],
-): Promise<{
+export interface CatalogApplyProgress {
   created: number;
   linked: number;
   skipped: number;
@@ -922,7 +932,19 @@ export async function applyYouTubeCatalogPreview(
   completed: number;
   total: number;
   failures: CatalogApplyFailure[];
-}> {
+  cancelled?: boolean;
+  abortReason?: string;
+}
+
+export type CatalogApplyResult = CatalogApplyProgress;
+
+export async function applyYouTubeCatalogPreview(
+  preview: CatalogPreview,
+  expectedHash: string,
+  onProgress?: (progress: CatalogApplyProgress) => Promise<void> | void,
+  selectedVideoIds?: string[],
+  shouldCancel?: () => Promise<boolean> | boolean,
+): Promise<CatalogApplyResult> {
   validateYouTubeCatalogPreview(preview, expectedHash);
   const selected = selectedVideoIds
     ? new Set(selectedVideoIds)
@@ -930,16 +952,32 @@ export async function applyYouTubeCatalogPreview(
   const applicable = preview.items.filter((item) =>
     item.action !== 'skip' && selected.has(item.candidate.video.videoId),
   );
-  const results = {
+  const results: CatalogApplyResult = {
     created: 0,
     linked: 0,
     skipped: preview.items.length - applicable.length,
     failed: 0,
     completed: 0,
     total: applicable.length,
-    failures: [] as CatalogApplyFailure[],
+    failures: [],
   };
+
+  const report = async () => {
+    if (!onProgress) return;
+    try {
+      await onProgress({ ...results, failures: [...results.failures] });
+    } catch (error) {
+      logger.warn({ err: error }, 'Catalog apply progress update failed — continuing import');
+    }
+  };
+  await report();
+
   for (const item of applicable) {
+    if (shouldCancel && await shouldCancel()) {
+      results.cancelled = true;
+      results.abortReason = 'Cancelled by administrator. Already-imported songs were preserved and the remaining songs were skipped.';
+      break;
+    }
     let result: CatalogPersistResult;
     try {
       result = await persistYouTubeCatalogCandidate(item.candidate);
@@ -951,14 +989,16 @@ export async function applyYouTubeCatalogPreview(
         title: item.normalizedTitle,
         message: error instanceof Error ? error.message : 'Unknown persistence error',
       });
-      await onProgress?.({ ...results, failures: [...results.failures] });
+      await report();
       continue;
     }
     if (result === 'created') results.created++;
     else if (result === 'linked') results.linked++;
     else results.skipped++;
     results.completed++;
-    await onProgress?.({ ...results, failures: [...results.failures] });
+    await report();
   }
+
+  if (results.cancelled) await report();
   return results;
 }
