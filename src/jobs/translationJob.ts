@@ -39,38 +39,11 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   timings.fetchingSongMs = songFetchEnd - startTime;
   const lyric = song.lyrics[0];
   if (!lyric || !lyric.content?.trim()) {
-    const fallbackMessage = 'Lyrics are not available for this song yet.';
-
-    await prisma.translation.upsert({
-      where: {
-        songId_userId_sourceLang_targetLang: { songId, userId, sourceLang, targetLang },
-      },
-      create: {
-        songId,
-        userId,
-        originalLyrics: lyric?.content ?? '',
-        translatedLyrics: '',
-        culturalContext: fallbackMessage,
-        sourceLang,
-        targetLang,
-        aiModel: null,
-        promptVersion,
-        status: 'APPROVED',
-      },
-      update: {
-        originalLyrics: lyric?.content ?? '',
-        translatedLyrics: '',
-        culturalContext: fallbackMessage,
-        aiModel: null,
-        promptVersion,
-        status: 'APPROVED',
-        updatedAt: new Date(),
-      },
-    });
-
+    // Never persist an empty "translation": it would be served as cached and
+    // can never earn a completion reward.
     logger.info(
       { jobId: job.id, songId, targetLang },
-      'Translation job completed gracefully with empty lyrics',
+      'Translation job skipped — song has no lyrics',
     );
 
     return;
@@ -108,6 +81,11 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
     throw translateError;
   }
 
+  if (!result.result.translatedLyrics?.trim()) {
+    logger.error({ jobId: job.id, songId, targetLang }, 'Translation provider returned empty content');
+    throw new Error('Translation provider returned empty content');
+  }
+
   const elapsed = Date.now() - startTime;
 
   // Report progress: saving translation
@@ -115,7 +93,7 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
 
   // Upsert so retried jobs overwrite rather than violate the unique constraint
   // Auto-approve: translations are immediately available to all users
-  await prisma.translation.upsert({
+  const savedTranslation = await prisma.translation.upsert({
     where: {
       songId_userId_sourceLang_targetLang: { songId, userId, sourceLang, targetLang },
     },
@@ -157,9 +135,14 @@ export async function processTranslationJob(job: Job<TranslationJobData>): Promi
   // Report progress: complete
   await job.updateProgress({ stage: 'completed', percent: 100 });
 
-  // Reward the trigger only when the job actually generated real content
-  // (idempotent per job id; never fires on the empty-lyrics fallback).
-  await onAiTranslationCompleted({ jobId: String(job.id), userId });
+  // Reward the translator only when the job actually generated real content.
+  // The key is the translation id, so retries and inline/queued paths cannot
+  // double-pay. The empty-lyrics and empty-output paths return/throw above.
+  await onAiTranslationCompleted({
+    jobId: String(job.id),
+    translationId: savedTranslation.id,
+    userId,
+  });
 
   logger.info(
     {

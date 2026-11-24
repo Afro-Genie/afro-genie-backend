@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
 import rateLimit from 'express-rate-limit';
@@ -13,12 +14,10 @@ import { logger } from '../lib/logger';
 import { queueReward } from '../services/rewardService';
 import { evaluateVoterBadges } from '../services/badgeService';
 import {
-  checkDailyBudget,
-  checkUserRateLimit,
   getActiveProvider,
   getTranslationsBySong,
   logAICall,
-  requestTranslation,
+  prepareTranslationPayment,
 } from '../services/translationService';
 
 // ---------------------------------------------------------------------------
@@ -183,80 +182,40 @@ translationsRouter.post(
       };
       const userId = req.user!.id;
 
-      // Translation credits bypass the per-user daily rate limit (soft spending
-      // model Ã¢â‚¬â€ not a hard paywall, and the global daily budget still applies).
-      const creditUser = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { translationCredits: true },
-      });
-      const hasCredits = (creditUser?.translationCredits ?? 0) > 0;
-
-      if (!hasCredits) {
-        // Per-user daily rate limit
-        const rateLimit = await checkUserRateLimit(userId);
-        if (!rateLimit.allowed) {
-          return next(
-            new ApiError(
-              `Daily translation limit reached. Try again after ${rateLimit.resetAt.toISOString()}.`,
-              'RATE_LIMITED',
-              429,
-            ),
-          );
-        }
-      }
-
-      // Daily budget guard
-      const budget = await checkDailyBudget();
-      if (!budget.withinBudget) {
-        return next(
-          new ApiError(
-            'Translation service is temporarily at capacity. Please try again later.',
-            'BUDGET_EXCEEDED',
-            503,
-          ),
-        );
-      }
-
-      // Check for any existing translation (not just APPROVED Ã¢â‚¬â€ also reuse PENDING)
+      // Existing/cached translations never charge or reward.
       const existingApproved = await prisma.translation.findFirst({
-        where: { songId, sourceLang, targetLang, status: 'APPROVED' },
+        where: {
+          songId,
+          sourceLang,
+          targetLang,
+          status: 'APPROVED',
+          translatedLyrics: { not: '' },
+        },
       });
-      if (existingApproved) {
+      if (existingApproved?.translatedLyrics?.trim()) {
         return res.status(200).json({ status: 'existing', translation: existingApproved });
       }
 
-      // Check for a recent PENDING translation (user already requested, still processing)
+      // A completed PENDING row is already paid for; just make it visible.
       const recentPending = await prisma.translation.findFirst({
         where: { songId, sourceLang, targetLang, status: 'PENDING' },
         orderBy: { updatedAt: 'desc' },
       });
+      if (recentPending?.translatedLyrics?.trim()) {
+        const approved = await prisma.translation.update({
+          where: { id: recentPending.id },
+          data: { status: 'APPROVED' },
+        });
+        return res.status(200).json({ status: 'existing', translation: approved });
+      }
       if (recentPending) {
-        // If it has translatedLyrics, it's done Ã¢â‚¬â€ just needs approval
-        if (recentPending.translatedLyrics) {
-          const approved = await prisma.translation.update({
-            where: { id: recentPending.id },
-            data: { status: 'APPROVED' },
-          });
-
-          // Reward the original requester for their fulfilled request
-          await queueReward(
-            recentPending.userId,
-            5,
-            'Translation request fulfilled',
-            'TRANSLATION_REQUEST_FULFILLED',
-            `request-fulfilled:${recentPending.id}`,
-          );
-
-          return res.status(200).json({ status: 'existing', translation: approved });
-        }
-        // A PENDING row with no content yet (e.g. after a reset) is treated as
-        // "no translation" and regenerated inline below rather than returning a
-        // dead-end `pending:<id>` jobId that the status endpoint can never resolve.
         logger.info({ songId, userId, targetLang, pendingId: recentPending.id }, 'Stale empty pending translation will be regenerated inline');
       }
 
       // INLINE PROCESSING: Queue is unreliable (Redis ENOTFOUND), always process directly
       logger.info({ songId, userId, targetLang }, 'Processing translation inline');
+
+      const requestId = randomUUID();
 
       try {
         const { processTranslationJob } = await import('../jobs/translationJob.js');
@@ -268,12 +227,22 @@ translationsRouter.post(
           },
         });
 
-        if (!song || !song.lyrics[0]?.content) {
-          return next(new ApiError('Song not found or has no lyrics', 'NOT_FOUND', 404));
+        if (!song || !song.lyrics[0]?.content?.trim()) {
+          throw new ApiError('Song not found or has no lyrics', 'NOT_FOUND', 404);
         }
 
+        // Charge 5 GT (or consume one credit) as soon as the request is
+        // submitted, before any AI work starts.
+        const payment = await prepareTranslationPayment({
+          userId,
+          songId,
+          sourceLang,
+          targetLang,
+          requestId,
+        });
+
         const inlineJob = {
-          id: `inline-${Date.now()}`,
+          id: `inline-${requestId}`,
           data: { songId, userId, sourceLang, targetLang, promptVersion: CURRENT_PROMPT_VERSION },
           attemptsMade: 0,
           updateProgress: async () => {},
@@ -281,32 +250,26 @@ translationsRouter.post(
 
         await processTranslationJob(inlineJob as any);
 
-        // Fetch the saved translation
         const translation = await prisma.translation.findFirst({
-          where: { songId, userId, sourceLang, targetLang },
+          where: {
+            songId,
+            sourceLang,
+            targetLang,
+            status: 'APPROVED',
+            translatedLyrics: { not: '' },
+          },
           orderBy: { updatedAt: 'desc' },
         });
 
-        if (translation) {
-          // Auto-approve inline translations
-          const approved = await prisma.translation.update({
-            where: { id: translation.id },
-            data: { status: 'APPROVED' },
-          });
-
-          // Consume one translation credit for the newly generated translation
-          // (only if the user had credits available; otherwise they were governed
-          // by the daily rate limit and nothing is spent here).
-          if (hasCredits) {
-            await prisma.user.updateMany({
-              where: { id: userId, translationCredits: { gt: 0 } },
-              data: { translationCredits: { decrement: 1 } },
-            });
-          }
-
-          return res.status(200).json({ status: 'completed', translation: approved });
+        if (!translation?.translatedLyrics?.trim()) {
+          throw new ApiError('Translation completed but no content was generated', 'TRANSLATION_FAILED', 500);
         }
+
+        return res.status(200).json({ status: 'completed', translation, payment });
       } catch (inlineErr: any) {
+        if (inlineErr instanceof ApiError) {
+          return next(inlineErr);
+        }
         logger.error({ err: inlineErr, songId }, 'Inline translation failed');
         return next(
           new ApiError(
@@ -316,9 +279,6 @@ translationsRouter.post(
           ),
         );
       }
-
-      // Should not reach here, but just in case
-      return next(new ApiError('Translation completed but no result found', 'TRANSLATION_FAILED', 500));
     } catch (err) {
       const e = err as Error & { code?: string; httpStatus?: number };
       if (e.code === 'NOT_FOUND') {

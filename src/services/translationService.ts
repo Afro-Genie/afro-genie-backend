@@ -1,11 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import type { Translation } from '@prisma/client';
+import { getRewardConfig } from '../config/rewards';
 import { env } from '../lib/env';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { translationQueue } from '../lib/queue';
+import { ApiError } from '../middleware/errorHandler';
 import { CURRENT_PROMPT_VERSION, GeminiProvider } from './aiProviders/geminiProvider';
-import { awardTokens } from './tokenService';
+import { spendTokens } from './tokenService';
 import type { TranslationJobData, TranslationProvider, TranslationResult } from '../types/translation';
 
 export interface TranslationTimings {
@@ -82,33 +85,43 @@ export async function checkUserRateLimit(userId: string): Promise<{
   resetAt: Date;
 }> {
   const key = `${RATE_LIMIT_PREFIX}${userId}`;
-  const maxPerDay = env.TRANSLATION_RATE_LIMIT_PER_DAY;
+  const config = await getRewardConfig();
+  const maxPerDay = Math.max(1, Number(config.AI_TRANSLATION_DAILY_CAP) || env.TRANSLATION_RATE_LIMIT_PER_DAY);
 
+  let reserved = false;
   try {
-    const current = await redis.get(key);
-    const count = current ? parseInt(current, 10) : 0;
+    const count = await redis.incr(key);
+    reserved = true;
+    if (count === 1) {
+      await redis.expire(key, RATE_LIMIT_TTL_SECONDS);
+    }
 
-    if (count >= maxPerDay) {
+    if (count > maxPerDay) {
+      await redis.decr(key);
+      reserved = false;
       const ttl = await redis.ttl(key);
       const resetAt = new Date(Date.now() + (ttl > 0 ? ttl : RATE_LIMIT_TTL_SECONDS) * 1000);
       return { allowed: false, remaining: 0, resetAt };
     }
 
-    // Increment counter — first call sets TTL
-    if (current === null) {
-      await redis.set(key, '1', 'EX', RATE_LIMIT_TTL_SECONDS);
-    } else {
-      await redis.incr(key);
-    }
-
-    const remaining = maxPerDay - (count + 1);
     const ttl = await redis.ttl(key);
     const resetAt = new Date(Date.now() + (ttl > 0 ? ttl : RATE_LIMIT_TTL_SECONDS) * 1000);
-    return { allowed: true, remaining, resetAt };
+    return { allowed: true, remaining: maxPerDay - count, resetAt };
   } catch (err) {
-    // If Redis is unavailable, allow the request (fail-open for rate limiting)
-    logger.warn({ err, userId }, 'Rate limit check failed, allowing request');
-    return { allowed: true, remaining: maxPerDay, resetAt: new Date(Date.now() + 86400_000) };
+    if (reserved) await redis.decr(key).catch(() => 0);
+    // The daily cap must not silently disappear when Redis is unavailable.
+    logger.error({ err, userId }, 'Rate limit check failed, blocking translation request');
+    return { allowed: false, remaining: 0, resetAt: new Date(Date.now() + RATE_LIMIT_TTL_SECONDS * 1000) };
+  }
+}
+
+/** Release a reserved daily slot when the payment that reserved it fails. */
+export async function releaseUserRateLimit(userId: string): Promise<void> {
+  const key = `${RATE_LIMIT_PREFIX}${userId}`;
+  try {
+    await redis.decr(key);
+  } catch (err) {
+    logger.warn({ err, userId }, 'Could not release translation rate-limit slot');
   }
 }
 
@@ -123,8 +136,8 @@ export async function checkDailyBudget(): Promise<{
   const budgetUsd = env.TRANSLATION_DAILY_BUDGET_USD;
 
   try {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
     const result = await prisma.aICallLog.aggregate({
       where: { createdAt: { gte: startOfDay } },
@@ -139,10 +152,96 @@ export async function checkDailyBudget(): Promise<{
       budgetUsd,
     };
   } catch (err) {
-    // If the query fails, allow the request (fail-open for budget check)
-    logger.warn({ err }, 'Budget check failed, allowing request');
-    return { withinBudget: true, spentTodayUsd: 0, budgetUsd };
+    // The budget is a spending cap: an unreadable ledger must stop new AI work.
+    logger.error({ err }, 'Budget check failed, blocking translation requests');
+    return { withinBudget: false, spentTodayUsd: Number.POSITIVE_INFINITY, budgetUsd };
   }
+}
+
+export interface TranslationPayment {
+  method: 'GT' | 'CREDIT';
+  /** GT charged, or 0 when a prepaid translation credit was used. */
+  gtCharged: number;
+  /** Credits consumed, or 0 for a self-funded request. */
+  creditsUsed: number;
+}
+
+/**
+ * Charge for a translation at submission time.
+ *
+ * Self-funded requests cost the configured flat GT amount and are governed by
+ * the per-user daily cap. A prepaid translation credit is consumed instead of
+ * GT and bypasses that cap, but both paths still respect the global AI budget.
+ */
+export async function prepareTranslationPayment(params: {
+  userId: string;
+  songId: string;
+  sourceLang: string;
+  targetLang: string;
+  requestId?: string;
+}): Promise<TranslationPayment> {
+  const { userId, songId, sourceLang, targetLang } = params;
+  const requestId = params.requestId ?? randomUUID();
+  const config = await getRewardConfig();
+  const gtAmount = Math.max(0, Math.round(Number(config.AI_TRANSLATION_AMOUNT) || 0));
+
+  const [user, budget] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { translationCredits: true },
+    }),
+    checkDailyBudget(),
+  ]);
+
+  if (!budget.withinBudget) {
+    throw new ApiError(
+      'AI translation is temporarily at capacity. Please try again later.',
+      'BUDGET_EXCEEDED',
+      429,
+    );
+  }
+
+  if ((user?.translationCredits ?? 0) > 0) {
+    const consumed = await prisma.user.updateMany({
+      where: { id: userId, translationCredits: { gt: 0 } },
+      data: { translationCredits: { decrement: 1 } },
+    });
+    if (consumed.count !== 1) {
+      throw new ApiError('Translation credit is no longer available', 'CREDIT_UNAVAILABLE', 409);
+    }
+
+    logger.info({ userId, requestId, songId }, 'Translation credit consumed at request time');
+    return { method: 'CREDIT', gtCharged: 0, creditsUsed: 1 };
+  }
+
+  const rateLimit = await checkUserRateLimit(userId);
+  if (!rateLimit.allowed) {
+    throw new ApiError(
+      `Daily translation limit reached (${config.AI_TRANSLATION_DAILY_CAP} self-funded translations). Try again after ${rateLimit.resetAt.toISOString()}.`,
+      'RATE_LIMITED',
+      429,
+    );
+  }
+
+  if (gtAmount > 0) {
+    try {
+      await spendTokens({
+        userId,
+        amount: -gtAmount,
+        reason: 'AI translation generation',
+        sourceType: 'AI_TRANSLATION',
+        sourceId: requestId,
+        idempotencyKey: `ai-translation:${requestId}`,
+        metadata: { songId, sourceLang, targetLang },
+      });
+    } catch (err) {
+      await releaseUserRateLimit(userId);
+      throw err;
+    }
+  }
+
+  logger.info({ userId, requestId, songId, gtAmount }, 'GT charged at translation request time');
+  return { method: 'GT', gtCharged: gtAmount, creditsUsed: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +354,7 @@ export async function requestTranslation(params: {
   translation?: Translation;
   jobId?: string;
   timings: TranslationTimings;
+  payment?: TranslationPayment;
 }> {
   const { songId, userId, sourceLang, targetLang } = params;
   const requestStart = Date.now();
@@ -274,11 +374,17 @@ export async function requestTranslation(params: {
   // Cached/existing translations must not charge or reward as a new generation.
   const cacheStart = Date.now();
   const existing = await prisma.translation.findFirst({
-    where: { songId, sourceLang, targetLang, status: 'APPROVED' },
+    where: {
+      songId,
+      sourceLang,
+      targetLang,
+      status: 'APPROVED',
+      translatedLyrics: { not: '' },
+    },
   });
   timings.cacheLookupMs = Date.now() - cacheStart;
 
-  if (existing) {
+  if (existing?.translatedLyrics?.trim()) {
     timings.totalMs = Date.now() - requestStart;
     logger.info({ songId, sourceLang, targetLang, translationId: existing.id }, 'Returning existing approved translation');
     return { status: 'existing', translation: existing, timings };
@@ -295,26 +401,8 @@ export async function requestTranslation(params: {
   }
   timings.providerCallMs = Date.now() - songCheckStart; // reuse field for song lookup
 
-  // Charge 5 GT for AI translation (flat rate per Phase 0 decision).
-  // This is debited now so that failed generations do not consume credits
-  // unless the policy explicitly charges on attempt. The actual generation
-  // outcome is handled by the job worker.
-  const { withinBudget } = await checkDailyBudget();
-  if (!withinBudget) {
-    const err = new Error('Daily AI budget exceeded') as Error & { code: string; httpStatus: number };
-    err.code = 'BUDGET_EXCEEDED';
-    err.httpStatus = 429;
-    throw err;
-  }
-
-  await awardTokens({
-    userId,
-    type: 'SPEND',
-    amount: -5,
-    reason: 'AI translation generation',
-    sourceType: 'AI_TRANSLATION',
-    sourceId: `${songId}:${userId}:${sourceLang}:${targetLang}`,
-  });
+  // Charge at submission (GT or one prepaid credit) before enqueuing work.
+  const payment = await prepareTranslationPayment({ userId, songId, sourceLang, targetLang });
 
   const jobData: TranslationJobData = {
     songId,
@@ -335,7 +423,7 @@ export async function requestTranslation(params: {
 
   logger.info({ jobId: job.id, songId, userId, sourceLang, targetLang }, 'Translation job enqueued');
 
-  return { status: 'queued', jobId: job.id!, timings };
+  return { status: 'queued', jobId: job.id!, timings, payment };
 }
 
 // ---------------------------------------------------------------------------

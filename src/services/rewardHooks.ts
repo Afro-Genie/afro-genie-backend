@@ -47,6 +47,7 @@ export interface CorrectionRejectedEvent {
 export interface AiTranslationCompletedEvent {
   jobId: string;
   userId: string;
+  translationId: string;
 }
 
 export interface TopicShareEvent {
@@ -225,7 +226,7 @@ export async function onCorrectionRejected(event: CorrectionRejectedEvent): Prom
   }
 }
 
-/** +2 (×tier) when an AI translation job actually generates content. */
+/** 2 GT x tier when an AI translation job actually generates real content. */
 export async function onAiTranslationCompleted(event: AiTranslationCompletedEvent): Promise<void> {
   try {
     if (await isRewardPaused(event.userId)) {
@@ -233,13 +234,35 @@ export async function onAiTranslationCompleted(event: AiTranslationCompletedEven
       return;
     }
 
-    // Phase 2: AI translation charges 5 GT upfront in requestTranslation.
-    // No additional GT is awarded on generation completion — the +2 GT earning
-    // reward was removed to eliminate the inconsistency of rewarding consumption
-    // while charging via credits. The job may still award credits (translation
-    // credit packs) if the user has them, but the direct GT charge is single.
-    // Simply log completion and return without awarding additional GT.
-    logger.info({ event }, 'AI translation generation completed; no additional GT awarded (charge applied at request)');
+    if (!(await isRewardActive('AI_TRANSLATION_REWARD'))) {
+      logger.info({ event }, 'AI translation completion reward is currently inactive');
+      return;
+    }
+
+    // The job auto-approves the translation, so refresh the tier before paying.
+    const tier = await recomputeTier(event.userId);
+    const config = await getRewardConfig();
+    const amount = Math.round(Number(config.AI_TRANSLATION_REWARD_AMOUNT) * tier.multiplier);
+
+    const { created } = await awardTokensWithResult({
+      userId: event.userId,
+      type: 'EARN',
+      amount,
+      reason: 'AI translation completed',
+      sourceType: 'AI_TRANSLATION',
+      sourceId: event.translationId,
+      idempotencyKey: `ai-translation-reward:${event.translationId}`,
+      metadata: { jobId: event.jobId, tier: tier.tier, multiplier: tier.multiplier },
+    });
+
+    if (created) {
+      await createNotification({
+        userId: event.userId,
+        title: 'Tokens earned',
+        message: `Your translation was generated. You earned +${amount} GT (${tier.tier} x${tier.multiplier}).`,
+        type: 'REWARD',
+      });
+    }
   } catch (err) {
     logger.error({ err, event }, 'reward hook onAiTranslationCompleted failed');
   }
