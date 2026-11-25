@@ -13,6 +13,21 @@ const PRIMARY_MODEL = MODEL_CHAIN[0];
 
 export const CURRENT_PROMPT_VERSION = 'v1.2';
 
+export const SUPPORTED_LANGUAGE_CODES = [
+  { code: 'en', name: 'English' },
+  { code: 'yo', name: 'Yoruba' },
+  { code: 'ig', name: 'Igbo' },
+  { code: 'ha', name: 'Hausa' },
+  { code: 'pcm', name: 'Nigerian Pidgin' },
+  { code: 'sw', name: 'Swahili' },
+  { code: 'fr', name: 'French' },
+  { code: 'es', name: 'Spanish' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'zu', name: 'Zulu' },
+  { code: 'am', name: 'Amharic' },
+] as const;
+
 // Gemini 3.5 Flash pricing (USD per token, 2026)
 const INPUT_COST_PER_TOKEN = 1.5 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 9.0 / 1_000_000;
@@ -179,16 +194,16 @@ Respond with valid JSON only. The "translatedLyrics" field must contain the comp
 
 function buildDetectLanguagePrompt(lyrics: string): string {
   const sample = lyrics.substring(0, 1200);
-  return `You are an expert in West African languages. Identify the primary language of the following song lyrics.
+  const codes = SUPPORTED_LANGUAGE_CODES.map((item) => `- "${item.code}" — ${item.name}`).join('\n');
+  return `You are an expert in African music lyrics. Identify the language used in this section of the lyrics.
 
 Recognized language codes:
-- "yo"    — Yoruba
-- "ig"    — Igbo
-- "ha"    — Hausa
-- "pcm"   — Nigerian Pidgin English (Naija Pidgin)
-- "en"    — English
-- "fr"    — French
-- "mixed" — Heavy code-switching between two or more of the above
+${codes}
+
+Rules:
+- Use one code only. Do not use "mixed" or invent a code.
+- If the section code-switches, choose the language used in most lines.
+- Lower the confidence when unsure.
 
 Lyrics sample:
 ${sample}
@@ -302,7 +317,11 @@ export class GeminiProvider implements TranslationProvider {
     for (const model of MODEL_CHAIN) {
       try {
         const result = await withExponentialBackoff(async () =>
-          ai.models.generateContent({ model, contents, config }),
+          ai.models.generateContent({
+            model,
+            contents,
+            config: { ...config, thinkingConfig: { thinkingBudget: 0 } },
+          }),
         );
         return {
           text: result.text ?? '',

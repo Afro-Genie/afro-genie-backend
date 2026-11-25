@@ -38,6 +38,11 @@ interface SongListParams extends SongFilters {
   includeUnreleased?: boolean;
 }
 
+interface LanguageSongsParams {
+  limit?: number;
+  page?: number;
+}
+
 export interface SongMutationInput {
   title: string;
   artistId: string;
@@ -511,26 +516,40 @@ export const getSongById = async (songId: string, options: GetSongByIdOptions = 
   };
 };
 
-export const getSongsByLanguage = async (languageCode: string, limit?: number) => {
+export const getSongsByLanguage = async (languageCode: string, params: LanguageSongsParams = {}) => {
   const normalizedCode = languageCode.trim().toLowerCase();
-  const take = normalizeLimit(limit);
+  const limit = normalizeLimit(params.limit);
+  const page = params.page && params.page > 0 ? Math.floor(params.page) : 1;
+  const where = buildSongWhere({ language: normalizedCode });
+
+  let visibleWhere: Prisma.SongWhereInput = { ...where, softDeleted: false };
+  let total: number;
+  try {
+    total = await prisma.song.count({ where: visibleWhere });
+  } catch (error) {
+    if (!isMissingSoftDeleteColumnError(error)) {
+      throw error;
+    }
+
+    visibleWhere = where;
+    total = await prisma.song.count({ where });
+  }
 
   const songs = await prisma.song.findMany({
-    where: {
-      songLanguages: {
-        some: {
-          languageCode: normalizedCode,
-          percentage: { gte: 30 },
-        },
-      },
-    },
+    where: visibleWhere,
     include: songInclude as Prisma.SongInclude,
-    orderBy: { createdAt: 'desc' },
-    take,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    skip: (page - 1) * limit,
+    take: limit,
   });
 
-  const activeSongIds = await getActiveSongIdSet(songs.map((song) => song.id));
-  return songs.filter((song) => activeSongIds.has(song.id));
+  return {
+    songs,
+    total,
+    page,
+    limit,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+  };
 };
 
 export const getSongTranslations = async (

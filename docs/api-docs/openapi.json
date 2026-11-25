@@ -2725,6 +2725,14 @@
               "minimum": 1,
               "maximum": 500
             }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         ],
         "responses": {
@@ -2745,6 +2753,12 @@
                       }
                     },
                     "total": {
+                      "type": "integer"
+                    },
+                    "page": {
+                      "type": "integer"
+                    },
+                    "totalPages": {
                       "type": "integer"
                     }
                   }
@@ -13140,7 +13154,7 @@
       }
     }
   },
-  "x-generatedAt": "2026-11-23T09:44:55.678Z",
+  "x-generatedAt": "2026-11-25T07:11:22.098Z",
   "x-changelog": {
     "updatedAt": "2026-10-16",
     "summary": "Regenerated against the live Express route table (src/routes/**). Adds the GT economy, Paystack payments, playback, challenges, notifications, seasons and the new admin surface; removes the Spotify tag and the deleted Spotify seeder/ping routes.",

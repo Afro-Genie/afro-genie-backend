@@ -2725,6 +2725,14 @@
               "minimum": 1,
               "maximum": 500
             }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         ],
         "responses": {
@@ -2745,6 +2753,12 @@
                       }
                     },
                     "total": {
+                      "type": "integer"
+                    },
+                    "page": {
+                      "type": "integer"
+                    },
+                    "totalPages": {
                       "type": "integer"
                     }
                   }

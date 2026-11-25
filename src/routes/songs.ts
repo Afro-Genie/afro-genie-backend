@@ -76,16 +76,23 @@ songsRouter.get(
   [
     param('languageCode').isString().trim().isLength({ min: 2, max: 10 }),
     query('limit').optional().isInt({ min: 1, max: 500 }),
+    query('page').optional().isInt({ min: 1 }),
   ],
   validateRequest,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const songs = await getSongsByLanguage(
-        req.params.languageCode,
-        typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
-      );
+      const result = await getSongsByLanguage(req.params.languageCode, {
+        limit: typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined,
+        page: typeof req.query.page === 'string' ? Number(req.query.page) : undefined,
+      });
 
-      res.status(200).json({ languageCode: req.params.languageCode, songs, total: songs.length });
+      res.status(200).json({
+        languageCode: req.params.languageCode,
+        songs: result.songs,
+        total: result.total,
+        page: result.page,
+        totalPages: result.totalPages,
+      });
     } catch (error) {
       next(error);
     }
