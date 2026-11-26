@@ -34,6 +34,9 @@ const envSchema = z.object({
   SYNC_STALE_THRESHOLD_HOURS: z.coerce.number().int().positive().default(168),
   SYNC_MAX_BATCH: z.coerce.number().int().positive().default(50),
   SYNC_RETRY_AFTER_MAX_SECONDS: z.coerce.number().int().positive().default(60),
+  MUSICBRAINZ_API_URL: z.string().url().default('https://musicbrainz.org/ws/2'),
+  MUSICBRAINZ_USER_AGENT: z.string().min(1).default('AfroGenie/1.0 (genre backfill)'),
+  MUSICBRAINZ_REQUEST_INTERVAL_MS: z.coerce.number().int().positive().default(1200),
   APP_VERSION: z.string().default('1.0.0'),
   ENABLE_WORKERS: z.string().default('true').transform((v) => v === 'true' || v === '1'),
   // Phase 5 catalog growth scheduling defaults

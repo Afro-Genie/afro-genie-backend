@@ -11,6 +11,7 @@ import {
 } from '../services/emailService';
 import { enqueueIndexSong } from '../jobs/searchIndexJob';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
+import { enqueueGenreEnrichment } from '../services/genreBackfillService';
 import type { Prisma } from '@prisma/client';
 import { getArtistBadgeSummary } from '../services/artistBadgeService';
 import { getArtistTranslationAnalytics } from '../services/artistAnalyticsService';
@@ -432,6 +433,7 @@ artistPortalRouter.post(
       }
 
       await enqueueIndexSong(song.id);
+      await enqueueGenreEnrichment({ songId: song.id }).catch(() => undefined);
 
       res.status(201).json({ songId: song.id, title: song.title, artistId: song.artistId });
     } catch (error) {

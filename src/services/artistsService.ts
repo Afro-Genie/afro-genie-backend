@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { enqueueIndexArtist } from '../jobs/searchIndexJob';
+import { enqueueGenreEnrichment } from './genreBackfillService';
 import { prisma } from '../lib/prisma';
 import { ApiError } from '../middleware/errorHandler';
 
@@ -237,6 +238,7 @@ export const createArtist = async (payload: ArtistInput) => {
   });
 
   await enqueueIndexArtist(artist.id);
+  await enqueueGenreEnrichment({ artistId: artist.id }).catch(() => undefined);
 
   return artist;
 };

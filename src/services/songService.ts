@@ -3,6 +3,7 @@ import { enqueueIndexArtist, enqueueIndexSong, enqueueRefreshGenre } from '../jo
 import { indexSong } from '../services/searchService';
 import { enqueueLanguageCategorization } from '../jobs/languageCategorizationJob';
 import { lyricsEnrichmentQueue } from '../lib/queue';
+import { enqueueGenreEnrichment } from './genreBackfillService';
 import { redis } from '../lib/redis';
 import { prisma } from '../lib/prisma';
 import { invalidatePlaybackSourceCache } from '../lib/playbackCache';
@@ -734,6 +735,7 @@ export const createSong = async (payload: SongMutationInput) => {
     },
   );
 
+  await enqueueGenreEnrichment({ songId: created.id }).catch(() => undefined);
   await indexSongImmediately(created.id);
   await refreshGenresAfterSongMutation([...genreSync.previousGenreIds, ...genreSync.nextGenreIds]);
   await catalogService.invalidateHomepageCache().catch(() => undefined);
@@ -797,6 +799,7 @@ export const updateSong = async (songId: string, payload: Partial<SongMutationIn
       targetArtist = { ...createdArtist, suspended: false };
       targetArtistId = createdArtist.id;
       await enqueueIndexArtist(createdArtist.id).catch(() => undefined);
+      await enqueueGenreEnrichment({ artistId: createdArtist.id }).catch(() => undefined);
     }
   }
 
