@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Prisma } from '@prisma/client';
 import {
+  buildActiveSongTitleWhere,
   buildSongDetailWhere,
   buildSongWhere,
   shouldCheckSongDuplicateForUpdate,
@@ -63,5 +64,19 @@ describe('admin song catalog helpers', () => {
     assert.equal(shouldCheckSongDuplicateForUpdate({ artistName: '  Rema  ' }), true);
     assert.equal(shouldCheckSongDuplicateForUpdate({ title: 'Renamed Song' }), true);
     assert.equal(shouldCheckSongDuplicateForUpdate({ releaseYear: 2025 }), false);
+  });
+
+  test('active song title duplicate checks ignore soft-deleted songs', () => {
+    assert.deepEqual(buildActiveSongTitleWhere('Song', 'artist-1'), {
+      title: 'Song',
+      artistId: 'artist-1',
+      softDeleted: false,
+    });
+    assert.deepEqual(buildActiveSongTitleWhere('Song', 'artist-1', 'song-1'), {
+      id: { not: 'song-1' },
+      title: 'Song',
+      artistId: 'artist-1',
+      softDeleted: false,
+    });
   });
 });
