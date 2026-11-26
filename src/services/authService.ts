@@ -126,6 +126,9 @@ export const createMailTransporter = () => {
     host: env.SMTP_HOST,
     port: env.SMTP_PORT,
     secure: env.SMTP_PORT === 465,
+    requireTLS: env.SMTP_PORT !== 465,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
     auth: {
       user: env.SMTP_USER,
       pass: env.SMTP_PASS

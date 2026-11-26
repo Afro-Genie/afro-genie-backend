@@ -1,65 +1,85 @@
 import { Router, type Request, type Response } from 'express';
+import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
 import { authenticate } from '../middleware/auth';
 import { upload, uploadAudio } from '../middleware/upload';
+import { prisma } from '../lib/prisma';
 
 export const uploadRouter = Router();
 
-/**
- * POST /api/upload
- * Accepts a single image under the field name "file".
- * Requires authentication.
- * Returns { url: string } — the public path to the uploaded file.
- */
-uploadRouter.post(
-  '/upload',
-  authenticate,
-  (req: Request, res: Response) => {
-    upload.single('file')(req, res, (err) => {
-      if (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
-        res.status(400).json({ error: message });
-        return;
-      }
+type UploadKind = 'IMAGE' | 'AUDIO';
 
-      if (!req.file) {
-        res.status(400).json({ error: 'No file provided' });
-        return;
-      }
+const persistUploadedFile = async (file: Express.Multer.File, kind: UploadKind): Promise<void> => {
+  if (!file.path) {
+    throw new Error('Uploaded file path is missing');
+  }
 
-      const relativePath = `/uploads/${req.file.filename}`;
+  const data = await fs.readFile(file.path);
+  const checksum = crypto.createHash('sha256').update(data).digest('hex');
+  const extension = path.extname(file.originalname).toLowerCase();
+  const mimeType = file.mimetype || (extension === '.svg' ? 'image/svg+xml' : 'application/octet-stream');
+
+  await prisma.uploadedFile.upsert({
+    where: { filename: file.filename },
+    create: {
+      filename: file.filename,
+      mimeType,
+      size: file.size,
+      kind,
+      data,
+      checksum,
+    },
+    update: {
+      mimeType,
+      size: file.size,
+      kind,
+      data,
+      checksum,
+    },
+  });
+
+  await fs.unlink(file.path).catch(() => undefined);
+};
+
+const handleUpload = (kind: UploadKind) => async (req: Request, res: Response): Promise<void> => {
+  const middleware = kind === 'IMAGE' ? upload.single('file') : uploadAudio.single('file');
+
+  middleware(req, res, async (err) => {
+    if (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      res.status(400).json({ error: message });
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({ error: 'No file provided' });
+      return;
+    }
+
+    try {
+      await persistUploadedFile(req.file, kind);
+    } catch (error) {
+      if (req.file.path) {
+        await fs.unlink(req.file.path).catch(() => undefined);
+      }
+      res.status(500).json({ error: 'Unable to store uploaded file' });
+      return;
+    }
+
+    const relativePath = `/uploads/${req.file.filename}`;
+    if (kind === 'IMAGE') {
       res.status(201).json({ url: relativePath });
+      return;
+    }
+
+    res.status(201).json({
+      url: relativePath,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
     });
-  },
-);
+  });
+};
 
-/**
- * POST /api/upload/audio
- * Accepts a single audio file under the field name "file".
- * Requires authentication.
- * Returns { url, mimeType, size } — public path plus metadata.
- */
-uploadRouter.post(
-  '/upload/audio',
-  authenticate,
-  (req: Request, res: Response) => {
-    uploadAudio.single('file')(req, res, (err) => {
-      if (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
-        res.status(400).json({ error: message });
-        return;
-      }
-
-      if (!req.file) {
-        res.status(400).json({ error: 'No file provided' });
-        return;
-      }
-
-      const relativePath = `/uploads/${req.file.filename}`;
-      res.status(201).json({
-        url: relativePath,
-        mimeType: req.file.mimetype,
-        size: req.file.size,
-      });
-    });
-  },
-);
+uploadRouter.post('/upload', authenticate, handleUpload('IMAGE'));
+uploadRouter.post('/upload/audio', authenticate, handleUpload('AUDIO'));

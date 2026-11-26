@@ -2,7 +2,7 @@ import path from 'path';
 import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import passport from 'passport';
@@ -53,6 +53,7 @@ import { translationModerationRouter } from './routes/translationModeration';
 import { notificationsRouter } from './routes/notifications';
 import { env } from './lib/env';
 import { logger } from './lib/logger';
+import { prisma } from './lib/prisma';
 import { authenticate, requireRole } from './middleware/auth';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { bandwidthTrackingMiddleware } from './lib/bandwidthMonitor';
@@ -76,29 +77,41 @@ const apiLimiter = rateLimit({
   }
 });
 
+const apiCors = cors({
+  origin: (requestOrigin, callback) => {
+    if (!requestOrigin) {
+      callback(null, true);
+      return;
+    }
+
+    if (corsAllowList.includes(requestOrigin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+});
+
+const publicMediaCors = cors({
+  origin: '*',
+  methods: ['GET', 'HEAD', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+});
+
 app.use(pinoHttp({ logger }));
 app.use(helmet());
 // Bandwidth tracking must run BEFORE compression so we count the compressed
 // (wire) bytes actually served.
 app.use(bandwidthTrackingMiddleware);
-app.use(
-  cors({
-    origin: (requestOrigin, callback) => {
-      if (!requestOrigin) {
-        callback(null, true);
-        return;
-      }
-
-      if (corsAllowList.includes(requestOrigin)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error('Not allowed by CORS'));
-    },
-    credentials: true,
-  })
-);
+app.use((req, res, next) => {
+  if (req.path.startsWith('/uploads/')) {
+    publicMediaCors(req, res, next);
+    return;
+  }
+  apiCors(req, res, next);
+});
 app.use(compression());
 app.use(
   express.json({
@@ -128,9 +141,97 @@ app.use(
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     },
   })
 );
+
+const UPLOAD_FILENAME_PATTERN = /^\d{13}-[0-9a-f]{32}\.[a-z0-9]+$/i;
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.webm', '.flac', '.opus']);
+const MIME_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.ogg': 'audio/ogg',
+  '.webm': 'audio/webm',
+  '.flac': 'audio/flac',
+  '.opus': 'audio/ogg',
+};
+
+const setUploadResponseHeaders = (res: Response, mimeType: string, length: number, etag: string): void => {
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Length', length);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('ETag', etag);
+};
+
+app.get('/uploads/:filename', async (req, res, next) => {
+  const filename = req.params.filename;
+  if (!UPLOAD_FILENAME_PATTERN.test(filename)) {
+    next();
+    return;
+  }
+
+  try {
+    const record = await prisma.uploadedFile.findUnique({ where: { filename } });
+    if (!record) {
+      next();
+      return;
+    }
+
+    const extension = path.extname(filename).toLowerCase();
+    const mimeType = record.mimeType || MIME_TYPES[extension] || 'application/octet-stream';
+    const data = Buffer.from(record.data);
+    const etag = record.checksum ? `"${record.checksum}"` : `"${data.length}-${filename}"`;
+
+    if (req.headers['if-none-match'] === etag) {
+      setUploadResponseHeaders(res, mimeType, data.length, etag);
+      res.status(304).end();
+      return;
+    }
+
+    setUploadResponseHeaders(res, mimeType, data.length, etag);
+    if (extension === '.svg') {
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    }
+
+    const range = req.headers.range;
+    if (range && AUDIO_EXTENSIONS.has(extension)) {
+      const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+      const start = match ? Number(match[1]) : NaN;
+      const end = match && match[2] ? Number(match[2]) : data.length - 1;
+      if (!Number.isFinite(start) || start >= data.length || end < start) {
+        res.setHeader('Content-Range', `bytes */${data.length}`);
+        res.status(416).end();
+        return;
+      }
+      const safeEnd = Math.min(end, data.length - 1);
+      const chunk = data.subarray(start, safeEnd + 1);
+      res.setHeader('Content-Range', `bytes ${start}-${safeEnd}/${data.length}`);
+      res.setHeader('Content-Length', chunk.length);
+      res.status(206).end(chunk);
+      return;
+    }
+
+    res.status(200).end(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use(passport.initialize());
 app.use('/api', apiLimiter);
 

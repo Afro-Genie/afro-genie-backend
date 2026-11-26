@@ -98,11 +98,11 @@ const sendMailWithTimeout = (
 
 // ─── Core Send Function ──────────────────────────────────────────────────────
 
-export const sendEmail = async (options: SendEmailOptions): Promise<void> => {
+export const sendEmail = async (options: SendEmailOptions): Promise<boolean> => {
   const from = env.SMTP_FROM_EMAIL;
   if (!from) {
     logger.warn({ to: options.to, subject: options.subject }, 'SMTP_FROM_EMAIL not set; email not sent');
-    return;
+    return false;
   }
 
   const text = options.text || options.html.replace(/<[^>]*>/g, '');
@@ -110,7 +110,7 @@ export const sendEmail = async (options: SendEmailOptions): Promise<void> => {
   if (env.BREVO_API_KEY) {
     logger.info({ method: 'brevo_api', to: options.to }, 'Sending email via Brevo HTTP API');
     await sendViaBrevoApi({ from, to: options.to, subject: options.subject, text, html: options.html });
-    return;
+    return true;
   }
 
   const transporter = createMailTransporter();
@@ -120,6 +120,7 @@ export const sendEmail = async (options: SendEmailOptions): Promise<void> => {
 
   logger.info({ method: 'smtp', to: options.to }, 'Sending email via SMTP');
   await sendMailWithTimeout(transporter, { from, to: options.to, subject: options.subject, text, html: options.html });
+  return true;
 };
 
 // ─── Artist Application Emails ───────────────────────────────────────────────
