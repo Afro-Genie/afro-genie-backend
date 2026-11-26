@@ -669,6 +669,17 @@ const syncLanguages = async (songId: string, languages: string[] | undefined, pr
   }
 };
 
+export const buildActiveSongTitleWhere = (
+  title: string,
+  artistId: string,
+  excludeId?: string,
+): Prisma.SongWhereInput => ({
+  ...(excludeId ? { id: { not: excludeId } } : {}),
+  title,
+  artistId,
+  softDeleted: false,
+});
+
 export const createSong = async (payload: SongMutationInput) => {
   await ensureArtistExists(payload.artistId);
   const artist = await prisma.artist.findUnique({
@@ -685,9 +696,18 @@ export const createSong = async (payload: SongMutationInput) => {
     throw new ApiError(error instanceof Error ? error.message : 'Manual song failed African-music policy validation.', 'AFRICAN_MUSIC_POLICY', 400);
   }
 
+  const title = payload.title.trim();
+  const duplicate = await prisma.song.findFirst({
+    where: buildActiveSongTitleWhere(title, payload.artistId),
+    select: { id: true },
+  });
+  if (duplicate) {
+    throw new ApiError('Song with this title already exists for this artist', 'DUPLICATE_SONG', 409);
+  }
+
   const created = await prisma.song.create({
     data: {
-      title: payload.title.trim(),
+      title,
       artistId: payload.artistId,
       albumName: payload.albumName ?? null,
       releaseYear: payload.releaseYear ?? null,
@@ -804,12 +824,7 @@ export const updateSong = async (songId: string, payload: Partial<SongMutationIn
 
   if (shouldCheckSongDuplicateForUpdate(payload)) {
     const duplicate = await prisma.song.findFirst({
-      where: {
-        id: { not: songId },
-        title: nextTitle,
-        artistId: targetArtistId,
-        softDeleted: false,
-      },
+      where: buildActiveSongTitleWhere(nextTitle, targetArtistId, songId),
       select: { id: true },
     });
     if (duplicate) {
