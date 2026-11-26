@@ -1475,3 +1475,15 @@ model TranslationViewEvent {
   @@index([userId, viewedAt])
   @@index([sessionId, viewedAt])
 }
+
+model UploadedFile {
+  filename  String   @id
+  mimeType  String
+  size      Int
+  kind      String
+  data      Bytes
+  checksum  String?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+}

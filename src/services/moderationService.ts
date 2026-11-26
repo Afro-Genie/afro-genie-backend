@@ -2,8 +2,7 @@ import type { CorrectionStatus, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApiError } from '../middleware/errorHandler';
-import { env } from '../lib/env';
-import { createMailTransporter } from './authService';
+import { sendEmail } from './emailService';
 import { updateLyrics } from './reviewService';
 import { onCorrectionApproved, onCorrectionRejected } from './rewardHooks';
 
@@ -279,7 +278,7 @@ export async function updateGuidelines(content: string, userId: string) {
 // Welcome messages
 // ---------------------------------------------------------------------------
 export async function sendWelcomeMessage(userId: string, message: string) {
-  const user = await prisma.$transaction(async (tx) => {
+  const { user, alreadyWelcomed } = await prisma.$transaction(async (tx) => {
     const claimed = await tx.user.updateMany({
       where: { id: userId, moderatorWelcomedAt: null },
       data: { moderatorWelcomedAt: new Date() },
@@ -288,10 +287,20 @@ export async function sendWelcomeMessage(userId: string, message: string) {
     if (claimed.count === 0) {
       const existingUser = await tx.user.findUnique({
         where: { id: userId },
-        select: { id: true, moderatorWelcomedAt: true },
+        select: { id: true, email: true, displayName: true, moderatorWelcomedAt: true },
       });
       if (!existingUser) throw new ApiError('User not found', 'NOT_FOUND', 404);
-      throw new ApiError('This user has already been welcomed', 'CONFLICT', 409);
+      if (existingUser.moderatorWelcomedAt) {
+        return {
+          user: {
+            id: existingUser.id,
+            email: existingUser.email,
+            displayName: existingUser.displayName,
+          },
+          alreadyWelcomed: true,
+        };
+      }
+      throw new ApiError('Unable to claim user for welcome message', 'CONFLICT', 409);
     }
 
     const welcomedUser = await tx.user.findUniqueOrThrow({
@@ -308,29 +317,22 @@ export async function sendWelcomeMessage(userId: string, message: string) {
       },
     });
 
-    return welcomedUser;
+    return { user: welcomedUser, alreadyWelcomed: false };
   });
 
   let emailSent = false;
   try {
-    const transporter = createMailTransporter();
-    if (transporter && env.SMTP_FROM_EMAIL) {
-      await transporter.sendMail({
-        from: env.SMTP_FROM_EMAIL,
-        to: user.email,
-        subject: 'Welcome to Afro Genie!',
-        text: `Hi ${user.displayName ?? 'there'}, welcome to Afro Genie! ${message}`,
-        html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Welcome to Afro Genie!</p><p>${message}</p><p>Start translating songs and earning tokens today.</p>`,
-      });
-      emailSent = true;
-    } else {
-      logger.warn({ email: user.email }, 'SMTP not configured; welcome email was not sent');
-    }
+    emailSent = await sendEmail({
+      to: user.email,
+      subject: 'Welcome to Afro Genie!',
+      text: `Hi ${user.displayName ?? 'there'}, welcome to Afro Genie! ${message}`,
+      html: `<p>Hi ${user.displayName ?? 'there'},</p><p>Welcome to Afro Genie!</p><p>${message}</p><p>Start translating songs and earning tokens today.</p>`,
+    });
   } catch (err) {
     logger.error({ err, userId }, 'welcome email send failed');
   }
 
-  return { ok: true, emailSent };
+  return { ok: true, emailSent, alreadyWelcomed };
 }
 
 // ---------------------------------------------------------------------------
